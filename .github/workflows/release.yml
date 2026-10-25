@@ -181,8 +181,8 @@ jobs:
             --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled false \
             --out OmarchyMusic.apk app-release.apk
           "$tools/apksigner" verify --print-certs OmarchyMusic.apk | tee certs.txt
-          grep -q "Signer #1 certificate SHA-256 digest: $SIGNER" certs.txt
-          [ "$(grep -c '^Signer #[0-9]* certificate DN' certs.txt)" -eq 1 ]   # one signer, no other
+          grep -q "certificate SHA-256 digest: $SIGNER$" certs.txt
+          [ "$(grep -c 'certificate DN:' certs.txt)" -eq 1 ]   # one signer, no other
           sha256sum OmarchyMusic.apk
       - name: Attach to the release
         if: needs.prepare.outputs.tag != ''
