@@ -1,10 +1,5 @@
 package org.omarchy.music.ui
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
@@ -25,9 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
 import org.omarchy.music.Music
@@ -160,13 +153,10 @@ fun ListActions(tracks: List<Track>, extra: List<Pair<String, () -> Unit>> = emp
 
 @Composable
 fun MusicTab(ui: Ui) {
-    val ctx = LocalContext.current
-    val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-    var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED) }
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        granted = ok
-        if (ok) Music.rescan()
-    }
+    val access = rememberMusicAccess()
+    val granted = access.granted
+    var choosing by remember { mutableStateOf(false) }
+    if (choosing) FolderBrowser { choosing = false }
     LaunchedEffect(Unit) { if (granted) Music.rescanSoon() }
     Music.musicVersion
     Music.savedVersion
@@ -182,7 +172,10 @@ fun MusicTab(ui: Ui) {
             Music.musicVersion   // read here too: the list is built apart from the screen, and must follow a scan
             Music.savedVersion
             if (!granted && ui.musicView == "all") item {
-                ActionRow("Allow access to the music on this phone  ›") { ask.launch(perm) }
+                ActionRow("Allow access to the music on this phone  ›") { access.ask() }
+            } else if (ui.musicView == "all") item {
+                val from = if (Music.folders.isEmpty()) "no folders" else Music.folders.joinToString { it.trimEnd('/') }
+                ActionRow("From $from  ·  Choose folders  ›") { choosing = true }
             }
             when (ui.musicView) {
                 "playlists" -> myPlaylists(ui)

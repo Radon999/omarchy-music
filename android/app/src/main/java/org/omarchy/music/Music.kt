@@ -213,11 +213,14 @@ object Music {
         return info
     }
 
+    private var rescanAgain = false
+
     fun rescan() {
-        if (local.scanning) return
+        if (local.scanning) { rescanAgain = true; return }   // the folders changed mid-scan: read again after
         local.scanning = true
         bg({ local.scan(folders) }) { changed, err ->
             local.scanning = false
+            if (rescanAgain) { rescanAgain = false; rescan() }
             if (err is SecurityException) Unit   // no permission yet: the Music tab asks
             else if (err != null) toast("Couldn't read your music: ${err.message?.take(80)}")
             if (changed == true) musicVersion++
@@ -227,18 +230,17 @@ object Music {
 
     fun rescanSoon() { if (now() - local.scanned > 120) rescan() }
 
-    fun addFolder(path: String) {
-        if (folders.any { path.startsWith(it) }) { toast("$path is in your folders already"); return }
-        folders = folders.filter { !it.startsWith(path) } + path
+    /** Your folders become list; one inside another is dropped, since the outer one has its songs. */
+    @JvmName("chooseFolders")
+    fun setFolders(list: List<String>) {
+        val clean = list.distinct().filter { f -> list.none { it != f && f.startsWith(it) } }.sorted()
+        if (clean == folders) return
+        folders = clean
         saveState()
         rescan()
     }
 
-    fun removeFolder(path: String) {
-        folders = folders - path
-        saveState()
-        rescan()
-    }
+    fun removeFolder(path: String) = setFolders(folders - path)
 
     // ---- your playlists ----
     fun newPlaylist(name: String): String {

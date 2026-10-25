@@ -227,24 +227,8 @@ private fun LastFmLine(ui: Ui) {
 @Composable
 private fun FolderPicker() {
     var open by remember { mutableStateOf(false) }
-    var all by remember { mutableStateOf(listOf<String>()) }
-    Pill("Add") {
-        open = true
-        Music.bg({ Music.local.allFolders() }) { res, _ -> all = res ?: emptyList() }
-    }
-    if (open) AlertDialog(onDismissRequest = { open = false }, containerColor = C.light,
-        title = { Text("Add a folder", style = T.title) },
-        text = {
-            LazyColumn {
-                if (all.isEmpty()) item { Text("No other folders with music found.", style = T.sub) }
-                items(all.size) { i ->
-                    val f = all[i]
-                    Text(f, style = T.body.copy(color = if (Music.folders.any { f.startsWith(it) }) C.muted else C.fg),
-                        modifier = Modifier.fillMaxWidth().clickable { open = false; Music.addFolder(f) }.padding(vertical = 10.dp))
-                }
-            }
-        },
-        confirmButton = { TextButton({ open = false }) { Text("Close", color = C.muted) } })
+    Pill("Choose") { open = true }
+    if (open) FolderBrowser { open = false }
 }
 
 @Composable

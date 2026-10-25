@@ -24,11 +24,14 @@ class LocalFiles(private val ctx: Context) {
     @Volatile var scanning = false
     var scanned = 0.0
 
-    /** Every folder on the phone that holds songs, as "Music/", "Download/…": for picking. */
-    fun allFolders(): List<String> {
-        val out = sortedSetOf<String>()
-        query { _, _, path, _ -> out += path.trimEnd('/') + "/" }
-        return out.toList()
+    /** How many songs sit right in each folder on the phone, as "Music/…/": for picking. */
+    fun folderCounts(): Map<String, Int> {
+        val out = HashMap<String, Int>()
+        query { _, _, path, _ ->
+            val p = path.trimEnd('/') + "/"
+            if (!p.startsWith(DOWNLOADS)) out[p] = (out[p] ?: 0) + 1
+        }
+        return out
     }
 
     /** Read the media library again (blocking). Returns whether anything changed. */
