@@ -58,6 +58,7 @@ import cmath
 import colorsys
 import difflib
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -341,6 +342,8 @@ button.row-action {{ background: transparent; border: none; box-shadow: none; co
 button.row-action:hover {{ color: {acc}; background-color: {rgba(acc, 0.10)}; }}
 .empty {{ color: {muted}; padding: 40px 20px; }}
 .empty-title {{ color: {fg}; font-weight: 700; font-size: 1.1em; }}
+.dj {{ padding: 6px 8px 10px 8px; }}
+.dj-line {{ color: {fg}; font-weight: 700; font-size: 1.25em; }}
 .player {{ background-color: {rgba(darker, OPACITY * 0.6)}; border-top: 1px solid {line}; padding: 12px 14px 12px 14px; }}
 .player .title {{ font-size: 1.02em; }}
 .player .time {{ color: {muted}; font-size: 0.8em; font-feature-settings: "tnum"; }}
@@ -1068,6 +1071,17 @@ class Tidal:
                               pic(al) if al.cover else "") for al in (r.get("albums") or [])[:10]]
         return {"songs": [track_from_tidal(c) for c in r.get("tracks") or [] if c.available], "artists": artists, "albums": albums}
 
+    def mix_for(self, q):
+        """The songs of the playlist Tidal has for q ("chill", "2010s hits"), or []."""
+        with self.lock:
+            lists = (self.session.search(q, models=[self.td.Playlist], limit=5).get("playlists") or [])
+        for pl in lists[:3]:
+            with self.lock:
+                found = [track_from_tidal(c) for c in pl.tracks(limit=80) if c.available]
+            if len(found) >= 8:
+                return found
+        return []
+
     def radio(self, track):
         c = None if source_of(track) == "tidal" else self.resolve(track)
         with self.lock:
@@ -1673,6 +1687,15 @@ class YTM:
                 by = ", ".join(a.get("name") or "" for a in x.get("artists") or [] if a.get("name"))
                 albums.append(album_entry(x["browseId"], x.get("title"), " · ".join(v for v in (by, str(x.get("year") or "")) if v), last(x)))
         return {"songs": self.search(q), "artists": artists, "albums": albums}
+
+    def mix_for(self, q):
+        """The songs of the playlist YouTube Music has for q ("chill", "2010s hits"), or []."""
+        for x in self.api.search(q, filter="playlists", limit=5)[:3]:
+            pid = (x.get("browseId") or "").removeprefix("VL")
+            found = self.playlist(pid) if pid else []
+            if len(found) >= 8:
+                return found[:80]
+        return []
 
     def radio(self, track):
         """A radio of songs like track (a song from any service, or a video ID)."""
@@ -3369,6 +3392,299 @@ class LastFM:
 
 
 # =============================================================================
+# DJ, like Spotify's: what you play most, songs you haven't heard in a while and
+# new ones, in sets of a few songs, each begun with a line from the DJ. Your
+# history is Last.fm (when it's connected) and what you play here; the new songs
+# come from Tidal's and YouTube Music's radios. "Switch it up" starts another
+# kind of set, and you can ask for one: a mood, a decade, a genre or an artist.
+# =============================================================================
+DJ_SET = 6   # songs in a set
+DJ_ORDER = ("repeat", "fresh", "throwback", "deep", "fresh", "genre", "like")
+DJ_KINDS = {"repeat": "On repeat", "fresh": "New for you", "throwback": "Throwback", "deep": "Deep cuts",
+            "genre": "Your genre", "like": "More like this", "ask": "You asked"}
+# Words in a request and the Last.fm tags they mean.
+DJ_MOODS = {
+    "chill": ("chill", "chillout"), "chilled": ("chill", "chillout"), "relax": ("chill", "relaxing"),
+    "relaxing": ("relaxing", "chill"), "calm": ("calm", "chill"), "study": ("study", "chill"),
+    "studying": ("study", "chill"), "focus": ("focus", "instrumental"), "work": ("focus", "chill"),
+    "sleep": ("sleep", "ambient"), "lofi": ("lo-fi",), "sad": ("sad", "melancholic"), "happy": ("happy", "feel good"),
+    "upbeat": ("upbeat", "happy"), "hype": ("energetic", "hype"), "energy": ("energetic",),
+    "workout": ("workout", "energetic"), "gym": ("workout", "energetic"), "running": ("running", "workout"),
+    "party": ("party", "dance"), "dance": ("dance",), "love": ("love", "romantic"), "romantic": ("romantic", "love"),
+    "angry": ("aggressive",), "rainy": ("rainy day", "chill"), "summer": ("summer",), "driving": ("driving",),
+    "drive": ("driving",), "night": ("night", "late night"), "morning": ("morning",),
+}
+# Tags that say nothing about how a song sounds.
+DJ_JUNK_TAGS = {"seen live", "favorites", "favourites", "favorite", "favourite", "albums i own", "under 2000 listeners",
+                "spotify", "youtube", "male vocalists", "female vocalists", "american", "british", "usa", "uk"}
+DJ_FILLER = {"play", "some", "something", "songs", "song", "music", "me", "for", "a", "the", "please", "mix", "of",
+             "like", "more", "vibes", "vibe", "tunes", "stuff", "give", "i", "want", "to", "listen", "put", "on", "and"}
+
+
+def dj_tags(text):
+    """The Last.fm tags a request means: its mood words, its decade ("80s", "2010s"), else the
+    request itself as a genre ("house", "k-pop")."""
+    every = re.findall(r"[\w'-]+", text.lower())
+    words = [w for w in every if w not in DJ_FILLER]
+    tags = []
+    for w in words:
+        if re.fullmatch(r"(19|20)?\d0s", w):
+            tags.append(w)   # "80s", "1980s", "2010s"
+        tags.extend(DJ_MOODS.get(w, ()))
+    while every and every[0] in DJ_FILLER:   # "play some drum and bass music": "drum and bass"
+        every.pop(0)
+    while every and every[-1] in DJ_FILLER:
+        every.pop()
+    if not tags and every:
+        tags.append(" ".join(every))
+    return list(dict.fromkeys(tags))
+
+
+def dj_pick(pool, n, used, rng=random):
+    """n songs of pool at random, the ones nearer the top likelier, none twice and none in used
+    (song keys of what the DJ played already)."""
+    seen, out = set(used), []
+    weighted = [(rng.random() ** (1 + 8 * i / max(1, len(pool))), t) for i, t in enumerate(pool)]
+    for _w, t in sorted(weighted, key=lambda x: -x[0]):
+        k = song_key(t)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+        if len(out) == n:
+            break
+    return out
+
+
+def dj_names(tracks, n=2):
+    """ "A and B": the lead artists of tracks, each once."""
+    names = list(dict.fromkeys((t.get("artist") or "").split(",")[0].strip() for t in tracks if t.get("artist")))[:n]
+    return " and ".join(names) if len(names) < 3 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+class DJ:
+    """The DJ's sets. Building a set blocks (run it in a thread); the app plays them."""
+
+    def __init__(self, app):
+        self.app = app
+        self.taste_at, self.taste = 0, None
+        self.used = set()      # song keys the DJ has played this session
+        self.step = 0          # where in DJ_ORDER the next set comes from
+
+    # ---- what you like ----
+    def load_taste(self):
+        """(blocking) Your history, asked of Last.fm at most every ten minutes."""
+        if self.taste and time.time() - self.taste_at < 600:
+            return self.taste
+        a = self.app
+        mine = {}
+        for t in [e["track"] for e in a.plays.items.values()] + a.my_songs():
+            mine[song_key(t)] = t
+        taste = {"mine": mine, "recent": [], "all": [], "artists": []}
+        if a.lastfm.connected:
+            def songs(rows):
+                return [dict(a.fm_song(name, artist, img, mine), plays=n) for name, artist, n, img in rows]
+            try:
+                taste["recent"] = songs(a.lastfm.top("track", 50, "1month"))
+                taste["all"] = songs(a.lastfm.top("track", 200, "overall"))
+                taste["artists"] = [name for name, _a, _n, _i in a.lastfm.top("artist", 20, "3month")]
+            except Exception:  # noqa: BLE001 -- what you played here, then
+                pass
+        now = time.time()
+        rows = list(a.plays.items.values())
+        if not taste["recent"]:
+            taste["recent"] = [dict(e["track"], plays=e["plays"]) for e in sorted(
+                (e for e in rows if now - e.get("last", 0) < 30 * 86400), key=lambda e: -e.get("plays", 0))[:50]]
+        if not taste["all"]:
+            taste["all"] = [dict(e["track"], plays=e["plays"]) for e in sorted(rows, key=lambda e: -e.get("plays", 0))[:200]]
+        if not taste["artists"]:
+            count = Counter((t.get("artist") or "").split(",")[0].strip() for t in taste["recent"] + taste["all"])
+            taste["artists"] = [n for n, _c in count.most_common(20) if n]
+        taste["last"] = {song_key(e["track"]): e.get("last", 0) for e in rows}
+        self.taste, self.taste_at = taste, time.time()
+        return taste
+
+    def known(self, taste):
+        return set(taste["mine"]) | {song_key(t) for t in taste["all"]} | set(taste["last"])
+
+    def radio(self, seed, key):
+        src = self.app.sources.get(key)
+        if not src or (key == "tidal" and not src.signed_in):
+            return []
+        try:
+            return src.radio(seed)
+        except Exception:  # noqa: BLE001 -- the other service, then
+            return []
+
+    def services(self):
+        """The services new songs come from: Tidal and YouTube Music both, when both are there."""
+        tidal = self.app.sources.get("tidal")
+        return (["tidal"] if tidal and tidal.signed_in else []) + ["ytm"]
+
+    # ---- the kinds of set: each gives (songs, line) or None ----
+    def set_repeat(self, taste, first):
+        songs = dj_pick(taste["recent"][:25], DJ_SET, self.used)
+        if len(songs) < 3:
+            return None
+        if first:
+            return songs, f"{greeting()}, I'm your DJ. Let's start with what you've had on repeat, like “{songs[0]['title']}” by {dj_names(songs[:1])}."
+        return songs, f"Back to what you've had on repeat lately: {dj_names(songs, 3)}."
+
+    def set_throwback(self, taste, first):
+        recent = {song_key(t) for t in taste["recent"]}
+        now = time.time()
+        pool = [t for t in taste["all"] if song_key(t) not in recent and now - taste["last"].get(song_key(t), 0) > 21 * 86400]
+        songs = dj_pick(pool[:120], DJ_SET, self.used)
+        if len(songs) < 3:
+            return None
+        t = songs[0]
+        n = t.get("plays") or 0
+        return songs, (f"Throwback time. You've played “{t['title']}” {n} times, but not for a while." if n > 1
+                       else f"Throwback time, starting with “{t['title']}” by {dj_names([t])}.")
+
+    def set_fresh(self, taste, first):
+        seeds = dj_pick(taste["recent"][:20] or taste["all"][:40], 2, set())
+        if not seeds:
+            return None
+        known = self.known(taste) | self.used
+        found = []
+        for i, seed in enumerate(seeds):
+            keys = self.services()
+            got = self.radio(seed, keys[i % len(keys)]) or self.radio(seed, keys[(i + 1) % len(keys)])
+            found.append([t for t in got if song_key(t) not in known])
+        mixed = [t for pair in itertools.zip_longest(*found) for t in pair if t]
+        songs = dj_pick(mixed[:30], DJ_SET, self.used)
+        if len(songs) < 3:
+            return None
+        return songs, f"Something new for you, picked from {dj_names(seeds)}. Let's see what you think."
+
+    def set_deep(self, taste, first):
+        for name in random.sample(taste["artists"][:10], min(3, len(taste["artists"][:10]))):
+            try:
+                info = self.app.artist_info(name)
+            except Exception:  # noqa: BLE001 -- the next artist
+                info = None
+            if not info:
+                continue
+            known = self.known(taste) | self.used
+            songs = [t for t in info.get("top") or [] if song_key(t) not in known][:DJ_SET]
+            if len(songs) >= 3:
+                return songs, f"Deep cuts from {info.get('name') or name}: songs of theirs you haven't played yet."
+        return None
+
+    def set_genre(self, taste, first):
+        fm = self.app.lastfm
+        if not fm.key:
+            return None
+        weight = Counter()
+        lead = taste["artists"][:3]
+        for name in lead:
+            try:
+                for tag, n in fm.artist_tags(name)[:6]:
+                    if tag.lower() not in DJ_JUNK_TAGS:
+                        weight[tag.lower()] += n
+            except Exception:  # noqa: BLE001 -- the other artists' tags
+                pass
+        if not weight:
+            return None
+        tag = random.choice([t for t, _n in weight.most_common(3)])
+        songs = self.tag_songs(tag, taste)
+        if len(songs) < 3:
+            return None
+        return songs, f"Some {tag}, since you've been playing {dj_names([{'artist': lead[0]}])} so much."
+
+    def set_like(self, taste, first):
+        """Radio of what's playing (or, when no service has one of it, of a song you play a lot)."""
+        seeds = [t for t in [self.app.current_track()] + taste["recent"][:5] if t]
+        for seed in seeds[:4]:
+            for key in self.services():
+                songs = dj_pick([t for t in self.radio(seed, key)[:25] if song_key(t) != song_key(seed)], DJ_SET, self.used)
+                if len(songs) >= 3:
+                    return songs, f"More like “{seed['title']}” by {dj_names([seed])}."
+        return None
+
+    def tag_songs(self, tag, taste):
+        """Songs Last.fm files under tag, the ones by artists you play first."""
+        fm = self.app.lastfm
+        if not fm.key:
+            return []
+        try:
+            res = fm.call("tag.getTopTracks", tag=tag, limit=100)
+        except Exception:  # noqa: BLE001 -- none, then
+            return []
+        rows = ((res.get("tracks") or {}).get("track")) or []
+        yours = {norm(n) for n in taste["artists"]}
+        pool = []
+        for x in [rows] if isinstance(rows, dict) else rows:
+            artist = (x.get("artist") or {}).get("name", "") if isinstance(x.get("artist"), dict) else ""
+            img = next((i["#text"] for i in reversed(x.get("image") or []) if i.get("#text")), "")
+            if x.get("name") and artist:
+                pool.append(self.app.fm_song(x["name"], artist, img, taste["mine"]))
+        pool.sort(key=lambda t: norm(t["artist"].split(",")[0]) not in yours)   # stable: Last.fm's order within each
+        return dj_pick(pool, DJ_SET, self.used)
+
+    def ask(self, text):
+        """(blocking) A set for what you asked, ("ask", songs, line): an artist, a mood, a decade or a genre."""
+        taste = self.load_taste()
+        words = " ".join(w for w in re.findall(r"[\w'&.-]+", text) if w.lower() not in DJ_FILLER)
+        names = {norm(n): n for n in taste["artists"]}
+        names.update({norm(t["artist"].split(",")[0]): t["artist"].split(",")[0].strip() for t in taste["mine"].values()})
+        who = best_named(list(names.values()), words, lambda n: n) if words else None
+        moods = any(w in DJ_MOODS for w in words.lower().split()) or re.search(r"\d0s", words)
+        if not who and words and not moods:
+            try:
+                info = self.app.artist_info(words)
+            except Exception:  # noqa: BLE001 -- not an artist, then
+                info = None
+            # Only an artist called just that: "drum and bass" isn't DrymBass.
+            if info and norm(re.sub(r"^the ", "", info.get("name") or "", flags=re.I)) == norm(re.sub(r"^the ", "", words, flags=re.I)):
+                who = info["name"]
+        if who:
+            info = self.app.artist_info(who) or {}
+            theirs = [t for t in taste["mine"].values() if norm(who) in {norm(a) for a in split_artists(t.get("artist") or "")}]
+            pool = dj_pick(theirs, 2, self.used) + [t for t in info.get("top") or []]
+            songs = dj_pick(pool, DJ_SET, self.used)
+            if songs:
+                return "ask", songs, f"{info.get('name') or who}, coming up: some you know, and some you might not."
+        for tag in dj_tags(text):
+            songs = self.tag_songs(tag, taste)
+            if len(songs) >= 3:
+                return "ask", songs, f"You asked for {text.strip()}, so here's some {tag}, starting with “{songs[0]['title']}” by {dj_names(songs[:1])}."
+        # A playlist of it: named by its mood ("chill"), which finds a curated one more often than a sentence.
+        for q in dict.fromkeys(dj_tags(text)[:1] + [text.strip()]):
+            for key in self.services():
+                src = self.app.sources.get(key)
+                try:
+                    found = src.mix_for(q) if src else []
+                except Exception:  # noqa: BLE001 -- the other service
+                    found = []
+                songs = dj_pick(found, DJ_SET, self.used)
+                if len(songs) >= 3:
+                    return "ask", songs, f"You asked for {text.strip()}. Here's a mix of it, starting with “{songs[0]['title']}” by {dj_names(songs[:1])}."
+        return None
+
+    def build(self, kind=None, avoid=None, first=False):
+        """(blocking) The next set: of kind, else the next kind in the DJ's order that has songs
+        (not avoid, the kind playing now). (kind, songs, line), or None."""
+        taste = self.load_taste()
+        kinds = [kind] if kind else [DJ_ORDER[(self.step + i) % len(DJ_ORDER)] for i in range(len(DJ_ORDER))]
+        for i, k in enumerate(kinds):
+            if k == avoid and not kind:
+                continue
+            got = getattr(self, f"set_{k}")(taste, first)
+            if got:
+                if not kind:
+                    self.step += i + 1
+                return k, [dict(t) for t in got[0]], got[1]
+        return None
+
+
+def greeting():
+    h = datetime.now().hour
+    return "Good morning" if 5 <= h < 12 else "Good afternoon" if h < 17 else "Good evening" if h < 23 else "Hey, night owl"
+
+
+# =============================================================================
 # Phone remote: the Android app plays here instead of on the phone. Off until
 # you switch it on in the accounts menu; then a small HTTP API on your network
 # (port REMOTE_PORT) answers phones paired once with the code the menu shows.
@@ -3665,6 +3981,9 @@ class Remote:
                "duration": a.duration or (t or {}).get("duration") or 0, "repeat": a.repeat,
                "liked": bool(t and t["id"] in a.liked), "radio": bool(a.radio_from), "qv": version,
                "message": a.win.np_status.get_label() if a.win and a.win.np_status.get_visible() else ""}
+        shown = (a.dj["sets"].get(str(a.dj.get("shown") or "")) if a.dj["on"] else None) or {}
+        out["dj"] = {"on": a.dj["on"], "busy": a.dj_busy or "", "kind": shown.get("kind", ""), "line": shown.get("line", ""),
+                     "kinds": {n: s["kind"] for n, s in a.dj["sets"].items()}}
         if qv != version:   # the queue only when it changed: a long one is big
             out["queue"] = [self.for_phone(x) for x in a.queue]
         return out
@@ -3734,6 +4053,18 @@ class Remote:
             if not tracks:
                 raise ValueError("no songs the desktop can play")
             a.enqueue(tracks, "next" if b.get("how") == "next" else "queue")
+        elif verb == "dj":
+            do = b.get("do")
+            if do == "start":
+                a.dj_start()
+            elif do == "stop":
+                a.dj_stop()
+            elif do == "switch":
+                a.dj_switch()
+            elif do == "ask" and str(b.get("text") or "").strip():
+                a.dj_switch(ask=str(b["text"])[:200])
+            else:
+                raise ValueError(f"unknown DJ command {do!r}")
         else:
             raise ValueError(f"unknown command {verb!r}")
 
@@ -4789,7 +5120,8 @@ class MusicWindow(Adw.ApplicationWindow):
     MUSIC_VIEWS = (("all", "All", "All your songs: downloaded here and in your folders"),
                    ("playlists", "Playlists", "The playlists you make here"),
                    ("recent", "Recent", "Recently played"),
-                   ("top", "Most played", "The songs you play most"))
+                   ("top", "Most played", "The songs you play most"),
+                   ("dj", "DJ", "Your DJ: songs you love, ones you haven't heard in a while and new ones, in sets"))
     # How All is sorted: by title, by artist or album (in groups), or newest first.
     MUSIC_SORTS = (("title", "Title"), ("artist", "Artist"), ("album", "Album"), ("added", "Added"))
 
@@ -4847,6 +5179,9 @@ class MusicWindow(Adw.ApplicationWindow):
         if view == "playlists":
             self.refresh_playlists()
             return
+        if view == "dj":
+            self.refresh_dj()
+            return
         sort = a.music_sort
         if view == "all":
             tracks = a.my_songs()
@@ -4894,6 +5229,56 @@ class MusicWindow(Adw.ApplicationWindow):
             extra = f"{t['plays']} play{'s' if t['plays'] != 1 else ''}" if view == "top" else ""
             self.add_track(lst, t, i, tracks, removable=view == "all" and self.lib.has(t["id"]), extra=extra)
         self.lazy(lst, len(tracks), add)
+
+    def refresh_dj(self):
+        """The DJ: what it said last, Start or Switch it up, a box to ask it for something, and its songs to come."""
+        lst, a = self.music_list, self.app
+        lst.remove_all()
+        dj = a.dj
+        shown = dj["sets"].get(str(dj.get("shown") or "")) if dj["on"] else None
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("dj")
+        head = Gtk.Label(label="DJ" + (f" · {DJ_KINDS.get(shown['kind'], '').upper()}" if shown else ""), xalign=0)
+        head.add_css_class("section")
+        box.append(head)
+        line = Gtk.Label(xalign=0, wrap=True, label=shown["line"] if shown else
+                         "Your own DJ: a mix of the songs you love, ones you haven't heard in a while and new ones from "
+                         "Tidal and YouTube Music, a few at a time. Switch it up for something else, or ask for a mood, "
+                         "a decade, a genre or an artist.")
+        line.add_css_class("dj-line")
+        box.append(line)
+        if a.dj_busy:
+            busy = Gtk.Label(label=a.dj_busy, xalign=0)
+            busy.add_css_class("sub")
+            box.append(busy)
+        btns = Gtk.Box(spacing=6)
+        for label, cb, quiet in ([("↻  Switch it up", lambda _b: a.dj_switch(), False), ("Stop the DJ", lambda _b: a.dj_stop(), True)]
+                                 if dj["on"] else [("▶  Start the DJ", lambda _b: a.dj_start(), False)]):
+            b = Gtk.Button(label=label, valign=Gtk.Align.CENTER, sensitive=not a.dj_busy)
+            b.add_css_class("pill")
+            if quiet:
+                b.add_css_class("quiet")
+            b.connect("clicked", cb)
+            btns.append(b)
+        box.append(btns)
+        ask = Gtk.Entry(placeholder_text="Ask the DJ: something chill, 2010s, house, Daft Punk…", hexpand=True)
+        ask.connect("activate", lambda e: e.get_text().strip() and a.dj_switch(ask=e.get_text()))
+        box.append(ask)
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
+        if dj["on"]:
+            coming = [(i, t) for i, t in enumerate(a.queue) if i >= a.index and t.get("dj")]
+            if coming:
+                self.section(lst, "FROM THE DJ")
+                group = [t for _i, t in coming]
+                for j, (i, t) in enumerate(coming):
+                    row = self.add_track(lst, t, j, group, extra=DJ_KINDS.get((dj["sets"].get(str(t["dj"])) or {}).get("kind"), ""))
+                    row.queue_index = i
+        elif not a.dj_busy and not (a.lastfm.connected or a.plays.items):
+            hint = Gtk.Label(label="Play some songs first, or connect Last.fm in the accounts menu (☰): the DJ picks from what you listen to.",
+                             xalign=0, wrap=True)
+            hint.add_css_class("sub")
+            hint.set_margin_start(8)
+            lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=hint))
 
     def sort_chips(self):
         group = Adw.ToggleGroup(halign=Gtk.Align.START)
@@ -5400,7 +5785,7 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         lst.remove_all()
         heads = {"now": "NOW PLAYING", "queued": "QUEUED BY YOU",
-                 "next": "UP NEXT · RADIO" if self.app.radio_from else "UP NEXT"}
+                 "next": "UP NEXT · DJ" if self.app.dj["on"] else "UP NEXT · RADIO" if self.app.radio_from else "UP NEXT"}
         last = [None]
         start = max(i, 0)
 
@@ -5528,6 +5913,8 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         if key == "queue":
             self.app.play_index(row.index)
+        elif getattr(row, "queue_index", None) is not None:   # a song of the DJ's: it stays on
+            self.app.play_index(row.queue_index)
         elif key == "search":
             self.app.play_from(self.results, row.index, radio=len(self.results) > 1 and not self.results_is_list)
         elif row.group is not None:
@@ -6532,6 +6919,8 @@ class MusicApp(Adw.Application):
         self.context = 0        # bumped when a new list starts, so a late radio doesn't land in it
         self.paused, self.position, self.duration = True, 0.0, 0.0
         self.radio_from = None  # the song the radio going is of
+        self.dj = {"on": False, "sets": {}, "shown": None}   # the DJ: on, its sets' kinds and lines, the one shown
+        self.djs, self.dj_busy = DJ(self), None
         self.repeat = "off"     # off | all | one
         self.likes = {}         # your liked songs on each service
         self.liked = set()      # ... on all of them
@@ -6587,6 +6976,9 @@ class MusicApp(Adw.Application):
         self.queue = [t for t in state.get("queue", []) if isinstance(t, dict) and t.get("id")]
         self.index = min(state.get("index", -1), len(self.queue) - 1)
         self.radio_from = state.get("radio_from")
+        dj = state.get("dj")
+        self.dj = dj if isinstance(dj, dict) and isinstance(dj.get("sets"), dict) else {"on": False, "sets": {}, "shown": None}
+        self.djs, self.dj_busy = DJ(self), None
         self.repeat = state.get("repeat") if state.get("repeat") in ("off", "all", "one") else "off"
         self.volume = max(0.0, min(100.0, float(state.get("volume", 100))))
         self.muted = bool(state.get("muted", False))
@@ -6673,7 +7065,7 @@ class MusicApp(Adw.Application):
 
     def save_state(self):
         write_private(STATE, json.dumps({"queue": self.queue, "index": self.index, "radio_from": self.radio_from,
-                                       "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
+                                       "dj": self.dj, "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
@@ -7147,14 +7539,121 @@ class MusicApp(Adw.Application):
         mine = {}
         for t in [e["track"] for e in self.plays.items.values()] + self.my_songs():
             mine[song_key(t)] = t   # yours on disk win over ones only played
-        out = []
-        for name, artist, plays, img in self.lastfm.top("track", n):
-            t = mine.get(song_key({"title": name, "artist": artist}))
-            if t is None:
-                t = {"id": "lfm-" + hashlib.sha1(f"{norm(artist)}|{norm(name)}".encode()).hexdigest()[:16], "source": "lastfm",
-                     "title": name, "artist": artist, "thumb": img if img and LASTFM_BLANK not in img else ""}
-            out.append(dict(t, plays=plays))
-        return out
+        return [dict(self.fm_song(name, artist, img, mine), plays=plays) for name, artist, plays, img in self.lastfm.top("track", n)]
+
+    @staticmethod
+    def fm_song(name, artist, img, mine):
+        """A song Last.fm named: yours (mine: song key -> song) when you have it, else one to be
+        found on Tidal or YouTube Music when it plays."""
+        t = mine.get(song_key({"title": name, "artist": artist}))
+        if t is not None:
+            return dict(t)
+        return {"id": "lfm-" + hashlib.sha1(f"{norm(artist)}|{norm(name)}".encode()).hexdigest()[:16], "source": "lastfm",
+                "title": name, "artist": artist, "thumb": img if img and LASTFM_BLANK not in img else ""}
+
+    # ---- the DJ ----
+    def dj_start(self):
+        """Start the DJ: a first set of what you've had on repeat (or whatever it can make)."""
+        if self.dj_busy:
+            return
+        self.dj_busy = "Picking your first set…"
+        self.dj_changed()
+
+        def done(res, err):
+            self.dj_busy = None
+            if not res:
+                self.toast("The DJ couldn't find songs yet. Play a few, or connect Last.fm." if not err
+                           else f"The DJ couldn't start: {str(err)[:100]}")
+                self.dj_changed()
+                return
+            kind, songs, line = res
+            self.dj = {"on": False, "sets": {}, "shown": None}
+            self.dj_tag(kind, songs, line)   # before play_from, which copies them
+            self.play_from(songs, 0, radio=False)
+            self.dj["on"] = True
+            self.dj_announce(self.current_track())
+        in_thread(lambda: self.djs.build(first=True), done=done)
+
+    def dj_stop(self):
+        self.dj["on"] = False
+        self.save_state()
+        self.dj_changed()
+
+    def dj_tag(self, kind, songs, line):
+        """Mark songs as set n of the DJ's (n: the next number), with its line."""
+        n = max([int(k) for k in self.dj["sets"]] + [0]) + 1
+        self.dj["sets"][str(n)] = {"kind": kind, "line": line}
+        if len(self.dj["sets"]) > 30:
+            del self.dj["sets"][min(self.dj["sets"], key=int)]
+        for t in songs:
+            t["dj"] = n
+            self.djs.used.add(song_key(t))
+        return n
+
+    def dj_announce(self, t):
+        """A set begins: its line, where you see it."""
+        n = str((t or {}).get("dj", ""))
+        if not self.dj["on"] or n not in self.dj["sets"] or n == self.dj.get("shown"):
+            return
+        self.dj["shown"] = n
+        self.toast("DJ · " + self.dj["sets"][n]["line"])
+        self.dj_changed()
+
+    def dj_more(self):
+        """Near the end of the queue: the DJ's next set after it."""
+        if self.dj_busy:
+            return
+        self.dj_busy = "Picking the next set…"
+        context = self.context
+
+        def done(res, _err):
+            self.dj_busy = None
+            if res and context == self.context and self.dj["on"]:
+                kind, songs, line = res
+                self.dj_tag(kind, songs, line)
+                self.queue.extend(songs)
+                self.after_queue_change()
+            self.dj_changed()
+        in_thread(lambda: self.djs.build(avoid=self.dj_kind()), done=done)
+
+    def dj_kind(self):
+        n = str((self.current_track() or {}).get("dj", ""))
+        return (self.dj["sets"].get(n) or {}).get("kind")
+
+    def dj_switch(self, ask=None):
+        """Switch it up (or play what you asked for): a new set now, in place of the rest of this one."""
+        if self.dj_busy:
+            return
+        if not self.dj["on"] and not ask:
+            self.dj_start()
+            return
+        self.dj_busy = f"Looking for {ask.strip()}…" if ask else "Switching it up…"
+        self.dj_changed()
+
+        def done(res, err):
+            self.dj_busy = None
+            if not res:
+                self.toast(f"The DJ found nothing for “{ask.strip()}”. Try a mood, a decade, a genre or an artist." if ask
+                           else "The DJ has nothing else right now" + (f": {str(err)[:80]}" if err else "."))
+                self.dj_changed()
+                return
+            kind, songs, line = res
+            if not self.dj["on"]:
+                self.dj = {"on": True, "sets": {}, "shown": None}
+            self.dj_tag(kind, songs, line)
+            queued = [t for t in self.queue[self.index + 1:] if t.get("queued")]
+            keep = self.queue[:self.index + 1] if self.current_track() else []
+            self.queue = keep + queued + songs
+            self.index = len(keep) + len(queued)
+            self.radio_from = None
+            self.context += 1
+            self.load_current()
+            self.dj["on"] = True
+        in_thread(lambda: self.djs.ask(ask) if ask else self.djs.build(avoid=self.dj_kind()), done=done)
+
+    def dj_changed(self):
+        if self.win and self.win.music_view == "dj":
+            self.win.refresh_music()
 
     # ---- importing an .m3u8 playlist ----
     def import_m3u(self, path, progress=lambda i, n: None):
@@ -7621,6 +8120,9 @@ class MusicApp(Adw.Application):
         self.queue = tracks[:i + 1] + queued + tracks[i + 1:]
         self.index = i
         self.radio_from = None
+        if self.dj["on"]:   # you picked other songs: the DJ stops
+            self.dj["on"] = False
+            self.dj_changed()
         self.context += 1
         self.load_current()
         if radio:
@@ -7842,6 +8344,11 @@ class MusicApp(Adw.Application):
         # Keep a radio going: near the end of the queue, ask for more like the last song.
         if self.radio_from and self.index >= len(self.queue) - 2:
             self.extend_radio(self.queue[-1])
+        if self.dj["on"]:
+            self.dj_announce(t)
+            self.dj_changed()
+            if self.index >= len(self.queue) - 2:
+                self.dj_more()
 
     def prefetch(self):
         """Get the next song ready, so it starts without a wait: its stream looked up,

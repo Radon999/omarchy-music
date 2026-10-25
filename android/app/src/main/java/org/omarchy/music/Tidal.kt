@@ -253,6 +253,15 @@ class Tidal(ctx: Context) : Source {
         return Found(tracks(r.path("tracks", "items").list), artists, albums)
     }
 
+    override fun mixFor(q: String): List<Track> {
+        for (p in api("search", mapOf("query" to q, "types" to "PLAYLISTS", "limit" to 5)).path("playlists", "items").list.take(3)) {
+            val id = p["uuid"].str ?: continue
+            val found = tracks(api("playlists/$id/tracks", mapOf("limit" to 80))["items"].list)
+            if (found.size >= 8) return found
+        }
+        return emptyList()
+    }
+
     override fun radio(t: Track): List<Track> {
         val id = if (t.source == "tidal") t.tidal else resolve(t)?.get("id").long
         return tracks(api("tracks/${id ?: return emptyList()}/radio", mapOf("limit" to 40))["items"].list)

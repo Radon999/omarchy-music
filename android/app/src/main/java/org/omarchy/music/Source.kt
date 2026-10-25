@@ -20,6 +20,8 @@ interface Source {
     fun artist(name: String): ArtistInfo?
     fun album(id: String): List<Track>
     fun radio(t: Track): List<Track> = emptyList()
+    /** The songs of the service's playlist for q ("chill", "2010s hits"), for the DJ; empty if none. */
+    fun mixFor(q: String): List<Track> = emptyList()
 
     /** Every song in your favourites and playlists, each once (for Sync). */
     fun libraryTracks(): List<Track> {

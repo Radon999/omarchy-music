@@ -21,9 +21,10 @@ data class Track(
     val queued: Boolean = false,       // waiting in your queue (you put it there)
     val added: Double = 0.0,           // when it came into your music
     val plays: Int = 0,                // Most played: how often
+    val dj: Int = 0,                   // the DJ's set it is in (0: none)
 ) {
     /** As a playlist or the play history keeps it: enough to show and play it again. */
-    fun slim() = copy(queued = false, plays = 0, added = 0.0)
+    fun slim() = copy(queued = false, plays = 0, added = 0.0, dj = 0)
     val isFile get() = source == "file"
 }
 

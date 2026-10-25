@@ -25,7 +25,7 @@ object Remote {
     data class Status(
         val track: Track? = null, val paused: Boolean = true, val position: Double = 0.0, val duration: Double = 0.0,
         val repeat: String = "off", val liked: Boolean = false, val message: String = "", val index: Int = -1,
-        val queue: List<Track> = emptyList(), val radio: Boolean = false,
+        val queue: List<Track> = emptyList(), val radio: Boolean = false, val dj: Dj.Shown = Dj.Shown(),
     )
 
     @Serializable
@@ -120,8 +120,12 @@ object Remote {
             qv = s["qv"].str ?: ""
             val i = s["index"].long?.toInt() ?: -1
             statusAt = System.nanoTime()
+            val d = s["dj"]
+            val dj = Dj.Shown(d["on"].bool ?: false, d["busy"].str ?: "", d["kind"].str ?: "", d["line"].str ?: "",
+                (d["kinds"] as? kotlinx.serialization.json.JsonObject)?.mapValues { it.value.str ?: "" } ?: emptyMap())
+            if (dj.on && dj.line.isNotEmpty() && dj.line != status.dj.line && status.track != null) Music.toast("DJ · ${dj.line}")
             status = Status(q.getOrNull(i), s["paused"].bool ?: true, s["position"].dbl ?: 0.0, s["duration"].dbl ?: 0.0,
-                s["repeat"].str ?: "off", s["liked"].bool ?: false, s["message"].str ?: "", i, q, s["radio"].bool ?: false)
+                s["repeat"].str ?: "off", s["liked"].bool ?: false, s["message"].str ?: "", i, q, s["radio"].bool ?: false, dj)
         }
     }
 

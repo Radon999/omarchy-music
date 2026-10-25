@@ -3,6 +3,15 @@ package org.omarchy.music.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -25,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
+import org.omarchy.music.Dj
 import org.omarchy.music.Found
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
@@ -199,6 +209,7 @@ fun MusicTab(ui: Ui) {
     val access = rememberMusicAccess()
     val granted = access.granted
     var choosing by remember { mutableStateOf(false) }
+    var ask by remember { mutableStateOf("") }
     if (choosing) FolderBrowser { choosing = false }
     LaunchedEffect(Unit) { if (granted) Music.rescanSoon() }
     LaunchedEffect(ui.musicView, Music.accountsVersion) { if (ui.musicView == "top") Music.freshenMostPlayed() }
@@ -208,7 +219,7 @@ fun MusicTab(ui: Ui) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played").forEach { (k, l) ->
+            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played", "dj" to "DJ").forEach { (k, l) ->
                 Chip(l, ui.musicView == k) { ui.musicView = k; ui.openMine = null; ui.stopSelecting() }
             }
         }
@@ -224,6 +235,7 @@ fun MusicTab(ui: Ui) {
             }
             when (ui.musicView) {
                 "playlists" -> myPlaylists(ui) { importer.launch(arrayOf("*/*")) }
+                "dj" -> djView(ui, ask) { ask = it }
                 else -> {
                     val tracks = when (ui.musicView) {
                         "all" -> sorted(Music.mySongs(), Music.musicSort)
@@ -258,6 +270,47 @@ fun MusicTab(ui: Ui) {
                 }
             }
         }
+    }
+}
+
+/** The DJ: what it said last, Start or Switch it up, a box to ask it for something, and its songs to come. */
+private fun androidx.compose.foundation.lazy.LazyListScope.djView(ui: Ui, ask: String, setAsk: (String) -> Unit) {
+    val d = Music.shownDj()
+    item(key = "dj") {
+        val focus = LocalFocusManager.current
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("DJ" + (Dj.KINDS[d.kind]?.let { " · ${it.uppercase()}" } ?: ""), style = T.section)
+            Text(d.line.ifEmpty {
+                "Your own DJ: a mix of the songs you love, ones you haven't heard in a while and new ones from " +
+                    "Tidal and YouTube Music, a few at a time. Switch it up for something else, or ask for a mood, " +
+                    "a decade, a genre or an artist."
+            }, style = if (d.line.isNotEmpty()) T.title else T.body)
+            if (d.busy.isNotEmpty()) Text(d.busy, style = T.sub)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (d.on) {
+                    Pill("↻  Switch it up") { Music.djSwitch() }
+                    Pill("Stop the DJ", quiet = true) { Music.djStop() }
+                } else Pill("▶  Start the DJ") { Music.djStart() }
+            }
+            Box(Modifier.fillMaxWidth().border(1.dp, C.line).background(C.fg.copy(alpha = 0.04f)).padding(horizontal = 10.dp, vertical = 10.dp)) {
+                if (ask.isEmpty()) Text("Ask the DJ: something chill, 2010s, house, Daft Punk…", style = T.body.copy(color = C.muted), maxLines = 1)
+                BasicTextField(ask, setAsk, singleLine = true, textStyle = T.body, cursorBrush = SolidColor(C.accent),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = {
+                        if (ask.isNotBlank()) { focus.clearFocus(); Music.djSwitch(ask); setAsk("") }
+                    }),
+                    modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+    if (!d.on) return
+    val q = Music.shownQueue()
+    val coming = (maxOf(0, Music.shownIndex()) until q.size).filter { q[it].dj > 0 }
+    if (coming.isEmpty()) return
+    item { Section("FROM THE DJ") }
+    items(coming.size, key = { "dj${coming[it]}" }) { j ->
+        val i = coming[j]
+        TrackRow(q[i], RowPlace(q, i, "queue", queueIndex = i), ui, Dj.KINDS[d.kinds[q[i].dj.toString()]] ?: "") { Music.playIndex(i) }
     }
 }
 
@@ -350,7 +403,7 @@ fun QueueTab(ui: Ui) {
             }
         }
         if (next.isNotEmpty()) {
-            item { Section(if (Music.shownRadio()) "UP NEXT · RADIO" else "UP NEXT") }
+            item { Section(if (Music.shownRadio()) "UP NEXT · RADIO" else if (Music.shownDj().on) "UP NEXT · DJ" else "UP NEXT") }
             items(next.size, key = { "n${next[it]}" }) { j ->
                 val i = next[j]
                 TrackRow(q[i], RowPlace(q, i, "queue", queueIndex = i), ui) { Music.playIndex(i) }

@@ -74,6 +74,8 @@ object Music {
     var syncTracks by mutableStateOf(listOf<Track>())
     val toasts = Channel<String>(Channel.BUFFERED)
     var shared by mutableStateOf<String?>(null)   // a link shared to the app, for Search
+    var dj by mutableStateOf(Dj.State())          // the DJ: on, its sets' kinds and lines, the one shown
+    var djBusy by mutableStateOf<String?>(null)   // the DJ picking a set: what it's doing
 
     val sources = mutableStateMapOf<String, Source>()
     val sourceErrors = mutableStateMapOf<String, String>()
@@ -137,7 +139,7 @@ object Music {
         val repeat: String = "off", val eq: EqSettings = EqSettings(), val source: String = "ytm",
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
-        val music_sort: String = "title", val search_in: String = "tidal",
+        val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -157,6 +159,7 @@ object Music {
         keepPlayed = st.keep_played
         musicSort = st.music_sort
         searchIn = st.search_in.takeIf { it in SEARCH_IN } ?: "tidal"
+        dj = st.dj
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -165,7 +168,7 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -245,13 +248,109 @@ object Music {
     private fun lastFmTopSongs(n: Int = 200): List<Track> {
         val mine = HashMap<Pair<String, String>, Track>()
         for (t in plays.items.values.map { it.track } + mySongs()) mine[songKey(t)] = t   // yours on disk win over ones only played
-        return LastFm.top("track", n).map { x ->
-            val t = mine[songKey(Track("", title = x.name, artist = x.artist))] ?: run {
-                val sha = java.security.MessageDigest.getInstance("SHA-1").digest("${norm(x.artist)}|${norm(x.name)}".toByteArray())
-                Track("lfm-" + sha.joinToString("") { "%02x".format(it) }.take(16), "lastfm", x.name, x.artist,
-                    thumb = x.image.takeIf { LASTFM_BLANK !in it } ?: "")
+        return LastFm.top("track", n).map { x -> fmSong(x.name, x.artist, x.image, mine).copy(plays = x.plays) }
+    }
+
+    /** A song Last.fm named: yours (mine: song key to song) when you have it, else one to be
+     *  found on Tidal or YouTube Music when it plays. */
+    fun fmSong(name: String, artist: String, image: String, mine: Map<Pair<String, String>, Track>): Track =
+        mine[songKey(Track("", title = name, artist = artist))] ?: run {
+            val sha = java.security.MessageDigest.getInstance("SHA-1").digest("${norm(artist)}|${norm(name)}".toByteArray())
+            Track("lfm-" + sha.joinToString("") { "%02x".format(it) }.take(16), "lastfm", name, artist,
+                thumb = image.takeIf { LASTFM_BLANK !in it } ?: "")
+        }
+
+    // ---- the DJ ----
+    /** What the DJ screen shows: the phone's DJ, or the desktop's while it's the remote. */
+    fun shownDj(): Dj.Shown {
+        if (Remote.active) return Remote.status.dj
+        val shown = dj.sets[dj.shown].takeIf { dj.on }
+        return Dj.Shown(dj.on, djBusy ?: "", shown?.kind ?: "", shown?.line ?: "", dj.sets.mapValues { it.value.kind })
+    }
+
+    /** Start the DJ: a first set of what you've had on repeat (or whatever it can make). */
+    fun djStart() {
+        if (Remote.active) { Remote.cmd("dj", "do" to "start"); return }
+        if (djBusy != null) return
+        djBusy = "Picking your first set…"
+        bg({ Dj.build(first = true) }) { res, err ->
+            djBusy = null
+            if (res == null) {
+                toast(if (err == null) "The DJ couldn't find songs yet. Play a few, or connect Last.fm." else "The DJ couldn't start: ${err.message?.take(100)}")
+                return@bg
             }
-            t.copy(plays = x.plays)
+            dj = Dj.State()
+            playFrom(djTag(res), 0, radio = false)
+            dj = dj.copy(on = true)
+            djAnnounce(current())
+        }
+    }
+
+    fun djStop() {
+        if (Remote.active) { Remote.cmd("dj", "do" to "stop"); return }
+        dj = dj.copy(on = false)
+        saveState()
+    }
+
+    /** The set's songs marked as set n of the DJ's (n: the next number), with its line. */
+    private fun djTag(b: Dj.Built): List<Track> {
+        val n = (dj.sets.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: 0) + 1
+        var sets = dj.sets + (n.toString() to Dj.Info(b.kind, b.line))
+        if (sets.size > 30) sets = sets - sets.keys.minBy { it.toInt() }
+        dj = dj.copy(sets = sets)
+        Dj.used += b.songs.map { songKey(it) }
+        return b.songs.map { it.copy(dj = n) }
+    }
+
+    /** A set begins: its line, where you see it. */
+    private fun djAnnounce(t: Track?) {
+        val n = t?.dj?.toString() ?: return
+        val set = dj.sets[n]
+        if (!dj.on || set == null || n == dj.shown) return
+        dj = dj.copy(shown = n)
+        toast("DJ · ${set.line}")
+    }
+
+    /** Near the end of the queue: the DJ's next set after it. */
+    private fun djMore() {
+        if (djBusy != null) return
+        djBusy = "Picking the next set…"
+        val ctxNow = context
+        val avoid = djKind()
+        bg({ Dj.build(avoid = avoid) }) { res, _ ->
+            djBusy = null
+            if (res != null && ctxNow == context && dj.on) {
+                queue = queue + djTag(res)
+                afterQueueChange()
+            }
+        }
+    }
+
+    private fun djKind() = dj.sets[current()?.dj.toString()]?.kind
+
+    /** Switch it up (or play what you asked for): a new set now, in place of the rest of this one. */
+    fun djSwitch(ask: String? = null) {
+        if (Remote.active) { if (ask != null) Remote.cmd("dj", "do" to "ask", "text" to ask) else Remote.cmd("dj", "do" to "switch"); return }
+        if (djBusy != null) return
+        if (!dj.on && ask == null) { djStart(); return }
+        djBusy = if (ask != null) "Looking for ${ask.trim()}…" else "Switching it up…"
+        val avoid = djKind()
+        bg({ if (ask != null) Dj.ask(ask) else Dj.build(avoid = avoid) }) { res, err ->
+            djBusy = null
+            if (res == null) {
+                toast(if (ask != null) "The DJ found nothing for “${ask.trim()}”. Try a mood, a decade, a genre or an artist."
+                      else "The DJ has nothing else right now" + (err?.let { ": ${it.message?.take(80)}" } ?: "."))
+                return@bg
+            }
+            if (!dj.on) dj = Dj.State(on = true)
+            val songs = djTag(res)
+            val queued = queue.drop(index + 1).filter { it.queued }
+            val keep = if (current() != null) queue.take(index + 1) else emptyList()
+            queue = keep + queued + songs
+            index = keep.size + queued.size
+            radioFrom = null
+            context++
+            loadCurrent()
         }
     }
 
@@ -537,6 +636,7 @@ object Music {
         queue = tracks.take(i + 1) + queued + tracks.drop(i + 1)
         index = i
         radioFrom = null
+        if (dj.on) dj = dj.copy(on = false)   // you picked other songs: the DJ stops
         context++
         loadCurrent()
         if (radio) extendRadio(queue[i], keepUntil = i)
@@ -708,6 +808,10 @@ object Music {
         saveState()
         // Keep a radio going: near the end of the queue, ask for more like the last song.
         if (radioFrom != null && index >= queue.size - 2) extendRadio(queue.last())
+        if (dj.on) {
+            djAnnounce(t)
+            if (index >= queue.size - 2) djMore()
+        }
     }
 
     private fun play(t: Track, ready: Downloader.Ready, autoplay: Boolean, startAt: Double = 0.0) {

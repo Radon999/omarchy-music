@@ -157,6 +157,16 @@ class YouTubeMusic(private val cookie: String?) : Source {
         return Found(search(q), artists, albums)
     }
 
+    override fun mixFor(q: String): List<Track> {
+        val lists = find(call("search", buildJsonObject { put("query", q); put("params", PLAYLISTS) }), "musicResponsiveListItemRenderer")
+            .mapNotNull { it.path("navigationEndpoint", "browseEndpoint", "browseId").str }
+        for (id in lists.take(3)) {
+            val found = songs(browse("VL${id.removePrefix("VL")}")).take(80)
+            if (found.size >= 8) return found
+        }
+        return emptyList()
+    }
+
     private fun radioOf(vid: String): List<Track> = songs(call("next", buildJsonObject {
         put("videoId", vid); put("playlistId", "RDAMVM$vid"); put("isAudioOnly", true)
         put("enablePersistentPlaylistPanel", true); put("tunerSettingValue", "AUTOMIX_SETTING_NORMAL")
@@ -229,5 +239,6 @@ class YouTubeMusic(private val cookie: String?) : Source {
         const val SONGS = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
         const val ARTISTS = "EgWKAQIgAWoMEA4QChADEAQQCRAF"
         const val ALBUMS = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
+        const val PLAYLISTS = "Eg-KAQwIABAAGAAgACgBMABqChAEEAMQCRAFEAo="
     }
 }
