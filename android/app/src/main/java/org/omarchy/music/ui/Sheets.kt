@@ -1,0 +1,413 @@
+package org.omarchy.music.ui
+
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
+import org.omarchy.music.DESKTOP_UA
+import org.omarchy.music.Eq
+import org.omarchy.music.LastFm
+import org.omarchy.music.Music
+import org.omarchy.music.Remote
+import org.omarchy.music.SOURCES
+import org.omarchy.music.Services
+import org.omarchy.music.Tidal
+
+@Composable
+fun Sheets(ui: Ui) {
+    when (ui.sheet) {
+        "accounts" -> AccountsSheet(ui)
+        "eq" -> EqSheet(ui)
+        "tidal-login" -> WebLogin(Music.tidal.loginUrl(), { it.startsWith(Tidal.REDIRECT) }) { url ->
+            ui.sheet = "accounts"; if (url != null) Music.tidalLoggedIn(url)
+        }
+        "ytm-login" -> WebLogin("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F",
+            { it.startsWith("https://music.youtube.com") && Services.ytmCookiesReady() }, desktop = true) { url ->
+            ui.sheet = "accounts"; if (url != null) Services.ytmSignedIn()
+        }
+        "apple-login" -> WebLogin("https://music.apple.com/login", { Services.appleCookiesReady() }, desktop = true) { url ->
+            ui.sheet = "accounts"; if (url != null) Services.appleSignedIn()
+        }
+        "spotify-login" -> WebLogin(Services.spotifyLoginUrl(), { it.startsWith(org.omarchy.music.Spotify.REDIRECT) }) { url ->
+            ui.sheet = "accounts"; if (url != null) Services.spotifyFinish(url)
+        }
+        "lastfm-login" -> WebLogin(LastFm.authUrl(), { LastFm.authDone(it) }) { url ->
+            ui.sheet = "accounts"; LastFm.finishLogin(quiet = url == null)
+        }
+        "wrapped" -> WrappedScreen { ui.sheet = null }
+    }
+    ui.pickPlaylistFor?.let { tracks -> PlaylistPicker(ui, tracks) }
+    ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
+    ui.confirm?.let { (text, act) ->
+        AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
+            text = { Text(text, style = T.body) },
+            confirmButton = { TextButton({ ui.confirm = null; act() }) { Text("Yes", color = C.red) } },
+            dismissButton = { TextButton({ ui.confirm = null }) { Text("Cancel", color = C.muted) } })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccountsSheet(ui: Ui) {
+    Music.accountsVersion
+    ModalBottomSheet(onDismissRequest = { ui.sheet = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = C.light) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+            // ---- play on ----
+            Line("Play on", if (Remote.active) "The desktop (${Remote.name})" + if (!Remote.reachable) " · not reachable" else ""
+                else "This phone", Remote.active) {
+                if (Remote.paired) Switch(Remote.on, { Remote.setOn(it) }, colors = swColors())
+            }
+            if (!Remote.paired) PairDesktop()
+            else Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Paired with ${Remote.host}", style = T.sub, modifier = Modifier.weight(1f))
+                Pill("Forget", quiet = true) { Remote.forget() }
+            }
+            Divider()
+            // ---- services ----
+            for (key in listOf("ytm", "apple")) {
+                val src = Music.sources[key]
+                if (src?.signedIn == true) Line(SOURCES[key]!!, "Signed in", true) {
+                    SyncSwitch(key); Spacer(Modifier.width(6.dp)); Pill("Sign out", quiet = true) { Services.signOut(key) }
+                } else Line(SOURCES[key]!!, "Sign in to browse your library and playlists", false) {
+                    Pill("Sign in") { ui.sheet = "$key-login" }
+                }
+            }
+            if (Music.tidal.connected) {
+                Line("Tidal", "Connected · every song plays in FLAC", true) {
+                    SyncSwitch("tidal"); Spacer(Modifier.width(6.dp)); Pill("Disconnect", quiet = true) { Music.tidalDisconnect() }
+                }
+                Line("Keep", "Save every song you play, in FLAC. Off: songs stream from Tidal and download only when you pick Download",
+                    Music.keepPlayed) { Switch(Music.keepPlayed, { Music.setKeepPlayed(it) }, colors = swColors()) }
+            } else Line("Tidal", "Connect to play everything in FLAC (it needs a Tidal subscription)", false) {
+                Pill("Connect") { ui.sheet = "tidal-login" }
+            }
+            SpotifyLine(ui)
+            Divider()
+            // ---- your music ----
+            val n = Music.local.files.size
+            Line("Folders", if (Music.local.scanning) "Reading your music…" else "$n song${if (n != 1) "s" else ""} in your folders, in the Music tab", n > 0) {
+                FolderPicker()
+            }
+            Music.folders.forEach { f ->
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(f, style = T.sub, modifier = Modifier.weight(1f))
+                    Pill("Remove", quiet = true) { Music.removeFolder(f) }
+                }
+            }
+            Line("Colours", "The window takes the colour of the album art", Music.artColors) {
+                Switch(Music.artColors, { Music.setArtColors(it) }, colors = swColors())
+            }
+            Divider()
+            LastFmLine(ui)
+        }
+    }
+}
+
+@Composable
+private fun PairDesktop() {
+    var addr by remember { mutableStateOf(Remote.found.firstOrNull()?.second ?: "") }
+    var code by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    Text("To control the desktop app from here, switch on Phone remote in its accounts menu, then enter the code it shows.",
+        style = T.sub, modifier = Modifier.padding(bottom = 6.dp))
+    Remote.found.forEach { (name, a) ->
+        Text("◉ $name  ($a)", style = T.body.copy(color = if (a == addr) C.accent else C.fg),
+            modifier = Modifier.fillMaxWidth().clickable { addr = a }.padding(vertical = 6.dp))
+    }
+    Field(addr, "Desktop address, like 192.168.1.20") { addr = it }
+    Field(code, "Pairing code") { code = it }
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+        Pill(if (busy) "Pairing…" else "Pair") {
+            if (addr.isBlank() || code.isBlank() || busy) return@Pill
+            busy = true
+            Remote.pair(addr, code) { err -> busy = false; Music.toast(if (err == null) "Paired: playing on the desktop" else "Couldn't pair: ${err.message?.take(80)}") }
+        }
+    }
+}
+
+@Composable
+private fun SpotifyLine(ui: Ui) {
+    val sp = Music.sources["spotify"] as? org.omarchy.music.Spotify
+    if (sp?.signedIn == true) {
+        Line("Spotify", if (sp.user.isNotEmpty()) "Connected as ${sp.user}" else "Connected", true) {
+            SyncSwitch("spotify"); Spacer(Modifier.width(6.dp)); Pill("Disconnect", quiet = true) { Services.spotifyDisconnect() }
+        }
+        return
+    }
+    var cid by remember { mutableStateOf(sp?.clientId ?: "") }
+    Line("Spotify", "Spotify wants a developer app of yours (its owner needs Premium). Make one with the Web API ticked and " +
+        "this redirect URI, then paste its Client ID:", false) {}
+    Text(org.omarchy.music.Spotify.REDIRECT, style = T.sub.copy(color = C.fg), modifier = Modifier.padding(bottom = 4.dp))
+    Field(cid, "Client ID") { cid = it }
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+        Pill("Make an app", quiet = true) { Services.open("https://developer.spotify.com/dashboard/create") }
+        Pill("Connect") { if (Services.spotifySetClient(cid)) ui.sheet = "spotify-login" }
+    }
+}
+
+@Composable
+private fun LastFmLine(ui: Ui) {
+    if (LastFm.connected) {
+        Line("Last.fm", "Scrobbling as ${LastFm.user}", true) { Pill("Disconnect", quiet = true) { LastFm.disconnect() } }
+        ActionRow("✦  Your ${org.omarchy.music.Wrapped.year()} Wrapped  ›") { ui.sheet = "wrapped" }
+        return
+    }
+    var key by remember { mutableStateOf(LastFm.key) }
+    var secret by remember { mutableStateOf(LastFm.secret) }
+    Line("Last.fm", "Scrobble what you play, and see your Wrapped. Last.fm wants an API account of yours: make one (free), " +
+        "then paste its key and secret.", false) {}
+    Field(key, "API key") { key = it }
+    Field(secret, "Shared secret") { secret = it }
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+        Pill("Make an API account", quiet = true) { Services.open("https://www.last.fm/api/account/create") }
+        Pill("Connect") { LastFm.begin(key, secret) { ok -> if (ok) ui.sheet = "lastfm-login" } }
+    }
+}
+
+@Composable
+private fun FolderPicker() {
+    var open by remember { mutableStateOf(false) }
+    var all by remember { mutableStateOf(listOf<String>()) }
+    Pill("Add") {
+        open = true
+        Music.bg({ Music.local.allFolders() }) { res, _ -> all = res ?: emptyList() }
+    }
+    if (open) AlertDialog(onDismissRequest = { open = false }, containerColor = C.light,
+        title = { Text("Add a folder", style = T.title) },
+        text = {
+            LazyColumn {
+                if (all.isEmpty()) item { Text("No other folders with music found.", style = T.sub) }
+                items(all.size) { i ->
+                    val f = all[i]
+                    Text(f, style = T.body.copy(color = if (Music.folders.any { f.startsWith(it) }) C.muted else C.fg),
+                        modifier = Modifier.fillMaxWidth().clickable { open = false; Music.addFolder(f) }.padding(vertical = 10.dp))
+                }
+            }
+        },
+        confirmButton = { TextButton({ open = false }) { Text("Close", color = C.muted) } })
+}
+
+@Composable
+private fun SyncSwitch(key: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Sync ", style = T.sub)
+        Switch(Music.syncSources[key] == true, { Music.setSyncSource(key, it) }, colors = swColors())
+    }
+}
+
+@Composable
+private fun swColors() = SwitchDefaults.colors(checkedThumbColor = C.darker, checkedTrackColor = C.accent,
+    uncheckedThumbColor = C.muted, uncheckedTrackColor = C.dark, uncheckedBorderColor = C.line)
+
+@Composable
+private fun Line(name: String, state: String, ok: Boolean, actions: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(name, style = T.title, modifier = Modifier.width(92.dp))
+        Text(state, style = T.sub.copy(color = if (ok) C.accent else C.muted), modifier = Modifier.weight(1f).padding(end = 8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) { actions() }
+    }
+}
+
+@Composable
+private fun Divider() = HorizontalDivider(color = C.line, modifier = Modifier.padding(vertical = 6.dp))
+
+@Composable
+fun Field(value: String, hint: String, password: Boolean = false, onChange: (String) -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 3.dp).border(1.dp, C.line).background(C.fg.copy(alpha = 0.04f))
+        .padding(horizontal = 10.dp, vertical = 10.dp)) {
+        if (value.isEmpty()) Text(hint, style = T.body.copy(color = C.muted))
+        BasicTextField(value, onChange, singleLine = true, textStyle = T.body, cursorBrush = SolidColor(C.accent),
+            visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation()
+                else androidx.compose.ui.text.input.VisualTransformation.None,
+            modifier = Modifier.fillMaxWidth())
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EqSheet(ui: Ui) {
+    val eq = Music.eq
+    ModalBottomSheet(onDismissRequest = { ui.sheet = null }, containerColor = C.light) {
+        Column(Modifier.padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Equalizer", style = T.title.copy(fontSize = 16.sp), modifier = Modifier.weight(1f))
+                Switch(eq.on, { Music.setEqOn(it) }, colors = swColors())
+            }
+            Text("Headphones", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+            ChipRow(Eq.HEADPHONES.map { (k, v) -> k to v.first }, eq.headphones) { Music.setEqHeadphones(it) }
+            Text("Sound", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+            ChipRow(Eq.PRESETS.map { (k, v) -> k to v.first }, eq.preset) { Music.setEqPreset(it) }
+            Row(Modifier.fillMaxWidth().height(190.dp).padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Eq.BANDS.forEachIndexed { i, hz ->
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(Eq.fmtDb(eq.bands[i]), style = T.time.copy(fontSize = 9.sp))
+                        Box(Modifier.weight(1f).width(36.dp), contentAlignment = Alignment.Center) {
+                            VerticalSlider(eq.bands[i].toFloat()) { Music.setEqBand(i, it.toDouble()) }
+                        }
+                        Text(if (hz >= 1000) "${hz / 1000}k" else "$hz", style = T.time.copy(fontSize = 9.sp))
+                    }
+                }
+            }
+            listOf("bass" to "Bass", "treble" to "Treble").forEach { (k, l) ->
+                val g = if (k == "bass") eq.bass else eq.treble
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(l, style = T.sub, modifier = Modifier.width(60.dp))
+                    Slider(g.toFloat(), { Music.setEqTone(k, it.toDouble()) }, valueRange = -12f..12f,
+                        colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)),
+                        modifier = Modifier.weight(1f))
+                    Text(Eq.fmtDb(g), style = T.time, modifier = Modifier.width(40.dp).clickable { Music.setEqTone(k, 0.0) })
+                }
+            }
+            Text(if (eq.on) "Pre-gain ${Eq.fmtDb(Eq.preamp(Eq.filters(eq)))} dB keeps the boosts from clipping." else "Off: the music plays untouched.",
+                style = T.sub, modifier = Modifier.padding(top = 6.dp))
+        }
+    }
+}
+
+@Composable
+private fun VerticalSlider(value: Float, onChange: (Float) -> Unit) {
+    Slider(value, onChange, valueRange = -12f..12f,
+        colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)),
+        modifier = Modifier.vertical().width(160.dp))
+}
+
+/** Stands a horizontal control on its end: laid out turned a quarter, its low end at the bottom. */
+private fun Modifier.vertical() = layout { measurable, c ->
+    val p = measurable.measure(Constraints(minWidth = 0, maxWidth = c.maxHeight, minHeight = 0, maxHeight = c.maxWidth))
+    layout(p.height, p.width) {
+        p.placeWithLayer(-(p.width - p.height) / 2, (p.width - p.height) / 2) { rotationZ = -90f }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChipRow(items: List<Pair<String, String>>, on: String, pick: (String) -> Unit) {
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        items.forEach { (k, l) -> Chip(l, k == on) { pick(k) } }
+    }
+}
+
+@Composable
+private fun PlaylistPicker(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    AlertDialog(onDismissRequest = { ui.pickPlaylistFor = null }, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Add “${tracks[0].title}” to…" else "Add ${tracks.size} songs to…", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            LazyColumn {
+                item {
+                    Text("＋  New playlist", style = T.body.copy(color = C.accent), modifier = Modifier.fillMaxWidth().clickable {
+                        ui.pickPlaylistFor = null
+                        ui.askName = Triple("New playlist", "") { n -> Music.addToPlaylist(Music.newPlaylist(n), tracks) }
+                    }.padding(vertical = 10.dp))
+                }
+                val lists = Music.lists.all()
+                items(lists.size) { i ->
+                    val pl = lists[i]
+                    Text("${pl.name}  ·  ${pl.tracks.size}", style = T.body, modifier = Modifier.fillMaxWidth().clickable {
+                        ui.pickPlaylistFor = null; Music.addToPlaylist(pl.id, tracks)
+                    }.padding(vertical = 10.dp))
+                }
+            }
+        },
+        confirmButton = { TextButton({ ui.pickPlaylistFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+@Composable
+private fun NameDialog(title: String, start: String, dismiss: () -> Unit, done: (String) -> Unit) {
+    var name by remember { mutableStateOf(start) }
+    AlertDialog(onDismissRequest = dismiss, containerColor = C.light, title = { Text(title, style = T.title) },
+        text = { Field(name, "Name") { name = it } },
+        confirmButton = { TextButton({ if (name.isNotBlank()) done(name.trim()) }) { Text("OK", color = C.accent) } },
+        dismissButton = { TextButton(dismiss) { Text("Cancel", color = C.muted) } })
+}
+
+/** A sign-in page in the app; done(url) once isDone says the sign-in finished, done(null) if closed. */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun WebLogin(url: String, isDone: (String) -> Boolean, desktop: Boolean = false, done: (String?) -> Unit) {
+    var finished by remember { mutableStateOf(false) }
+    Dialog(onDismissRequest = { done(null) }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(C.bg)) {
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Sign in", style = T.title, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Text("✕", style = T.title, modifier = Modifier.clickable { done(null) }.padding(10.dp))
+            }
+            AndroidView(factory = { ctx ->
+                CookieManager.getInstance().setAcceptCookie(true)
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    // Google turns sign-ins away inside apps: it looks for the WebView's "wv" and
+                    // the X-Requested-With header naming the app. Without them it's the browser it is.
+                    settings.userAgentString = if (desktop) DESKTOP_UA else settings.userAgentString.replace("; wv", "")
+                    if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST))
+                        WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    webViewClient = object : WebViewClient() {
+                        fun check(u: String): Boolean {
+                            if (!finished && isDone(u)) { finished = true; CookieManager.getInstance().flush(); done(u); return true }
+                            return false
+                        }
+                        override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest) = check(req.url.toString())
+                        override fun onPageStarted(view: WebView, u: String, favicon: Bitmap?) { check(u) }
+                        override fun onPageFinished(view: WebView, u: String) { check(u) }
+                    }
+                    loadUrl(url)
+                }
+            }, modifier = Modifier.fillMaxSize())
+        }
+    }
+}

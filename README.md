@@ -43,6 +43,48 @@ It is a single Python/GTK 4 file: `omarchy-music`.
 - **Last.fm.** Plays are scrobbled, and **Wrapped** looks back on any year of your history.
 - **Desktop controls.** Media keys work through MPRIS (playerctl). The `omarchy-music`
   command has a CLI (`omarchy-music help`).
+- **Phone remote.** The Android app can play on the desktop instead of the phone (see below).
+
+## Android app
+
+`android/` holds the Android version (Kotlin, Jetpack Compose, Media3). It has the same
+services, Tidal FLAC streaming and downloads, Music tab, playlists, EQ with the headphone
+curves, lyrics, Last.fm and Wrapped. It is a separate app, package `org.omarchy.music`.
+
+Build it with JDK 17+ and the Android SDK (platform 35):
+
+```sh
+cd android
+tools/tidal-keys.sh          # writes tidal.properties (gitignored) from the tidalapi package
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+On the phone, YouTube Music and Apple Music sign in on their own pages inside the app.
+Tidal, Spotify and Last.fm connect the same way as on the desktop. Downloads go to
+`Music/Omarchy Music/` on the phone.
+
+### Controlling the desktop from the phone
+
+1. On the desktop, switch on **Phone** in the accounts menu. It shows a six-digit code and
+   the computer's address.
+2. On the phone, open the accounts menu (☰). Under **Play on**, pick the desktop (it is found
+   on your network through Avahi) or type its address, then enter the code.
+
+While **Play on** points at the desktop, the phone's now-playing bar, Up next and Lyrics
+follow the desktop, and every play, queue and button goes there. Songs stored on the phone
+itself keep playing on the phone.
+
+The remote listens on TCP port 8897 and answers only paired phones. It is plain HTTP, so use
+it on a network you trust. Omarchy's firewall blocks the port until you allow it, for
+example:
+
+```sh
+sudo ufw allow from 192.168.1.0/24 to any port 8897 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 5353 proto udp   # finding it without typing the address
+```
+
+**Forget the paired phones** in the accounts menu signs every phone out.
 
 ## Install
 
@@ -103,7 +145,7 @@ folder:
 | What | Where |
 | --- | --- |
 | Downloaded songs, covers, library, your playlists | `~/Music/Omarchy Music/` (set `OMARCHY_MUSIC_DIR` to move it) |
-| Queue, settings, EQ, folders | `~/.local/state/omarchy-music.json` |
+| Queue, settings, EQ, folders, paired phones | `~/.local/state/omarchy-music.json` |
 | Play counts (Recent / Most played) | `~/.local/state/omarchy-music-plays.json` |
 | Tidal, Spotify and Last.fm logins (mode 600) | `~/.local/state/omarchy-music-{tidal,spotify,lastfm}.json` |
 | Cover and tag cache | `~/.cache/omarchy-music/` |

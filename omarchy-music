@@ -22,6 +22,12 @@ MusicBrainz IDs, a big cover, lyrics), plays are scrobbled to Last.fm, the
 Lyrics tab shows Genius's lyrics (or lines timed to the music), and Wrapped
 looks back on any year of your Last.fm history (or all of it).
 
+The Android app (android/ in the repository) does all of this on a phone, and
+can play here instead: switch on "Phone" in the accounts menu and pair the
+phone with the code it shows. The phone then shows what's playing here and
+every play, queue and button press goes to this app. The remote listens on
+port 8897 of your network (allow it in your firewall) and is off to start.
+
   omarchy-music                     open, or toggle the popup if it is already running
   omarchy-music play SONG...        play now: a search, a link or a file ("-": one per line of stdin)
   omarchy-music next SONG...        play right after the current song
@@ -73,7 +79,7 @@ import urllib.request
 from collections import Counter
 from datetime import datetime
 from html.parser import HTMLParser
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 import gi
@@ -3026,6 +3032,240 @@ class LastFM:
 
 
 # =============================================================================
+# Phone remote: the Android app plays here instead of on the phone. Off until
+# you switch it on in the accounts menu; then a small HTTP API on your network
+# (port REMOTE_PORT) answers phones paired once with the code the menu shows.
+# =============================================================================
+
+REMOTE_PORT = 8896 if PROFILE else 8897
+REMOTE_SERVICE = "_omarchy-music._tcp"
+
+
+def on_ui(fn, timeout=5):
+    """Run fn on the UI thread and wait for what it returns (from a server thread)."""
+    box, done = {}, threading.Event()
+
+    def run():
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001 -- handed back to the caller
+            box["error"] = e
+        done.set()
+        return False
+    GLib.idle_add(run)
+    if not done.wait(timeout):
+        raise TimeoutError("the app is busy")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+
+def lan_address():
+    """This computer's address on your network (what the phone types in), else "this computer"."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect(("192.0.2.1", 9))   # nothing is sent: it only picks the interface
+            return sk.getsockname()[0]
+    except OSError:
+        return "this computer"
+
+
+class Remote:
+    """The server the phone app talks to. Pairing swaps the code for a token the phone
+    keeps; every other request carries that token. Commands run on the UI thread
+    through the same methods the window's buttons use."""
+
+    def __init__(self, app):
+        self.app = app
+        self.server = self.avahi = None
+        self.code = ""
+        self.misses = 0
+
+    @property
+    def running(self):
+        return self.server is not None
+
+    def new_code(self):
+        self.code = f"{secrets.randbelow(10 ** 6):06d}"
+        self.misses = 0
+
+    def start(self):
+        if self.server:
+            return
+        self.new_code()
+        remote = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(h, *_a):
+                pass
+
+            def answer(h, code, body, ctype="application/json"):
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
+                h.send_response(code)
+                h.send_header("Content-Type", ctype)
+                h.send_header("Content-Length", str(len(data)))
+                h.end_headers()
+                h.wfile.write(data)
+
+            def phone(h):
+                auth = h.headers.get("Authorization", "")
+                tok = auth[7:] if auth.startswith("Bearer ") else ""
+                return tok if tok and tok in remote.app.remote_tokens else None
+
+            def body(h):
+                n = int(h.headers.get("Content-Length") or 0)
+                return json.loads(h.rfile.read(n) or b"{}") if 0 < n < 8_000_000 else {}
+
+            def do_GET(h):
+                url = urllib.parse.urlparse(h.path)
+                q = dict(urllib.parse.parse_qsl(url.query))
+                if url.path == "/hello":   # for "is this the app?" checks; says nothing else
+                    return h.answer(200, {"app": "omarchy-music"})
+                if not h.phone():
+                    return h.answer(401, {"error": "pair this phone first"})
+                try:
+                    if url.path == "/status":
+                        return h.answer(200, on_ui(lambda: remote.status(q.get("qv"))))
+                    if url.path == "/art":
+                        data = remote.art(q.get("id", ""))
+                        return h.answer(200, data, "image/jpeg") if data else h.answer(404, {"error": "no picture"})
+                except Exception as e:  # noqa: BLE001 -- the phone shows it
+                    return h.answer(500, {"error": str(e)[:200]})
+                h.answer(404, {"error": "no such thing"})
+
+            def do_POST(h):
+                url = urllib.parse.urlparse(h.path)
+                try:
+                    body = h.body()
+                except ValueError:
+                    return h.answer(400, {"error": "that isn't JSON"})
+                if url.path == "/pair":
+                    return h.answer(*on_ui(lambda: remote.pair(str(body.get("code", "")).strip(), str(body.get("name") or "Phone"))))
+                if not h.phone():
+                    return h.answer(401, {"error": "pair this phone first"})
+                if url.path == "/cmd":
+                    try:
+                        on_ui(lambda: remote.command(body))
+                        return h.answer(200, {"ok": True})
+                    except Exception as e:  # noqa: BLE001
+                        return h.answer(400, {"error": str(e)[:200]})
+                h.answer(404, {"error": "no such thing"})
+
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        try:
+            self.server = Server(("0.0.0.0", REMOTE_PORT), Handler)
+        except OSError as e:
+            self.app.toast(f"Couldn't start the phone remote: {e.strerror or e}")
+            return
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        try:   # announce it, so the phone finds it without typing an address
+            self.avahi = subprocess.Popen(["avahi-publish-service", f"Omarchy Music on {socket.gethostname()}",
+                                           REMOTE_SERVICE, str(REMOTE_PORT)],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=_die_with_parent)
+        except OSError:
+            self.avahi = None   # no Avahi: the phone takes the address instead
+
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+        if self.avahi:
+            self.avahi.terminate()
+            self.avahi = None
+
+    def pair(self, code, name):
+        if not self.code or code != self.code:
+            self.misses += 1
+            if self.misses >= 5:   # guessing: a new code
+                self.new_code()
+                self.app.accounts_changed()
+            return 403, {"error": "that isn't the code the desktop shows"}
+        tok = secrets.token_urlsafe(24)
+        self.app.remote_tokens[tok] = {"name": name[:60], "added": int(time.time())}
+        self.app.save_state()
+        self.new_code()   # one code, one phone
+        self.app.toast(f"Paired with {name[:60]}: it can play music here now")
+        self.app.accounts_changed()
+        return 200, {"token": tok, "name": socket.gethostname()}
+
+    @staticmethod
+    def for_phone(t):
+        """A song as the phone gets it: without the path of a file of yours."""
+        return {k: v for k, v in t.items() if k != "file"}
+
+    def status(self, qv=None):
+        a = self.app
+        t = a.current_track()
+        version = hashlib.sha1(json.dumps([(x["id"], bool(x.get("queued"))) for x in a.queue]).encode()).hexdigest()[:16]
+        out = {"index": a.index, "paused": a.paused, "position": a.position,
+               "duration": a.duration or (t or {}).get("duration") or 0, "repeat": a.repeat,
+               "liked": bool(t and t["id"] in a.liked), "radio": bool(a.radio_from), "qv": version,
+               "message": a.win.np_status.get_label() if a.win and a.win.np_status.get_visible() else ""}
+        if qv != version:   # the queue only when it changed: a long one is big
+            out["queue"] = [self.for_phone(x) for x in a.queue]
+        return out
+
+    def art(self, vid):
+        """The cover of a song in the queue or the library: the saved one, the cached thumbnail, the file's own."""
+        a = self.app
+        if not vid or "/" in vid:
+            return None
+        entry = a.lib.items.get(vid) or {}
+        for path in (entry.get("art"), a.art.paths.get(vid), THUMBS / f"{safe_name(vid)}.jpg"):
+            if path and Path(path).is_file():
+                return Path(path).read_bytes()
+        t = next((x for x in a.queue if x["id"] == vid), None)
+        if t and source_of(t) == "file" and t.get("file"):
+            return file_cover(t["file"])
+        return None
+
+    def command(self, b):
+        a = self.app
+        verb = b.get("verb")
+        tracks = [t for t in b.get("tracks") or [] if isinstance(t, dict) and t.get("id")
+                  and not str(t.get("file") or "").startswith("content://")]   # songs on the phone stay there
+        if verb in ("play", "pause"):
+            if verb == "play" and a.paused and a.current_track() and a.ended:
+                a.load_current()
+            else:
+                a.set_paused(verb == "pause")
+        elif verb == "next":
+            a.next()
+        elif verb == "prev":
+            a.previous()
+        elif verb == "seek":
+            a.player.seek(max(0.0, float(b.get("position") or 0)))
+        elif verb == "repeat":
+            a.cycle_repeat()
+        elif verb == "shuffle":
+            a.shuffle()
+        elif verb == "like":
+            a.toggle_like()
+        elif verb == "play_index":
+            a.play_index(int(b.get("index", -1)))
+        elif verb == "unqueue":
+            a.unqueue_many([int(i) for i in b.get("indices") or []])
+        elif verb == "play_from":
+            if not tracks:
+                raise ValueError("no songs the desktop can play")
+            a.play_from(tracks, max(0, min(int(b.get("index") or 0), len(tracks) - 1)), bool(b.get("radio")))
+            a.save_state()
+        elif verb == "enqueue":
+            if not tracks:
+                raise ValueError("no songs the desktop can play")
+            a.enqueue(tracks, "next" if b.get("how") == "next" else "queue")
+        else:
+            raise ValueError(f"unknown command {verb!r}")
+
+
+# =============================================================================
 # UI
 # =============================================================================
 
@@ -3788,6 +4028,16 @@ class MusicWindow(Adw.ApplicationWindow):
         colours = Gtk.Switch(active=a.art_colors, valign=Gtk.Align.CENTER)
         colours.connect("notify::active", lambda sw, _p: a.set_art_colors(sw.get_active()))
         line("Colours", "The window takes the colour of the album art", a.art_colors, colours)
+        remote = Gtk.Switch(active=a.remote_on, valign=Gtk.Align.CENTER)
+        remote.connect("notify::active", lambda sw, _p: sw.get_active() != a.remote_on and a.set_remote(sw.get_active()))
+        paired = len(a.remote_tokens)
+        if a.remote.running:
+            line("Phone", f"Remote on · pair the Android app with code {a.remote.code} at {lan_address()}:{REMOTE_PORT}"
+                 + (f" · {paired} phone{'s' if paired != 1 else ''} paired" if paired else ""), True, remote)
+            if paired:
+                across(pill("Forget the paired phones", a.forget_phones, quiet=True))
+        else:
+            line("Phone", "Control this app from the Omarchy Music Android app, on your network", False, remote)
 
         box.append(Gtk.Separator())
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
@@ -5602,6 +5852,8 @@ class MusicApp(Adw.Application):
         self.tint_path = self.tint_provider = None
         self.spotify_connecting = False
         self.downloads, self.downloading = [], False   # songs you picked to download, one after another
+        self.remote_on = False     # the phone remote: phones on your network play music here
+        self.remote_tokens = {}    # the phones paired with it: token -> {"name", "added"}
 
     # ---- lifecycle ----
     def do_startup(self):
@@ -5638,6 +5890,11 @@ class MusicApp(Adw.Application):
         self.art_colors = bool(state.get("art_colors", True))
         self.keep_played = bool(state.get("keep_played", False))
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
+        self.remote_tokens = {k: v for k, v in (state.get("remote_tokens") or {}).items() if isinstance(v, dict)}
+        self.remote = Remote(self)
+        if state.get("remote"):
+            self.remote_on = True
+            self.remote.start()
         self.player.set_volume(self.volume, self.muted)
         self.load_eq(state.get("eq") or {})
         t = self.current_track()
@@ -5675,15 +5932,17 @@ class MusicApp(Adw.Application):
 
     def quit_app(self):
         self.save_state()
+        self.remote.stop()
         self.player.quit()
         self.quit()
 
     def save_state(self):
-        write_atomic(STATE, json.dumps({"queue": self.queue, "index": self.index, "radio_from": self.radio_from,
+        write_private(STATE, json.dumps({"queue": self.queue, "index": self.index, "radio_from": self.radio_from,
                                        "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
-                                       "art_colors": self.art_colors, "keep_played": self.keep_played}))
+                                       "art_colors": self.art_colors, "keep_played": self.keep_played,
+                                       "remote": self.remote_on, "remote_tokens": self.remote_tokens}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -6754,6 +7013,19 @@ class MusicApp(Adw.Application):
     def set_keep_played(self, on):
         self.keep_played = on
         self.save_soon()
+
+    def set_remote(self, on):
+        self.remote_on = on
+        (self.remote.start if on else self.remote.stop)()
+        self.remote_on = self.remote.running
+        self.save_state()
+        self.accounts_changed()
+
+    def forget_phones(self):
+        self.remote_tokens = {}
+        self.save_state()
+        self.toast("Every paired phone has to pair again")
+        self.accounts_changed()
 
     # ---- playback ----
     def toggle_pause(self):
