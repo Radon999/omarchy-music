@@ -5747,6 +5747,10 @@ class MusicWindow(Adw.ApplicationWindow):
         modes.set_active_name(a.lyrics_mode)
         modes.connect("notify::active-name", lambda g, _p: a.set_lyrics_mode(g.get_active_name()))
         line("Lyrics", "Show in the Lyrics tab", False, modes)
+        have = [API_KEYS[k][0] for k in API_KEYS if a.api_keys.get(k)]
+        line("Settings", ("Using your " + ", ".join(have)) if have else
+             "Keys of yours for Google's pictures, Chartmetric's moods and an AutoEq server: none is needed",
+             bool(have), pill("Edit", self.edit_settings, quiet=True))
 
     def add_folder(self):
         dlg = Gtk.FileDialog(title="Add a music folder", initial_folder=Gio.File.new_for_path(str(HOME)))
@@ -6375,6 +6379,30 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
         dlg.set_close_response("cancel")
         dlg.connect("response", lambda _d, r: r == "delete" and self.app.delete_playlist(pl["id"]))
+        dlg.present(self)
+
+    def edit_settings(self):
+        """The keys in API_KEYS, in a dialog: each one you fill in is kept (in your state file, readable only by you)."""
+        dlg = Adw.AlertDialog(heading="Settings", body="None of these is needed: each adds something. "
+                              "Without Google's, pictures come from Genius and Wikipedia.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        entries = {}
+        for k, (name, tip) in API_KEYS.items():
+            label = Gtk.Label(label=name, xalign=0, tooltip_text=tip)
+            label.add_css_class("service")
+            e = (Gtk.Entry() if k == "autoeq_api" or k == "google_cx" else Gtk.PasswordEntry(show_peek_icon=True))
+            e.set_text(self.app.api_keys.get(k, ""))
+            e.set_tooltip_text(tip)
+            box.append(label)
+            box.append(e)
+            entries[k] = e
+        dlg.set_extra_child(box)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("ok", "Save")
+        dlg.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "ok" and self.app.set_api_keys(
+            {k: e.get_text().strip() for k, e in entries.items()}))
         dlg.present(self)
 
     def ask_name(self, heading, text, done, ok="Save"):
@@ -7215,6 +7243,207 @@ class MusicWindow(Adw.ApplicationWindow):
             self.eq_btn.popup()
             return True
         return False
+
+
+# =============================================================================
+# Pictures and bios: artists' pictures and album covers from Google's image search
+# (with a key of yours: Settings in the accounts menu), else Genius, else Wikipedia;
+# artists' bios from Wikipedia, else Genius. Each is looked for once and kept.
+# =============================================================================
+
+PICTURES = CACHE / f"pictures{SUFFIX}.json"
+# The keys Settings (in the accounts menu) asks for: none is needed, each makes something better.
+API_KEYS = {
+    "google_key": ("Google API key", "Custom Search JSON API key from console.cloud.google.com: pictures and covers from Google"),
+    "google_cx": ("Google search engine ID", "A Programmable Search Engine (programmablesearchengine.google.com) set to search the whole web"),
+    "chartmetric": ("Chartmetric refresh token", "From your Chartmetric API account: songs' moods from Chartmetric"),
+    "autoeq_api": ("AutoEq server", "The address of an AutoEqApi server of your own (github.com/timschneeb/AutoEqApi)"),
+}
+PICTURES_RETRY = 14 * 86400   # an artist nothing was found for is looked for again after this long
+WIKI_API = "https://en.wikipedia.org/w/api.php"
+GENIUS_BLANK = "assets.genius.com/images/default_"   # Genius's grey placeholder
+MUSIC_WORDS = re.compile(r"singer|band|music|rapper|group|producer|\bdj\b|composer|songwriter|duo|trio|artist|"
+                         r"vocalist|orchestra|ensemble|guitarist|pianist|drummer", re.I)
+ALBUM_WORDS = re.compile(r"album|\bep\b|mixtape|soundtrack|compilation|record", re.I)
+
+
+def google_images(keys, q, n=6):
+    """Google's image search for q: [{"url", "thumb", "from"}], [] without a key and engine id."""
+    if not keys.get("google_key") or not keys.get("google_cx"):
+        return []
+    res = http_json("https://www.googleapis.com/customsearch/v1?" + urllib.parse.urlencode(
+        {"key": keys["google_key"], "cx": keys["google_cx"], "q": q, "searchType": "image", "num": n,
+         "imgSize": "large", "safe": "active"}), timeout=10)
+    return [{"url": i["link"], "thumb": (i.get("image") or {}).get("thumbnailLink") or i["link"], "from": "Google"}
+            for i in res.get("items") or [] if i.get("link")]
+
+
+def genius_artist(name):
+    """Genius's artist named name (near enough): {"id", "name", "image", "url"}, or None."""
+    res = http_json("https://genius.com/api/search/artist?" + urllib.parse.urlencode({"q": name, "per_page": 5}), timeout=10)
+    hits = [h.get("result") or {} for h in (((res.get("response") or {}).get("sections") or [{}])[0].get("hits") or [])]
+    best = best_named([h for h in hits if h.get("name")], name, lambda h: h["name"])
+    if not best:
+        return None
+    img = best.get("image_url") or ""
+    return {"id": best.get("id"), "name": best["name"], "url": best.get("url") or "",
+            "image": "" if GENIUS_BLANK in img else img}
+
+
+def genius_bio(artist_id):
+    """The artist's description on Genius, as plain text ("" if there's none)."""
+    res = http_json(f"https://genius.com/api/artists/{artist_id}?text_format=plain", timeout=10)
+    text = (((res.get("response") or {}).get("artist") or {}).get("description") or {}).get("plain") or ""
+    return "" if text.strip() == "?" else text.strip()
+
+
+def genius_covers(artist, album):
+    """Genius's covers for artist's album: [{"url", "thumb", "from"}]."""
+    res = http_json("https://genius.com/api/search/album?" + urllib.parse.urlencode(
+        {"q": f"{artist} {album}", "per_page": 5}), timeout=10)
+    out = []
+    for h in (((res.get("response") or {}).get("sections") or [{}])[0].get("hits") or []):
+        r = h.get("result") or {}
+        who = norm((r.get("artist") or {}).get("name"))
+        img = r.get("cover_art_url") or ""
+        if (img and GENIUS_BLANK not in img and not who.startswith("genius")   # its translations
+                and similar(norm(bare_title(r.get("name") or "")), norm(bare_title(album))) >= 0.6):
+            out.append({"url": img, "thumb": r.get("cover_art_thumbnail_url") or img, "from": "Genius"})
+    return out
+
+
+def wikipedia_page(q, name, words):
+    """The Wikipedia article a search for q finds that's titled name (near enough) and whose
+    short description has one of words: {"title", "bio", "image", "url"}, or None."""
+    res = http_json(WIKI_API + "?" + urllib.parse.urlencode(
+        {"action": "query", "format": "json", "generator": "search", "gsrsearch": q, "gsrlimit": 5,
+         "prop": "extracts|pageimages|pageprops", "exintro": 1, "explaintext": 1, "exlimit": "max",
+         "piprop": "original", "ppprop": "wikibase-shortdesc|page_image|disambiguation", "redirects": 1}),
+        {"User-Agent": APP_UA}, timeout=10)
+    pages = sorted(((res.get("query") or {}).get("pages") or {}).values(), key=lambda p: p.get("index", 99))
+    for p in pages:
+        props = p.get("pageprops") or {}
+        title = re.sub(r"\s*\([^)]*\)$", "", p.get("title") or "")
+        about = props.get("wikibase-shortdesc") or (p.get("extract") or "")[:200]
+        if "disambiguation" in props or similar(norm(title), norm(name)) < 0.85 or not words.search(about):
+            continue
+        image = (p.get("original") or {}).get("source") or ""
+        if not image and props.get("page_image"):   # a cover that isn't free: pageimages leaves it out
+            info = http_json(WIKI_API + "?" + urllib.parse.urlencode(
+                {"action": "query", "format": "json", "prop": "imageinfo", "iiprop": "url",
+                 "titles": "File:" + props["page_image"]}), {"User-Agent": APP_UA}, timeout=10)
+            for f in ((info.get("query") or {}).get("pages") or {}).values():
+                image = ((f.get("imageinfo") or [{}])[0]).get("url") or image
+        return {"title": p.get("title"), "bio": wiki_text(p.get("extract") or ""), "image": image,
+                "url": "https://en.wikipedia.org/wiki/" + urllib.parse.quote((p.get("title") or "").replace(" ", "_"))}
+    return None
+
+
+def wiki_text(text):
+    """An article's opening without its pronunciation guides ("(BYURK; Icelandic: [pjœr̥k])")."""
+    head, _, rest = text.partition("\n")
+    head = re.sub(r"\s*\((?:\s|[^()]*[\[/;])[^()]*\)", "", head, count=2)   # where the guide was, a space is left
+    return re.sub(r"  +", " ", (head + ("\n" + rest if rest else ""))).strip()
+
+
+def wikipedia_artist(name):
+    return wikipedia_page(f"{name} musician", name, MUSIC_WORDS) or wikipedia_page(name, name, MUSIC_WORDS)
+
+
+def wikipedia_album(artist, album):
+    return wikipedia_page(f"{bare_title(album)} {artist} album", bare_title(album), ALBUM_WORDS)
+
+
+class Pictures:
+    """Artists' pictures and bios and the covers you picked, looked for once and kept in
+    PICTURES. keys() gives the API keys from Settings (Google's: google_key, google_cx).
+    Everything here blocks: call it on a thread. A service that can't be reached is skipped."""
+
+    def __init__(self, keys):
+        self.keys = keys
+        self.lock = threading.Lock()
+        data = read_json(PICTURES, {})
+        self.artists = data.get("artists") or {} if isinstance(data, dict) else {}
+        self.covers = data.get("covers") or {} if isinstance(data, dict) else {}
+
+    def save(self):
+        with self.lock:
+            text = json.dumps({"artists": self.artists, "covers": self.covers})
+        write_atomic(PICTURES, text)
+
+    @staticmethod
+    def tried(fn, *args):
+        try:
+            return fn(*args)
+        except Exception as e:  # noqa: BLE001 -- that service is down or turned us away: the next one
+            print(f"omarchy-music: pictures: {fn.__name__}: {e}", file=sys.stderr)
+            return None
+
+    def artist(self, name, refresh=False):
+        """{"image", "image_from", "bio", "bio_from", "bio_url"} for the artist ("" where none was found)."""
+        k = norm(name)
+        have = self.artists.get(k)
+        if have and not refresh and (have.get("image") or have.get("bio") or time.time() - have.get("t", 0) < PICTURES_RETRY):
+            return have
+        out = {"image": "", "image_from": "", "bio": "", "bio_from": "", "bio_url": "", "t": time.time()}
+        if have and have.get("chosen"):   # a picture you picked stays
+            out.update(image=have["image"], image_from=have.get("image_from", ""), chosen=True)
+        if not out["image"]:
+            for found in (self.tried(google_images, self.keys(), f"{name} musician", 1) or [None])[:1]:
+                if found:
+                    out.update(image=found["url"], image_from="Google")
+        genius = self.tried(genius_artist, name)
+        if not out["image"] and genius and genius["image"]:
+            out.update(image=genius["image"], image_from="Genius")
+        wiki = self.tried(wikipedia_artist, name)
+        if not out["image"] and wiki and wiki["image"]:
+            out.update(image=wiki["image"], image_from="Wikipedia")
+        if wiki and wiki["bio"]:
+            out.update(bio=wiki["bio"], bio_from="Wikipedia", bio_url=wiki["url"])
+        elif genius and genius.get("id"):
+            bio = self.tried(genius_bio, genius["id"])
+            if bio:
+                out.update(bio=bio, bio_from="Genius", bio_url=genius["url"])
+        with self.lock:
+            self.artists[k] = out
+        self.save()
+        return out
+
+    def artist_choices(self, name):
+        """Pictures of the artist to pick from: Google's, Genius's and Wikipedia's."""
+        out = list(self.tried(google_images, self.keys(), f"{name} musician") or [])
+        g = self.tried(genius_artist, name)
+        if g and g["image"]:
+            out.append({"url": g["image"], "thumb": g["image"], "from": "Genius"})
+        w = self.tried(wikipedia_artist, name)
+        if w and w["image"]:
+            out.append({"url": w["image"], "thumb": w["image"], "from": "Wikipedia"})
+        return list({c["url"]: c for c in out}.values())
+
+    def cover_choices(self, artist, album):
+        """Covers for artist's album to pick from: Google's, then Genius's, then Wikipedia's."""
+        out = list(self.tried(google_images, self.keys(), f"{artist} {bare_title(album)} album cover") or [])
+        out += self.tried(genius_covers, artist, album) or []
+        w = self.tried(wikipedia_album, artist, album)
+        if w and w["image"]:
+            out.append({"url": w["image"], "thumb": w["image"], "from": "Wikipedia"})
+        return list({c["url"]: c for c in out}.values())
+
+    def choose_artist(self, name, url, source="you"):
+        """Keep url (a web address or a file) as the artist's picture."""
+        with self.lock:
+            a = self.artists.setdefault(norm(name), {"bio": "", "bio_from": "", "bio_url": "", "t": time.time()})
+            a.update(image=url, image_from=source, chosen=True)
+        self.save()
+
+    def cover(self, artist, album):
+        """The cover you picked for artist's album, or ""."""
+        return self.covers.get(f"{norm(artist.split(',')[0])}|{norm(bare_title(album))}", "")
+
+    def choose_cover(self, artist, album, url):
+        with self.lock:
+            self.covers[f"{norm(artist.split(',')[0])}|{norm(bare_title(album))}"] = url
+        self.save()
 
 
 # =============================================================================
@@ -8310,6 +8539,7 @@ class MusicApp(Adw.Application):
         self.search_in = "tidal"   # where the search bar looks (SEARCH_IN)
         self.spotify_history = SpotifyHistory()
         self.stats = Stats(self)   # every play added up: Most played, the Artists tab, artist pages
+        self.pictures = Pictures(lambda: self.api_keys)   # artists' pictures and bios, album covers
         self.stats.watchers.append(self.stats_changed)
         self.streaming = False     # what's playing comes from Tidal's stream, not a file
         self.stream_retry = -1     # the load_seq whose broken stream was picked up again already
@@ -8362,6 +8592,8 @@ class MusicApp(Adw.Application):
         self.search_in = state.get("search_in") if state.get("search_in") in SEARCH_IN else "tidal"
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
         self.remote_tokens = {k: v for k, v in (state.get("remote_tokens") or {}).items() if isinstance(v, dict)}
+        # Settings: keys of yours for Google's image search, Chartmetric and an AutoEq server (see API_KEYS)
+        self.api_keys = {k: v for k, v in (state.get("api_keys") or {}).items() if k in API_KEYS and isinstance(v, str)}
         self.remote = Remote(self)
         if state.get("remote"):
             self.remote_on = True
@@ -8437,7 +8669,8 @@ class MusicApp(Adw.Application):
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
                                        "music_sort": self.music_sort, "search_in": self.search_in,
-                                       "remote": self.remote_on, "remote_tokens": self.remote_tokens}))
+                                       "remote": self.remote_on, "remote_tokens": self.remote_tokens,
+                                       "api_keys": self.api_keys}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -9521,6 +9754,12 @@ class MusicApp(Adw.Application):
         self.spotify_history.clear()
         self.stats.refresh(force=True)
         self.refresh_accounts_soon()
+
+    def set_api_keys(self, keys):
+        self.api_keys = {k: v for k, v in keys.items() if k in API_KEYS and v}
+        self.save_state()
+        if self.win:
+            self.win.refresh_accounts()
 
     def refresh_accounts_soon(self):
         if self.win and self.win.accounts_pop.get_visible():

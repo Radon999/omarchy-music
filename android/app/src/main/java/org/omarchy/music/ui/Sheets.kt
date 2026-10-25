@@ -179,6 +179,8 @@ private fun AccountsSheet(ui: Ui) {
             Divider()
             LastFmLine(ui)
             SpotifyHistoryLine(ui)
+            Divider()
+            SettingsLine()
         }
     }
 }
@@ -279,6 +281,27 @@ private fun SpotifyHistoryLine(ui: Ui) {
             "the last plays picked up from Spotify don't.", style = T.sub) },
         confirmButton = { TextButton({ asking = false; Music.bg({ h.clear() }) }) { Text("Clear", color = C.accent) } },
         dismissButton = { TextButton({ asking = false }) { Text("Cancel", color = C.muted) } })
+}
+
+/** The keys in API_KEYS: each one you fill in is kept with the rest of the app's state. */
+@Composable
+private fun SettingsLine() {
+    var open by remember { mutableStateOf(false) }
+    val keys = remember { androidx.compose.runtime.mutableStateMapOf<String, String>().apply { putAll(Music.apiKeys) } }
+    val have = org.omarchy.music.API_KEYS.filterKeys { Music.apiKeys[it] != null }.values.map { it.first }
+    Line("Settings", if (have.isNotEmpty()) "Using your " + have.joinToString(", ")
+        else "Keys of yours for Google's pictures, Chartmetric's moods and an AutoEq server: none is needed", have.isNotEmpty()) {
+        Pill(if (open) "Close" else "Edit", quiet = true) { open = !open }
+    }
+    if (open) {
+        org.omarchy.music.API_KEYS.forEach { (k, v) ->
+            Text(v.second, style = T.sub, modifier = Modifier.padding(top = 4.dp))
+            Field(keys[k] ?: "", v.first, password = k == "google_key" || k == "chartmetric") { keys[k] = it }
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+            Pill("Save") { Music.saveApiKeys(keys.toMap()); open = false; Music.toast("Settings saved") }
+        }
+    }
 }
 
 @Composable

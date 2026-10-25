@@ -10,6 +10,14 @@ import kotlin.math.roundToInt
 
 val SOURCES = linkedMapOf("ytm" to "YouTube Music", "tidal" to "Tidal", "apple" to "Apple Music", "spotify" to "Spotify")
 
+/** The keys Settings (in the accounts sheet) asks for: none is needed, each makes something better. */
+val API_KEYS = linkedMapOf(
+    "google_key" to ("Google API key" to "Custom Search JSON API key from console.cloud.google.com: pictures and covers from Google"),
+    "google_cx" to ("Google search engine ID" to "A Programmable Search Engine set to search the whole web"),
+    "chartmetric" to ("Chartmetric refresh token" to "From your Chartmetric API account: songs' moods from Chartmetric"),
+    "autoeq_api" to ("AutoEq server" to "The address of an AutoEqApi server of your own"),
+)
+
 const val LASTFM_BLANK = "2a96cbd8b46e442fc41c2b86b821562f"   // Last.fm's grey star, for "no picture"
 
 /** Where the search bar's dropdown can search. */

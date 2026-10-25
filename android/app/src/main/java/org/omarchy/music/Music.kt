@@ -67,6 +67,7 @@ object Music {
     var lyricsMode by mutableStateOf("genius")
     var musicSort by mutableStateOf("title")   // how the Music tab's All is sorted: title, artist, album, added
     var searchIn by mutableStateOf("tidal")    // where the search bar searches: tidal, ytm, local
+    var apiKeys by mutableStateOf(mapOf<String, String>())   // Settings: keys of yours (see API_KEYS)
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
@@ -142,6 +143,7 @@ object Music {
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
         val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
+        val api_keys: Map<String, String> = emptyMap(),
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -162,6 +164,7 @@ object Music {
         musicSort = st.music_sort
         searchIn = st.search_in.takeIf { it in SEARCH_IN } ?: "tidal"
         dj = st.dj
+        apiKeys = st.api_keys.filterKeys { it in API_KEYS }
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -170,8 +173,13 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
+    }
+
+    fun saveApiKeys(keys: Map<String, String>) {
+        apiKeys = keys.mapValues { it.value.trim() }.filter { it.key in API_KEYS && it.value.isNotEmpty() }
+        saveState()
     }
 
     /** Called once the playback service is up: a song restored from Tidal can load now. */
