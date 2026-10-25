@@ -566,7 +566,7 @@ object Music {
         streaming = !(onDisk || keepPlayed)
         status = if (onDisk) "" else if (keepPlayed) "Downloading FLAC…" else "Loading the stream…"
         val work: () -> Downloader.Ready = if (streaming || onDisk) ({ dl.stream(t) })
-            else ({ try { dl.download(t) } catch (_: NoLosslessMatch) {}; dl.stream(t) })   // no FLAC to keep: stream what there is
+            else ({ try { dl.download(t) } catch (_: Exception) {}; dl.stream(t) })   // no FLAC to keep (or saving failed): stream what there is
         bg(work) { ready, err ->
             if (seq != loadSeq) return@bg   // you moved on while it loaded
             status = ""

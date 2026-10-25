@@ -1284,23 +1284,38 @@ class Downloader:
 
         def work():
             # FLAC from Tidal; else Tidal's AAC; else YouTube's own audio (no Tidal: YouTube).
+            # Whatever goes wrong on Tidal (not there, not in your country, the login, the
+            # network), the next one is tried.
             tidal = self.tidal if self.tidal and self.tidal.connected else None
-            match = tidal.resolve(track) if tidal else None
-            if match:
-                same = self.lib.by_tidal(match.id)
-                if same and Path(same["file"]).exists():
-                    return same["file"], same.get("quality", ""), None   # saved from another service already
+            trouble = None
+            if tidal:
+                match = None
                 try:
-                    return (*tidal.stream(match), None)
+                    match = tidal.resolve(track)
+                    if match:
+                        same = self.lib.by_tidal(match.id)
+                        if same and Path(same["file"]).exists():
+                            return same["file"], same.get("quality", ""), None   # saved from another service already
+                        return (*tidal.stream(match), None)
                 except NoLosslessMatch:
                     pass
-            if tidal:
-                self.lib.mark_missing(vid)   # no FLAC to download: syncs leave it alone for a while
-                lossy = match or tidal.resolve(track, lossy=True)
-                if lossy:
-                    return (*tidal.stream(lossy, lossy=True), "Tidal")
-            got = youtube_audio(track, self.ytm)
+                except Exception as e:  # noqa: BLE001 -- Tidal's lossy, then YouTube
+                    trouble = e
+                if not trouble:
+                    self.lib.mark_missing(vid)   # no FLAC to download: syncs leave it alone for a while
+                try:
+                    lossy = match or tidal.resolve(track, lossy=True)
+                    if lossy:
+                        return (*tidal.stream(lossy, lossy=True), "Tidal")
+                except Exception as e:  # noqa: BLE001 -- YouTube, then
+                    trouble = trouble or e
+            try:
+                got = youtube_audio(track, self.ytm)
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"Tidal: {trouble}; YouTube: {e}" if trouble else f"YouTube: {e}") from e
             if not got:
+                if trouble:
+                    raise RuntimeError(f"not on YouTube Music, and Tidal: {trouble}")
                 raise NoLosslessMatch("not on Tidal or YouTube Music" if tidal else
                                       "not on YouTube Music (connect Tidal in the accounts menu for more)")
             return (*got, "YouTube")
@@ -7392,8 +7407,8 @@ class MusicApp(Adw.Application):
         def ready(path, err):
             if seq != self.load_seq:
                 return  # user moved on while it downloaded
-            if isinstance(err, NoLosslessMatch) and not self.streaming:
-                self.streaming = True   # no FLAC to keep: stream what there is instead
+            if err and not self.streaming:
+                self.streaming = True   # no FLAC to keep (or saving it failed): stream what there is instead
                 self.dl.stream(t, ready)
                 return
             if err:

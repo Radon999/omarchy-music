@@ -5,6 +5,7 @@ import android.content.Context
 import android.provider.MediaStore
 import kotlinx.serialization.json.JsonElement
 import java.io.File
+import java.io.IOException
 
 /** Gets songs ready to play: Tidal's stream looked up (nothing saved), or the song
  *  downloaded as tagged FLAC into Music/Omarchy Music/. Songs Tidal has no lossless copy
@@ -34,19 +35,34 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
 
     /** FLAC from Tidal; else Tidal's AAC; else YouTube's own audio (no Tidal: YouTube). */
     private fun find(t: Track): Ready {
-        val match = if (tidal.connected) tidal.resolve(t) else null
-        if (match != null) {
-            lib.byTidal(match["id"].long ?: 0)?.let { return Ready(it.file, quality = it.quality, onDisk = true) }   // saved from another service
-            try { return tidal.stream(match).let { Ready(it.uri, it.isDash, it.quality) } } catch (_: NoLosslessMatch) {}
-        }
+        // Whatever goes wrong on Tidal (not there, not in your country, the login, the network),
+        // the next one is tried: Tidal's FLAC, Tidal's AAC, YouTube's own audio.
+        var trouble: Throwable? = null
         if (tidal.connected) {
-            lib.markMissing(t.id)   // no FLAC to download: syncs leave it alone for a while
-            (match ?: tidal.resolve(t, lossy = true))?.let { m ->
-                return tidal.stream(m, lossy = true).let { Ready(it.uri, it.isDash, it.quality, lossyFrom = "Tidal") }
-            }
+            var match: kotlinx.serialization.json.JsonElement? = null
+            try {
+                match = tidal.resolve(t)
+                if (match != null) {
+                    lib.byTidal(match["id"].long ?: 0)?.let { return Ready(it.file, quality = it.quality, onDisk = true) }   // saved from another service
+                    return tidal.stream(match).let { Ready(it.uri, it.isDash, it.quality) }
+                }
+            } catch (_: NoLosslessMatch) {
+            } catch (e: Exception) { trouble = e }
+            if (trouble == null) lib.markMissing(t.id)   // no FLAC to download: syncs leave it alone for a while
+            try {
+                (match ?: tidal.resolve(t, lossy = true))?.let { m ->
+                    return tidal.stream(m, lossy = true).let { Ready(it.uri, it.isDash, it.quality, lossyFrom = "Tidal") }
+                }
+            } catch (e: Exception) { if (trouble == null) trouble = e }
         }
-        val yt = YouTubeAudio.find(t) ?: throw NoLosslessMatch(if (tidal.connected) "not on Tidal or YouTube Music"
-            else "not on YouTube Music (connect Tidal in the accounts menu for more)")
+        val yt = try { YouTubeAudio.find(t) } catch (e: Exception) {
+            throw IOException(if (trouble != null) "Tidal: ${trouble.message}; YouTube: ${e.message}" else "YouTube: ${e.message}", e)
+        }
+        if (yt == null) {
+            if (trouble != null) throw IOException("not on YouTube Music, and Tidal: ${trouble.message}", trouble)
+            throw NoLosslessMatch(if (tidal.connected) "not on Tidal or YouTube Music"
+                else "not on YouTube Music (connect Tidal in the accounts menu for more)")
+        }
         return Ready(yt.first, quality = yt.second, lossyFrom = "YouTube")
     }
 
