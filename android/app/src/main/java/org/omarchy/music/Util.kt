@@ -53,6 +53,8 @@ private val NOISE_BRACKETS = Regex(
 )
 private val NOISE_DASH = Regex("\\s[-–]\\s[^-–]*\\b(official|video|audio|lyrics?|remaster(ed)?)\\b.*$")
 private val FEAT_TAIL = Regex("\\b(feat|ft)\\b\\.?\\s.*$")
+// No Unicode flag ("?U"): Android's ICU regex rejects it, and its \b knows Unicode letters anyway.
+private val FEATURING = Regex("\\b(?:feat|ft|with)\\b\\.?\\s*([^)\\]]+)", RegexOption.IGNORE_CASE)
 
 /** A title without what YouTube adds: (Official Video), feat. credits, remaster notes, punctuation. */
 fun cleanTitle(s: String): String {
@@ -68,7 +70,7 @@ fun bareTitle(s: String) = cleanTitle(Regex("[(\\[][^)\\]]*[)\\]]|\\s[-–]\\s.*
 
 /** Artists credited in a title: "Song (feat. A & B)" -> {a, b}. */
 fun featured(title: String): Set<String> {
-    val m = Regex("(?iU)\\b(?:feat|ft|with)\\b\\.?\\s*([^)\\]]+)").find(title) ?: return emptySet()
+    val m = FEATURING.find(title) ?: return emptySet()
     return artistNames(listOf(m.groupValues[1]))
 }
 
