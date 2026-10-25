@@ -218,7 +218,7 @@ object Music {
     fun rescan() {
         if (local.scanning) { rescanAgain = true; return }   // the folders changed mid-scan: read again after
         local.scanning = true
-        bg({ local.scan(folders) }) { changed, err ->
+        bg({ local.scan(folders, lib.items.values.mapNotNullTo(HashSet()) { LocalFiles.mediaId(it.file) }) }) { changed, err ->
             local.scanning = false
             if (rescanAgain) { rescanAgain = false; rescan() }
             if (err is SecurityException) Unit   // no permission yet: the Music tab asks

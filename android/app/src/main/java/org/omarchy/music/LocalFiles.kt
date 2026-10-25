@@ -9,9 +9,10 @@ import kotlinx.serialization.builtins.serializer
 import java.io.File
 
 /** The songs in your own folders on the phone (Music/ to start; more in the accounts
- *  menu), from Android's media library. The app's own downloads folder is left out:
- *  those songs are in the library already. A song that turns up after the first scan
- *  was added now; on the first scan, when it was last written. */
+ *  menu), from Android's media library. Songs in the app's own downloads folder are left
+ *  out when the library has them; the rest of them (saved before the app was installed
+ *  again) always show. A song that turns up after the first scan was added now; on the
+ *  first scan, when it was last written. */
 class LocalFiles(private val ctx: Context) {
     private val index = File(ctx.cacheDir, "local.json")
     private val ser = MapSerializer(String.serializer(), Seen.serializer())
@@ -35,13 +36,13 @@ class LocalFiles(private val ctx: Context) {
     }
 
     /** Read the media library again (blocking). Returns whether anything changed. */
-    fun scan(folders: List<String>): Boolean {
+    fun scan(folders: List<String>, saved: Set<String>): Boolean {
         val seen = readText(index)?.let { runCatching { JSON.decodeFromString(ser, it) }.getOrNull() } ?: emptyMap()
         val first = seen.isEmpty()
         val keep = HashMap<String, Seen>()
         val out = ArrayList<Track>()
         query { c, uri, path, modified ->
-            if (path.startsWith(DOWNLOADS) || folders.none { path.startsWith(it) }) return@query
+            if (if (path.startsWith(DOWNLOADS)) mediaId(uri) in saved else folders.none { path.startsWith(it) }) return@query
             val old = seen[uri]
             val added = old?.added ?: if (first) modified.toDouble() else now()
             keep[uri] = Seen(modified, added)
@@ -77,6 +78,8 @@ class LocalFiles(private val ctx: Context) {
     }
 
     companion object {
+        /** The media library's number for a song: the same whichever volume name its address uses. */
+        fun mediaId(uri: String) = uri.takeIf { it.startsWith("content://media/") }?.substringAfterLast('/')
         const val DOWNLOADS = "Music/Omarchy Music/"   // where this app saves songs
     }
 }
