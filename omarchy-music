@@ -3556,8 +3556,8 @@ class Remote:
             def do_GET(h):
                 url = urllib.parse.urlparse(h.path)
                 q = dict(urllib.parse.parse_qsl(url.query))
-                if url.path == "/hello":   # for "is this the app?" checks; says nothing else
-                    return h.answer(200, {"app": "omarchy-music"})
+                if url.path == "/hello":   # for "is this the app?" checks: that, and its version
+                    return h.answer(200, {"app": "omarchy-music", "version": VERSION})
                 if not h.phone():
                     return h.answer(401, {"error": "pair this phone first"})
                 try:
