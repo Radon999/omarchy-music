@@ -1,0 +1,21 @@
+# A throwaway check (not part of the pull request): build and unit-test the Android app.
+name: Android build check
+on:
+  push:
+    branches: [android-build-check]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Test and build
+        working-directory: android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Desktop app compiles
+        run: python3 -m py_compile omarchy-music
