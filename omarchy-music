@@ -1,0 +1,2213 @@
+#!/home/varixxl/.local/share/omarchy-music/venv/bin/python
+"""Omarchy Music: a minimal YouTube Music popup, themed live from Omarchy.
+
+YouTube Music is the library: your playlists, likes, search and radio. The
+audio comes from Tidal in FLAC: each song is matched there by title, artist
+and length, downloaded once (the first time it plays, or by the background
+sync of all your playlists) and played from disk after that. Songs Tidal has
+no lossless copy of are skipped. The next song in the queue is fetched ahead
+so tracks change without a gap.
+
+  omarchy-music                open, or toggle the popup if it is already running
+  omarchy-music --tidal-login  connect Tidal from a terminal (the Library tab can too)
+  Files: ~/Music/YouTube Music/  (songs/, art/, library.json, missing.json)
+
+Media keys work through MPRIS (playerctl); mpv does the playback.
+"""
+import cmath
+import difflib
+import json
+import math
+import os
+import random
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import tomllib
+import urllib.request
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+
+APP_ID = "org.omarchy.music"
+HOME = Path.home()
+MUSIC = HOME / "Music" / "YouTube Music"
+SONGS, ART = MUSIC / "songs", MUSIC / "art"
+LIBRARY = MUSIC / "library.json"
+MISSING = MUSIC / "missing.json"    # songs Tidal had no lossless copy of, and when we looked
+CACHE = HOME / ".cache" / "omarchy-music"
+THUMBS = CACHE / "thumbs"
+STATE = HOME / ".local" / "state" / "omarchy-music.json"
+SOCK = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-music-mpv.sock"
+CURRENT = HOME / ".local" / "state" / "omarchy" / "current"
+THEME_DIR = CURRENT / "theme"
+OPACITY = 0.85  # window background; text and art stay fully opaque
+BROWSERS = ("chromium", "brave", "chrome", "firefox")
+
+
+# =============================================================================
+# Small helpers
+# =============================================================================
+
+def write_atomic(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def in_thread(fn, *args, done=None):
+    """Run fn(*args) off the UI thread; hand (result, error) to done on it."""
+    def work():
+        try:
+            res, err = fn(*args), None
+        except Exception as e:  # noqa: BLE001 -- surfaced to the UI
+            res, err = None, e
+        if done:
+            GLib.idle_add(lambda: (done(res, err), False)[1])
+    threading.Thread(target=work, daemon=True).start()
+
+
+def fmt_time(s):
+    s = int(max(0, s or 0))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def rgba(hex_color, alpha):
+    h = hex_color.lstrip("#")
+    if len(h) < 6:
+        return hex_color
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def track_from_ytm(item):
+    """Normalise a ytmusicapi song/watch/playlist item into our track dict."""
+    vid = item.get("videoId")
+    if not vid:
+        return None
+    artists = ", ".join(a.get("name", "") for a in (item.get("artists") or []) if a.get("name"))
+    album = item.get("album") or {}
+    thumbs = item.get("thumbnails") or item.get("thumbnail") or []
+    if isinstance(thumbs, dict):
+        thumbs = thumbs.get("thumbnails", [])
+    thumb = thumbs[-1]["url"] if thumbs else ""
+    dur = item.get("duration_seconds")
+    if dur is None:
+        text = item.get("duration") or item.get("length") or ""
+        parts = [int(p) for p in text.split(":") if p.isdigit()]
+        dur = sum(p * 60 ** i for i, p in enumerate(reversed(parts))) if parts else 0
+    return {"id": vid, "title": item.get("title") or "Unknown", "artist": artists or "Unknown artist",
+            "album": album.get("name", "") if isinstance(album, dict) else "",
+            "duration": dur, "thumb": thumb}
+
+
+def sized_thumb(url, px):
+    # YouTube Music art URLs end in =w120-h120-...; ask for the size we draw.
+    return re.sub(r"=w\d+-h\d+", f"=w{px}-h{px}", url) if "googleusercontent" in url else url
+
+
+# =============================================================================
+# Theme: GTK CSS from the active Omarchy theme (same tokens as Settings)
+# =============================================================================
+
+DEFAULT_COLORS = {
+    "mode": "dark", "accent": "#7aa2f7", "selection": "#414868", "muted": "#787c99",
+    "background": "#1a1b26", "dark_background": "#16161e", "darker_background": "#111118",
+    "lighter_background": "#1f2335", "foreground": "#c0caf5", "red": "#f7768e",
+}
+
+
+def load_theme():
+    colors = dict(DEFAULT_COLORS)
+    try:
+        with open(THEME_DIR / "colors.toml", "rb") as f:
+            colors.update({k: v for k, v in tomllib.load(f).items() if isinstance(v, str)})
+    except (OSError, tomllib.TOMLDecodeError):
+        pass
+    try:
+        font = subprocess.run(["fc-match", "monospace", "-f", "%{family}"], capture_output=True,
+                              text=True, timeout=2).stdout.split(",")[0] or "monospace"
+    except (OSError, subprocess.SubprocessError):
+        font = "monospace"
+    radius = 0
+    try:
+        out = subprocess.run(["hyprctl", "-j", "getoption", "decoration:rounding"],
+                             capture_output=True, text=True, timeout=2).stdout
+        radius = max(0, min(int(json.loads(out).get("int", 0)), 14))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return {"c": colors, "font": font, "radius": radius}
+
+
+def theme_css(t):
+    c, R = t["c"], t["radius"]
+    fg, bg, acc, muted = c["foreground"], c["background"], c["accent"], c["muted"]
+    dark, darker, light, sel = c["dark_background"], c["darker_background"], c["lighter_background"], c["selection"]
+    line = rgba(sel, 0.45)
+    named = {
+        "accent_color": acc, "accent_bg_color": acc, "accent_fg_color": darker,
+        "window_bg_color": rgba(bg, OPACITY), "window_fg_color": fg,
+        "view_bg_color": "transparent", "view_fg_color": fg, "headerbar_bg_color": bg, "headerbar_fg_color": fg, "popover_bg_color": light,
+        "popover_fg_color": fg, "card_bg_color": light, "card_fg_color": fg,
+        "destructive_color": c["red"], "error_color": c["red"],
+    }
+    defs = "\n".join(f"@define-color {n} {v};" for n, v in named.items())
+    return f"""
+{defs}
+window, window * {{ font-family: "{t['font']}", monospace; }}
+window {{ background-color: {rgba(bg, OPACITY)}; color: {fg}; font-size: 10.5pt; }}
+.top {{ padding: 14px 14px 6px 14px; }}
+.brand {{ font-weight: 800; letter-spacing: 1px; color: {fg}; }}
+.brand-mark {{ color: {acc}; font-weight: 800; }}
+.count {{ color: {muted}; font-size: 0.82em; }}
+entry.search {{ background-color: {rgba(fg, 0.04)}; border: 1px solid {line}; border-radius: {R}px;
+  min-height: 34px; box-shadow: none; outline: none; }}
+entry.search:focus-within {{ border-color: {rgba(acc, 0.6)}; background-color: {rgba(acc, 0.06)}; }}
+.tabs {{ padding: 0 14px 8px 14px; }}
+.tabs button {{ border-radius: {R}px; padding: 3px 12px; min-height: 0; background: transparent;
+  border: 1px solid transparent; box-shadow: none; color: {muted}; font-weight: 600; }}
+.tabs button:hover {{ color: {fg}; background-color: {rgba(acc, 0.06)}; }}
+.tabs button:checked {{ color: {acc}; background-color: {rgba(acc, 0.12)}; border-color: {rgba(acc, 0.45)}; }}
+scrolledwindow, list.tracks {{ background: transparent; }}
+list.tracks {{ padding: 0 8px 8px 8px; }}
+list.tracks > row {{ border-radius: {R}px; padding: 5px 6px; margin: 1px 0; background: transparent;
+  border-left: 2px solid transparent; }}
+list.tracks > row:hover {{ background-color: {rgba(acc, 0.06)}; }}
+list.tracks > row:selected, list.tracks > row:focus {{ background-color: {rgba(acc, 0.10)}; }}
+list.tracks > row.playing {{ border-left-color: {acc}; background-color: {rgba(acc, 0.10)}; }}
+list.tracks > row.playing .title {{ color: {acc}; }}
+list.tracks > row.back {{ color: {acc}; font-weight: 700; padding: 8px 8px; }}
+.section {{ color: {muted}; font-size: 0.74em; font-weight: 700; letter-spacing: 1.5px; padding: 10px 8px 4px 8px; }}
+.art {{ border-radius: {R}px; background-color: {light}; }}
+.title {{ font-weight: 700; color: {fg}; }}
+.sub {{ color: {muted}; font-size: 0.86em; }}
+.saved {{ color: {acc}; }}
+.pending {{ color: {muted}; }}
+.sync {{ color: {acc}; font-size: 0.86em; padding: 4px 8px 8px 8px; }}
+button.row-action {{ background: transparent; border: none; box-shadow: none; color: {muted}; min-width: 26px; min-height: 26px; padding: 0; }}
+button.row-action:hover {{ color: {acc}; background-color: {rgba(acc, 0.10)}; }}
+.empty {{ color: {muted}; padding: 40px 20px; }}
+.empty-title {{ color: {fg}; font-weight: 700; font-size: 1.1em; }}
+.player {{ background-color: {rgba(darker, OPACITY * 0.6)}; border-top: 1px solid {line}; padding: 12px 14px 12px 14px; }}
+.player .title {{ font-size: 1.02em; }}
+.player .time {{ color: {muted}; font-size: 0.8em; font-feature-settings: "tnum"; }}
+.player .status {{ color: {acc}; font-size: 0.8em; }}
+scale.progress {{ padding: 6px 0; margin: 0; min-height: 0; }}
+scale.progress > trough {{ min-height: 4px; padding: 0; margin: 0; outline: none; border-radius: {R}px; background-color: {rgba(fg, 0.10)}; border: none; box-shadow: none; }}
+scale.progress > trough > highlight {{ min-height: 4px; min-width: 0; padding: 0; margin: 0; background-color: {acc}; border-radius: {R}px; border: none; }}
+scale.progress > trough > slider {{ min-width: 12px; min-height: 12px; margin: -4px; background-color: {acc};
+  border-radius: {max(R, 2)}px; box-shadow: none; border: none; opacity: 0; transition: opacity 120ms; }}
+scale.progress:hover > trough > slider {{ opacity: 1; }}
+scale.volume {{ padding: 0 6px; min-height: 120px; }}
+scale.volume > trough {{ min-width: 4px; border-radius: {R}px; background-color: {rgba(fg, 0.10)}; border: none; box-shadow: none; }}
+scale.volume > trough > highlight {{ min-width: 4px; background-color: {acc}; border-radius: {R}px; border: none; }}
+scale.volume > trough > slider {{ min-width: 12px; min-height: 12px; margin: -4px; background-color: {acc};
+  border-radius: {max(R, 2)}px; box-shadow: none; border: none; }}
+scale.eqband {{ min-height: 140px; padding: 0 2px; }}
+.eq {{ padding: 6px 4px 2px 4px; }}
+.eq .hz {{ color: {muted}; font-size: 0.74em; }}
+button.ctl.eq-btn label {{ font-weight: 800; font-size: 0.82em; letter-spacing: 1px; }}
+button.ctl {{ background: transparent; border: none; box-shadow: none; color: {fg}; min-width: 34px; min-height: 34px; border-radius: {R}px; }}
+button.ctl:hover {{ color: {acc}; background-color: {rgba(acc, 0.10)}; }}
+button.ctl:checked, button.ctl.on, button.ctl.liked {{ color: {acc}; }}
+button.heart label {{ font-size: 15pt; }}
+button.play {{ background-color: {acc}; color: {darker}; min-width: 38px; min-height: 38px; padding: 0; border-radius: {R}px; border: none; box-shadow: none; }}
+button.play:hover {{ background-color: {rgba(acc, 0.85)}; color: {darker}; }}
+toast {{ border-radius: {R}px; background-color: {light}; color: {fg}; border: 1px solid {line}; }}
+"""
+
+
+# =============================================================================
+# Library: songs on disk, with the metadata to show and play them offline
+# =============================================================================
+
+class Library:
+    def __init__(self):
+        SONGS.mkdir(parents=True, exist_ok=True)
+        ART.mkdir(parents=True, exist_ok=True)
+        self.items = read_json(LIBRARY, {})
+        # Drop entries whose file was deleted by hand.
+        for vid in [v for v, t in self.items.items() if not Path(t.get("file", "")).exists()]:
+            del self.items[vid]
+        self.missing = read_json(MISSING, {})
+        self.lock = threading.Lock()
+
+    def save(self):
+        with self.lock:
+            write_atomic(LIBRARY, json.dumps(self.items, indent=1))
+
+    def has(self, vid):
+        t = self.items.get(vid)
+        return bool(t) and Path(t["file"]).exists()
+
+    def file(self, vid):
+        return self.items[vid]["file"] if self.has(vid) else None
+
+    def is_flac(self, vid):
+        return self.has(vid) and self.items[vid].get("format") == "flac"
+
+    def add(self, track, path, art, fmt="", **extra):
+        entry = {k: track.get(k) for k in ("id", "title", "artist", "album", "duration", "thumb")}
+        entry.update(file=str(path), art=str(art) if art else "", added=time.time(), format=fmt,
+                     plays=self.items.get(track["id"], {}).get("plays", 0),
+                     last=self.items.get(track["id"], {}).get("last", 0), **extra)
+        self.items[track["id"]] = entry
+        self.save()
+
+    def played(self, vid):
+        if vid in self.items:
+            self.items[vid]["plays"] = self.items[vid].get("plays", 0) + 1
+            self.items[vid]["last"] = time.time()
+            self.save()
+
+    def remove(self, vid):
+        t = self.items.pop(vid, None)
+        if t:
+            for p in (t.get("file"), t.get("art")):
+                if p:
+                    Path(p).unlink(missing_ok=True)
+            self.save()
+
+    def mark_missing(self, vid, missing=True):
+        with self.lock:
+            if missing:
+                self.missing[vid] = time.time()
+            elif self.missing.pop(vid, None) is None:
+                return
+            write_atomic(MISSING, json.dumps(self.missing))
+
+    def recently_missing(self, vid):
+        return time.time() - self.missing.get(vid, 0) < RETRY_MISSING
+
+    def lossy(self):
+        """Songs saved before FLAC, to replace."""
+        return [dict(t) for t in self.items.values() if t.get("format") != "flac"]
+
+    def tracks(self):
+        return sorted(self.items.values(), key=lambda t: (t.get("last", 0), t.get("added", 0)), reverse=True)
+
+    def size_mb(self):
+        return sum(Path(t["file"]).stat().st_size for t in self.items.values()
+                   if Path(t["file"]).exists()) / 1e6
+
+    def size_text(self):
+        mb = self.size_mb()
+        return f"{mb / 1000:.1f} GB" if mb >= 1000 else f"{mb:.0f} MB"
+
+
+# =============================================================================
+# Downloads: FLAC from Tidal, once per song. Each YouTube Music song is matched
+# on Tidal by title, artist and length; songs Tidal has no lossless copy of
+# are skipped, never saved lossy. .part files mean a crash never leaves a half
+# song that looks finished.
+# =============================================================================
+
+TIDAL_SESSION = HOME / ".local" / "state" / "omarchy-music-tidal.json"
+RETRY_MISSING = 7 * 86400   # look again for songs Tidal didn't have after a week
+SYNC_EVERY = 3 * 3600       # pick up songs added to your playlists (on your phone, say)
+LOSSLESS = {"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"}
+# The best Tidal has of each song: hi-res FLAC (up to 24-bit/192 kHz) where it
+# exists, CD-quality FLAC otherwise. "LOSSLESS" would keep everything 16-bit/44.1.
+TIDAL_QUALITY = "HI_RES_LOSSLESS"
+# Words that make a different recording: a match must agree on each of them.
+VERSION_WORDS = ("live", "remix", "acoustic", "instrumental", "karaoke", "sped up", "slowed", "nightcore",
+                 "demo", "unplugged", "orchestral", "a cappella", "acapella", "radio edit", "extended")
+
+
+class NoLosslessMatch(RuntimeError):
+    pass
+
+
+def clean_title(s):
+    """A title without what YouTube adds: (Official Video), feat. credits,
+    remaster notes, punctuation."""
+    s = s.lower()
+    s = re.sub(r"[(\[][^)\]]*\b(official|video|audio|lyrics?|visuali[sz]er|hd|4k|mv|remaster(ed)?|feat|ft|with"
+               r"|original|album version|explicit|clean|single version)\b[^)\]]*[)\]]", " ", s)
+    s = re.sub(r"\s[-–]\s[^-–]*\b(official|video|audio|lyrics?|remaster(ed)?)\b.*$", " ", s)
+    s = re.sub(r"\b(feat|ft)\b\.?\s.*$", " ", s)
+    return " ".join(re.sub(r"[^\w\s]", " ", s).split())
+
+
+def bare_title(s):
+    """Just the song's name: no brackets, nothing after " - "."""
+    return clean_title(re.sub(r"[(\[][^)\]]*[)\]]|\s[-–]\s.*$", " ", s))
+
+
+def featured(title):
+    """Artists credited in a title: "Song (feat. A & B)" -> {a, b}."""
+    m = re.search(r"\b(?:feat|ft|with)\b\.?\s*([^)\]]+)", title, re.I)
+    return artist_names([m.group(1)]) if m else set()
+
+
+def artist_names(names):
+    """Each artist in names, lowercased; splits "A, B & C" and drops "- Topic"."""
+    out = set()
+    for n in names:
+        n = re.sub(r"\s*-\s*topic$|vevo$", "", n.lower().strip())
+        for part in re.split(r",|&|\bx\b|\band\b|\bfeat\b\.?|\bft\b\.?", n):
+            part = " ".join(re.sub(r"[^\w\s]", " ", part).split())
+            if part:
+                out.add(part)
+    return out
+
+
+def similar(a, b):
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def has_word(text, word):
+    return re.search(rf"\b{word}\b", text) is not None
+
+
+def fetch_bytes(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read()
+
+
+def write_file(dest, data):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+
+
+def fetch_url(url, dest):
+    write_file(dest, fetch_bytes(url))
+
+
+class Tidal:
+    """Your Tidal account: finds each song and downloads it in FLAC.
+
+    Tidal streams lossless only to the browser ("PKCE") login: you sign in on
+    Tidal's page and paste back the address of the "Oops" page it ends on.
+    """
+
+    def __init__(self):
+        import tidalapi
+        self.td = tidalapi
+        self.session = tidalapi.Session(tidalapi.Config(quality=TIDAL_QUALITY))
+        self.lock = threading.Lock()   # one API call at a time; file downloads run in parallel
+        self.connected = False
+        if TIDAL_SESSION.exists():
+            try:
+                self.connected = (bool(self.session.load_session_from_file(TIDAL_SESSION))
+                                  and self.session.check_login() and self.session.is_pkce)
+            except Exception:  # noqa: BLE001 -- expired or broken login: connect again
+                self.connected = False
+            if self.connected:
+                self._save()   # keep the refreshed token
+
+    def _save(self):
+        TIDAL_SESSION.parent.mkdir(parents=True, exist_ok=True)
+        TIDAL_SESSION.touch(mode=0o600, exist_ok=True)
+        self.session.save_session_to_file(TIDAL_SESSION)
+        TIDAL_SESSION.chmod(0o600)
+
+    def login_url(self):
+        """Logging in, step 1: the page to sign in to Tidal on."""
+        return self.session.pkce_login_url()
+
+    def finish_login(self, oops_url):
+        """Step 2: the address of the "Oops" page Tidal ends on after signing in."""
+        token = self.session.pkce_get_auth_token(oops_url.strip())
+        self.session.process_auth_token(token, is_pkce_token=True)
+        self._save()
+        self.connected = True
+
+    def match(self, track):
+        """The Tidal track that is this song, available in lossless, or None."""
+        # (artists, title) readings of the song: as YouTube has it, and for
+        # uploads titled "Artist - Song", the way the title has it.
+        readings = [(track["artist"].split(","), track["title"])]
+        m = re.match(r"(.+?)\s[-–]\s(.+)", track["title"])
+        if m:
+            readings.append((re.split(r",|&|\bx\b", m.group(1)), m.group(2)))
+        queries = []
+        for artists, title in readings:
+            for q in (f"{artists[0].strip()} {clean_title(title)}", f"{artists[0].strip()} {bare_title(title)}"):
+                if q not in queries:
+                    queries.append(q)
+        queries.append(clean_title(track["title"]))
+        best, best_score, seen = None, 0.0, set()
+        for query in queries:
+            with self.lock:
+                found = self.session.search(query, models=[self.td.Track], limit=20)["tracks"]
+            for c in found:
+                if c.id not in seen:
+                    seen.add(c.id)
+                    score = max(self._score(track, artists, title, c) for artists, title in readings)
+                    if score > best_score:
+                        best, best_score = c, score
+            if best_score >= 0.9:
+                break
+        return best
+
+    @staticmethod
+    def _score(track, artists, title, c):
+        """How sure we are that c is the song, 0 (it isn't) .. ~1."""
+        if not c.available or not (c.audio_quality in LOSSLESS or "LOSSLESS" in (c.media_metadata_tags or [])):
+            return 0.0
+        dur = track.get("duration") or 0
+        if dur and abs((c.duration or 0) - dur) > 6:
+            return 0.0
+        name = f"{c.name} ({c.version})" if c.version else c.name
+        album = getattr(c.album, "name", "") or ""
+        if any(has_word(f"{title} {track.get('album') or ''}".lower(), w) != has_word(f"{name} {album}".lower(), w)
+               for w in VERSION_WORDS):
+            return 0.0
+        t = similar(clean_title(title), clean_title(name))
+        theirs = artist_names(a.name for a in c.artists or []) | featured(name)
+
+        def found(artist):
+            return max((similar(artist, y) for y in theirs), default=0.0)
+        lead = max((found(x) for x in artist_names(artists[:1])), default=0.0)
+        if t < 0.75 or lead < 0.8:
+            return 0.0
+        ours = artist_names(artists) | featured(title)
+        credits = sum(found(x) for x in ours) / len(ours)    # prefers the version with the featured artists
+        closeness = 1 - abs(c.duration - dur) / 6 if dur else 0.5
+        same_album = 0.05 if track.get("album") and similar(track["album"].lower(), album.lower()) > 0.8 else 0.0
+        return 0.55 * t + 0.2 * lead + 0.1 * credits + 0.15 * closeness + same_album
+
+    def download(self, c, dest, cover, vid):
+        """Save Tidal track c at dest as tagged FLAC; returns (bits, sample rate)."""
+        import requests
+        with self.lock:
+            stream = c.get_stream()
+            manifest = stream.get_stream_manifest()
+        if stream.audio_quality not in LOSSLESS or "FLAC" not in str(manifest.get_codecs()).upper():
+            raise NoLosslessMatch("Tidal only has it lossy")
+        if manifest.is_encrypted:
+            raise RuntimeError("Tidal sent an encrypted stream")
+        part = dest.with_suffix(".part")
+        with open(part, "wb") as f:
+            for url in manifest.get_urls():
+                with requests.get(url, stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    for chunk in r.iter_content(1 << 16):
+                        f.write(chunk)
+        if manifest.is_mpd:
+            # FLAC in MP4 segments: take the FLAC out, untouched.
+            flac = dest.with_suffix(".remux.flac")
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(part), "-map", "0:a", "-c:a", "copy",
+                            str(flac)], check=True, capture_output=True, timeout=300)
+            part.unlink()
+            part = flac
+        info = tag_flac(part, c, cover, vid)
+        os.replace(part, dest)
+        return info
+
+
+def tag_flac(path, c, cover, vid):
+    """Title, artists, album, numbers and cover from Tidal; returns (bits, sample rate)."""
+    from mutagen.flac import FLAC, Picture
+    f = FLAC(path)
+    f.clear()
+    album = c.album
+    tags = {
+        "title": f"{c.name} ({c.version})" if c.version else c.name,
+        "artist": [a.name for a in c.artists or []],
+        "album": getattr(album, "name", None),
+        "albumartist": getattr(getattr(album, "artist", None), "name", None),
+        "tracknumber": str(c.track_num) if c.track_num else None,
+        "discnumber": str(c.volume_num) if c.volume_num else None,
+        "date": str(getattr(album, "release_date", None) or c.tidal_release_date or "")[:10] or None,
+        "isrc": c.isrc, "copyright": c.copyright, "youtube_music_id": vid, "tidal_id": str(c.id),
+    }
+    for key, value in tags.items():
+        if value:
+            f[key] = value
+    if cover:
+        pic = Picture()
+        pic.type, pic.mime, pic.data = 3, "image/jpeg", cover   # 3: front cover
+        f.add_picture(pic)
+    f.save()
+    return f.info.bits_per_sample, f.info.sample_rate
+
+
+class Downloader:
+    def __init__(self, library):
+        self.lib = library
+        self.tidal = None          # a Tidal once it is set up
+        self.active = {}           # vid -> [callbacks]
+        self.lock = threading.Lock()
+
+    def fetch(self, track, done):
+        """Make sure track is on disk; done(path or None, error) on the UI thread."""
+        vid = track["id"]
+        if self.lib.has(vid):
+            done(self.lib.file(vid), None)
+            return
+        with self.lock:
+            if vid in self.active:
+                self.active[vid].append(done)
+                return
+            self.active[vid] = [done]
+        in_thread(self._download, track, done=lambda res, err: self._finish(vid, res, err))
+
+    def busy(self, vid):
+        return vid in self.active
+
+    def sync(self, tracks, progress):
+        """Save every song in tracks as FLAC, one at a time (blocking). Songs
+        Tidal recently didn't have are left alone; progress() runs on the UI
+        thread after each song."""
+        for track in tracks:
+            vid = track["id"]
+            if self.lib.is_flac(vid) or self.lib.recently_missing(vid):
+                continue
+            with self.lock:
+                if vid in self.active:
+                    continue          # playback is already getting it
+                self.active[vid] = []
+            path, err = None, None
+            try:
+                path = self._download(track)
+            except Exception as e:  # noqa: BLE001 -- next song; it is tried again next sync
+                err = e
+            finally:
+                self._finish(vid, path or self.lib.file(vid), None if self.lib.has(vid) else err)
+            GLib.idle_add(lambda: (progress(), False)[1])
+
+    def _download(self, track):
+        vid = track["id"]
+        if not (self.tidal and self.tidal.connected):
+            raise RuntimeError("connect Tidal in the Library tab first")
+        match = self.tidal.match(track)
+        if not match:
+            self.lib.mark_missing(vid)
+            raise NoLosslessMatch("not on Tidal in lossless")
+        cover = None
+        try:
+            cover = fetch_bytes(match.album.image(640))
+        except Exception:  # noqa: BLE001 -- the song without its cover
+            pass
+        old = self.lib.file(vid)
+        path = SONGS / f"{vid}.flac"
+        try:
+            bits, rate = self.tidal.download(match, path, cover, vid)
+        except NoLosslessMatch:
+            self.lib.mark_missing(vid)
+            raise
+        art = ART / f"{vid}.jpg"
+        try:
+            if cover:
+                write_file(art, cover)
+            elif track.get("thumb"):
+                fetch_url(sized_thumb(track["thumb"], 226), art)
+            else:
+                art = None
+        except OSError:
+            art = None
+        self.lib.add(track, path, art, "flac", quality=f"{bits}-bit/{rate / 1000:g} kHz", tidal=match.id)
+        self.lib.mark_missing(vid, False)
+        if old and old != str(path):
+            Path(old).unlink(missing_ok=True)    # the lossy copy it replaces
+        return str(path)
+
+    def _finish(self, vid, path, err):
+        with self.lock:
+            callbacks = self.active.pop(vid, [])
+        for cb in callbacks:
+            cb(path, err)
+
+
+class ArtCache:
+    """Album art for rows: library art on disk, else a cached thumbnail."""
+
+    def __init__(self, library):
+        self.lib = library
+        self.textures = {}
+        self.waiting = {}
+        THUMBS.mkdir(parents=True, exist_ok=True)
+
+    def apply(self, picture, track, px=226):
+        vid = track["id"]
+        if vid in self.textures:
+            picture.set_from_paintable(self.textures[vid])
+            return
+        lib = self.lib.items.get(vid)
+        path = Path(lib["art"]) if lib and lib.get("art") else THUMBS / f"{vid}.jpg"
+        if path.exists():
+            self._load(vid, path, picture)
+            return
+        if not track.get("thumb"):
+            return
+        self.waiting.setdefault(vid, []).append(picture)
+        if len(self.waiting[vid]) > 1:
+            return
+        in_thread(fetch_url, sized_thumb(track["thumb"], px), path,
+                  done=lambda _r, err: [self._load(vid, path, p) for p in self.waiting.pop(vid, [])] if not err else self.waiting.pop(vid, None))
+
+    def _load(self, vid, path, picture):
+        try:
+            tex = Gdk.Texture.new_from_filename(str(path))
+        except GLib.Error:
+            return
+        self.textures[vid] = tex
+        picture.set_from_paintable(tex)
+
+
+# =============================================================================
+# YouTube Music: search, radio, playlists, and your account if a browser is
+# signed in to YouTube
+# =============================================================================
+
+def find_signed_in_browser():
+    """(browser, youtube cookie header) for the first browser signed in to YouTube.
+
+    Chromium encrypts cookies with a key held in the GNOME keyring; without
+    the keyring (and the secretstorage module) every value decrypts to garbage
+    and YouTube quietly treats the requests as signed out.
+    """
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except ImportError:
+        return None, None
+    keyring = cookie_keyring()
+    for b in BROWSERS:
+        try:
+            jar = extract_cookies_from_browser(b, keyring=keyring if b != "firefox" else None,
+                                               logger=_QuietLogger())
+        except Exception:  # noqa: BLE001 -- browser not installed / locked
+            continue
+        cookies = {c.name: c.value for c in jar if c.domain.endswith("youtube.com")}
+        if "__Secure-3PAPISID" in cookies:
+            return b, "; ".join(f"{k}={v}" for k, v in cookies.items())
+    return None, None
+
+
+def cookie_keyring():
+    return "GNOMEKEYRING" if subprocess.run(["pgrep", "-x", "gnome-keyring-d"],
+                                            capture_output=True).returncode == 0 else None
+
+
+class _QuietLogger:
+    def debug(self, *_a, **_k): pass
+    def info(self, *_a, **_k): pass
+    def warning(self, *_a, **_k): pass
+    def error(self, *_a, **_k): pass
+
+
+class YTM:
+    def __init__(self):
+        from ytmusicapi import YTMusic
+        from ytmusicapi.helpers import initialize_headers
+        self.anon = YTMusic()
+        self.browser, cookie = find_signed_in_browser()
+        self.account = None
+        if cookie:
+            # Browser auth sends only these headers, so start from the normal
+            # ones; the placeholder authorization marks it as browser auth and
+            # ytmusicapi recomputes the real SAPISIDHASH on every request.
+            headers = dict(initialize_headers())
+            headers.update({"cookie": cookie, "x-goog-authuser": "0", "origin": "https://music.youtube.com",
+                            "authorization": "SAPISIDHASH 0_0"})
+            try:
+                self.account = YTMusic(auth=headers)
+                self.account.get_account_info()
+            except Exception:  # noqa: BLE001 -- expired login: stay anonymous
+                self.account = None
+
+    @property
+    def api(self):
+        return self.account or self.anon
+
+    def search(self, q):
+        m = re.search(r"[?&]list=([\w-]+)", q)
+        if m:
+            return self.playlist(m.group(1))
+        m = re.search(r"(?:v=|youtu\.be/)([\w-]{11})", q)
+        if m:
+            return self.radio(m.group(1))[:1]
+        return [t for t in map(track_from_ytm, self.api.search(q, filter="songs", limit=30)) if t]
+
+    def radio(self, vid):
+        tracks = self.api.get_watch_playlist(videoId=vid, limit=40).get("tracks", [])
+        return [t for t in map(track_from_ytm, tracks) if t]
+
+    def my_playlists(self):
+        out = []
+        for p in self.account.get_library_playlists(limit=None):
+            if not p.get("playlistId"):
+                continue
+            thumbs = p.get("thumbnails") or []
+            out.append({"id": p["playlistId"], "title": p.get("title") or "Playlist",
+                        "count": p.get("count") or "", "thumb": thumbs[-1]["url"] if thumbs else ""})
+        return out
+
+    def liked_ids(self):
+        tracks = self.account.get_liked_songs(limit=None).get("tracks", [])
+        return {t["videoId"] for t in tracks if t.get("videoId")}
+
+    def rate(self, vid, like):
+        from ytmusicapi.models.content.enums import LikeStatus
+        self.account.rate_song(vid, LikeStatus.LIKE if like else LikeStatus.INDIFFERENT)
+
+    def playlist(self, pid):
+        api = self.account or self.anon
+        return [t for t in map(track_from_ytm, api.get_playlist(pid, limit=None).get("tracks", [])) if t]
+
+    def library_tracks(self):
+        """Every song in your liked songs and playlists, each once."""
+        ids = [p["id"] for p in self.my_playlists()]
+        if "LM" not in ids:
+            ids.insert(0, "LM")   # liked music
+        seen, out = set(), []
+        for pid in ids:
+            try:
+                tracks = self.playlist(pid)
+            except Exception:  # noqa: BLE001 -- skip a playlist that won't load
+                continue
+            for t in tracks:
+                if t["id"] not in seen:
+                    seen.add(t["id"])
+                    out.append(t)
+        return out
+
+
+# =============================================================================
+# Playback: one mpv process over its JSON IPC socket
+# =============================================================================
+
+def _die_with_parent():
+    # mpv must not outlive the app (a killed app would leave music playing).
+    import ctypes
+    ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
+
+
+class Player:
+    def __init__(self, on_event):
+        self.on_event = on_event
+        SOCK.unlink(missing_ok=True)
+        self.proc = subprocess.Popen(
+            ["mpv", "--idle=yes", "--no-video", "--no-terminal", "--load-scripts=no",
+             "--audio-client-name=omarchy-music",  # the desktop visualizer listens to this stream only
+             "--no-config", "--audio-display=no", "--gapless-audio=weak", "--volume=100",
+             f"--input-ipc-server={SOCK}"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=_die_with_parent)
+        self.sock = None
+        for _ in range(100):
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(str(SOCK))
+                self.sock = s
+                break
+            except OSError:
+                time.sleep(0.05)
+        if not self.sock:
+            raise RuntimeError("mpv did not start")
+        self.wlock = threading.Lock()
+        threading.Thread(target=self._reader, daemon=True).start()
+        for i, prop in enumerate(("time-pos", "duration", "pause", "idle-active"), 1):
+            self.cmd("observe_property", i, prop)
+
+    def cmd(self, *args):
+        with self.wlock:
+            try:
+                self.sock.sendall((json.dumps({"command": list(args)}) + "\n").encode())
+            except OSError:
+                pass
+
+    def _reader(self):
+        buf = b""
+        while True:
+            try:
+                chunk = self.sock.recv(65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "event" in msg:
+                    GLib.idle_add(lambda m=msg: (self.on_event(m), False)[1])
+
+    def load(self, path, paused=False):
+        self.cmd("loadfile", path, "replace", -1, f"pause={'yes' if paused else 'no'}")
+
+    def set_volume(self, volume, muted):
+        self.cmd("set_property", "volume", volume)
+        self.cmd("set_property", "mute", muted)
+
+    def set_filters(self, graph):
+        """mpv's audio filters: a libavfilter graph, or none for untouched audio."""
+        self.cmd("set_property", "af", f"@eq:lavfi=[{graph}]" if graph else "")
+
+    def filter_cmd(self, command, arg, target):
+        """Change one setting of one filter in the running graph, without a gap."""
+        self.cmd("af-command", "eq", command, str(arg), target)
+
+    def set_pause(self, paused):
+        self.cmd("set_property", "pause", paused)
+
+    def seek(self, seconds):
+        self.cmd("seek", seconds, "absolute")
+
+    def stop(self):
+        self.cmd("stop")
+
+    def quit(self):
+        self.cmd("quit")
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        SOCK.unlink(missing_ok=True)
+
+
+# =============================================================================
+# Equalizer: a correction for your headphones, then a 10-band EQ to taste
+# =============================================================================
+
+# Filters are (type, Hz, gain dB, Q): "pk" a peak or dip, "ls" / "hs" a low / high shelf.
+# Corrections from AutoEq (github.com/jaakkopasanen/AutoEq, measured by Super Review)
+# bring the headphone to the Harman target, the sound most listeners prefer.
+HEADPHONES = {
+    "off": ("None", ()),
+    "xm6-cable": ("Sony WH-1000XM6 · cable", (
+        ("ls", 105, -1.5, 0.70), ("pk", 161, -7.5, 0.69), ("pk", 2143, 4.3, 3.66), ("pk", 1019, -5.3, 1.74),
+        ("pk", 8308, 5.3, 0.21), ("hs", 10000, -1.5, 0.70), ("pk", 57, -2.0, 2.27), ("pk", 463, 1.5, 2.87),
+        ("pk", 103, 1.7, 2.95), ("pk", 4339, 0.9, 3.49))),
+    "xm6-bluetooth": ("Sony WH-1000XM6 · Bluetooth", (
+        ("ls", 105, -8.3, 0.70), ("pk", 171, -4.9, 0.99), ("pk", 648, 2.5, 0.63), ("pk", 2499, -5.2, 1.50),
+        ("pk", 5689, 4.1, 0.40), ("hs", 10000, 3.3, 0.70), ("pk", 4137, 1.3, 3.44), ("pk", 6747, -2.2, 3.84),
+        ("pk", 1496, -1.5, 3.88), ("pk", 1151, 1.4, 4.07))),
+}
+EQ_BANDS = (31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+EQ_Q = 1.41         # an octave wide, so neighbouring bands blend smoothly
+EQ_RANGE = 12       # dB, either way
+EQ_PRESETS = {
+    "flat": ("Flat", (0,) * 10),
+    "bass": ("Bass boost", (5, 4.5, 3.5, 1.5, 0, 0, 0, 0, 0, 0)),
+    "warm": ("Warm", (2, 2, 1.5, 1, 0, 0, -0.5, -1, -1.5, -2)),
+    "vocal": ("Vocal", (-2, -2, -1, 0, 1.5, 2.5, 2.5, 1.5, 0, -1)),
+    "bright": ("Bright", (0, 0, 0, 0, 0, 0, 1, 2.5, 3.5, 4)),
+    "v": ("V-shape", (4, 3.5, 2, 0, -1, -1, 0, 1.5, 3, 3.5)),
+    "custom": ("Custom", None),
+}
+EQ_DEFAULT = {"on": False, "headphones": "off", "preset": "flat", "bands": [0.0] * 10, "custom": [0.0] * 10}
+
+
+def biquad_db(kind, hz, gain, q, f, rate=48000):
+    """The gain in dB at f Hz of one filter, as libavfilter builds it (the RBJ cookbook)."""
+    a, w0 = 10 ** (gain / 40), 2 * math.pi * hz / rate
+    cw, alpha = math.cos(w0), math.sin(w0) / (2 * q)
+    if kind == "pk":
+        b, d = (1 + alpha * a, -2 * cw, 1 - alpha * a), (1 + alpha / a, -2 * cw, 1 - alpha / a)
+    else:
+        sa = 2 * math.sqrt(a) * alpha
+        s = 1 if kind == "ls" else -1  # the high shelf is the low one mirrored
+        b = (a * ((a + 1) - s * (a - 1) * cw + sa), s * 2 * a * ((a - 1) - s * (a + 1) * cw),
+             a * ((a + 1) - s * (a - 1) * cw - sa))
+        d = ((a + 1) + s * (a - 1) * cw + sa, -s * 2 * ((a - 1) + s * (a + 1) * cw), (a + 1) + s * (a - 1) * cw - sa)
+    z = cmath.exp(-1j * 2 * math.pi * f / rate)
+    return 20 * math.log10(abs((b[0] + b[1] * z + b[2] * z * z) / (d[0] + d[1] * z + d[2] * z * z)))
+
+
+def eq_preamp(filters):
+    """The cut that keeps the EQ's biggest boost from clipping: dB, 0 or below."""
+    freqs = [20 * 1000 ** (i / 299) for i in range(300)]  # 20 Hz to 20 kHz
+    peak = max(sum(biquad_db(*flt, f) for flt in filters) for f in freqs)
+    return -math.ceil(max(0.0, peak) * 10) / 10
+
+
+def eq_graph(correction, bands, preamp):
+    """The libavfilter graph, in 64-bit float throughout so nothing clips or rounds
+    between filters. The bands are named so their gains can change while playing."""
+    names = {"pk": "equalizer", "ls": "lowshelf", "hs": "highshelf"}
+    parts = ["aformat=sample_fmts=dblp", f"volume@pre=volume={preamp}dB:precision=double"]
+    parts += [f"{names[k]}@c{i}=f={hz}:t=q:w={q}:g={g}" for i, (k, hz, g, q) in enumerate(correction)]
+    parts += [f"equalizer@g{i}=f={hz}:t=q:w={EQ_Q}:g={g}" for i, (hz, g) in enumerate(zip(EQ_BANDS, bands))]
+    return ",".join(parts)
+
+
+def fmt_db(g):
+    return "0" if g == 0 else ("+" if g > 0 else "−") + f"{abs(g):.1f}".removesuffix(".0")
+
+
+# =============================================================================
+# MPRIS, so media keys, playerctl and the Omarchy shell see what is playing
+# =============================================================================
+
+MPRIS_XML = """
+<node>
+  <interface name="org.mpris.MediaPlayer2">
+    <method name="Raise"/><method name="Quit"/>
+    <property name="CanQuit" type="b" access="read"/>
+    <property name="CanRaise" type="b" access="read"/>
+    <property name="HasTrackList" type="b" access="read"/>
+    <property name="Identity" type="s" access="read"/>
+    <property name="DesktopEntry" type="s" access="read"/>
+    <property name="SupportedUriSchemes" type="as" access="read"/>
+    <property name="SupportedMimeTypes" type="as" access="read"/>
+  </interface>
+  <interface name="org.mpris.MediaPlayer2.Player">
+    <method name="Next"/><method name="Previous"/><method name="Pause"/>
+    <method name="PlayPause"/><method name="Stop"/><method name="Play"/>
+    <method name="Seek"><arg direction="in" type="x" name="Offset"/></method>
+    <method name="SetPosition"><arg direction="in" type="o" name="TrackId"/><arg direction="in" type="x" name="Position"/></method>
+    <method name="OpenUri"><arg direction="in" type="s" name="Uri"/></method>
+    <signal name="Seeked"><arg type="x" name="Position"/></signal>
+    <property name="PlaybackStatus" type="s" access="read"/>
+    <property name="LoopStatus" type="s" access="read"/>
+    <property name="Rate" type="d" access="read"/>
+    <property name="Shuffle" type="b" access="read"/>
+    <property name="Metadata" type="a{sv}" access="read"/>
+    <property name="Volume" type="d" access="readwrite"/>
+    <property name="Position" type="x" access="read"/>
+    <property name="MinimumRate" type="d" access="read"/>
+    <property name="MaximumRate" type="d" access="read"/>
+    <property name="CanGoNext" type="b" access="read"/>
+    <property name="CanGoPrevious" type="b" access="read"/>
+    <property name="CanPlay" type="b" access="read"/>
+    <property name="CanPause" type="b" access="read"/>
+    <property name="CanSeek" type="b" access="read"/>
+    <property name="CanControl" type="b" access="read"/>
+  </interface>
+</node>"""
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+
+
+class Mpris:
+    def __init__(self, app):
+        self.app = app
+        self.conn = None
+        self.node = Gio.DBusNodeInfo.new_for_xml(MPRIS_XML)
+        Gio.bus_own_name(Gio.BusType.SESSION, "org.mpris.MediaPlayer2.omarchy_music",
+                         Gio.BusNameOwnerFlags.NONE, self._acquired, None, None)
+
+    def _acquired(self, conn, _name):
+        self.conn = conn
+        for iface in self.node.interfaces:
+            conn.register_object(MPRIS_PATH, iface, self._call, self._get, self._set)
+
+    def _call(self, _c, _s, _p, _iface, method, params, inv):
+        a = self.app
+        if method == "Raise":
+            a.show_window()
+        elif method == "Quit":
+            a.quit_app()
+        elif method == "Next":
+            a.next()
+        elif method == "Previous":
+            a.previous()
+        elif method == "Pause":
+            a.set_paused(True)
+        elif method == "Play":
+            a.set_paused(False)
+        elif method == "PlayPause":
+            a.toggle_pause()
+        elif method == "Stop":
+            a.set_paused(True)
+        elif method == "Seek":
+            a.player.seek(max(0, a.position + params.unpack()[0] / 1e6))
+        elif method == "SetPosition":
+            a.player.seek(params.unpack()[1] / 1e6)
+        inv.return_value(None)
+
+    def _props(self):
+        a = self.app
+        t = a.current_track()
+        meta = {"mpris:trackid": GLib.Variant("o", "/org/omarchy/music/" + (t["id"].encode().hex() if t else "none"))}
+        if t:
+            meta["xesam:title"] = GLib.Variant("s", t["title"])
+            meta["xesam:artist"] = GLib.Variant("as", [t["artist"]])
+            meta["xesam:album"] = GLib.Variant("s", t.get("album") or "")
+            meta["mpris:length"] = GLib.Variant("x", int((a.duration or t.get("duration") or 0) * 1e6))
+            art = a.lib.items.get(t["id"], {}).get("art") or str(THUMBS / f"{t['id']}.jpg")
+            if Path(art).exists():
+                meta["mpris:artUrl"] = GLib.Variant("s", Path(art).as_uri())
+        status = "Stopped" if not t else ("Paused" if a.paused else "Playing")
+        return {
+            "CanQuit": GLib.Variant("b", True), "CanRaise": GLib.Variant("b", True),
+            "HasTrackList": GLib.Variant("b", False), "Identity": GLib.Variant("s", "Omarchy Music"),
+            "DesktopEntry": GLib.Variant("s", APP_ID), "SupportedUriSchemes": GLib.Variant("as", []),
+            "SupportedMimeTypes": GLib.Variant("as", []),
+            "PlaybackStatus": GLib.Variant("s", status),
+            "LoopStatus": GLib.Variant("s", {"all": "Playlist", "one": "Track"}.get(a.repeat, "None")),
+            "Rate": GLib.Variant("d", 1.0), "Shuffle": GLib.Variant("b", False),
+            "Metadata": GLib.Variant("a{sv}", meta), "Volume": GLib.Variant("d", 0.0 if a.muted else a.volume / 100),
+            "Position": GLib.Variant("x", int(a.position * 1e6)),
+            "MinimumRate": GLib.Variant("d", 1.0), "MaximumRate": GLib.Variant("d", 1.0),
+            "CanGoNext": GLib.Variant("b", True), "CanGoPrevious": GLib.Variant("b", True),
+            "CanPlay": GLib.Variant("b", True), "CanPause": GLib.Variant("b", True),
+            "CanSeek": GLib.Variant("b", True), "CanControl": GLib.Variant("b", True),
+        }
+
+    def _get(self, _c, _s, _p, _iface, prop):
+        return self._props().get(prop)
+
+    def _set(self, _c, _s, _p, _iface, prop, value):
+        if prop == "Volume":   # playerctl volume 0.5
+            self.app.set_volume(value.unpack() * 100)
+        return True
+
+    def changed(self):
+        if not self.conn:
+            return
+        p = self._props()
+        changed = {k: p[k] for k in ("PlaybackStatus", "LoopStatus", "Metadata", "Volume")}
+        self.conn.emit_signal(None, MPRIS_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                              GLib.Variant("(sa{sv}as)", (PLAYER_IFACE, changed, [])))
+
+
+# =============================================================================
+# UI
+# =============================================================================
+
+def icon_button(icon, css, tip, cb):
+    b = Gtk.Button(icon_name=icon, tooltip_text=tip)
+    b.add_css_class(css)
+    b.connect("clicked", lambda *_: cb())
+    return b
+
+
+def art_widget(px):
+    # Gtk.Image draws at exactly pixel_size; a Picture grows to the texture.
+    pic = Gtk.Image(pixel_size=px)
+    frame = Gtk.Box(overflow=Gtk.Overflow.HIDDEN, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+    frame.add_css_class("art")
+    frame.set_size_request(px, px)
+    frame.append(pic)
+    return frame, pic
+
+
+class TrackRow(Gtk.ListBoxRow):
+    def __init__(self, win, track, index, removable=False):
+        super().__init__()
+        self.track, self.index = track, index
+        box = Gtk.Box(spacing=10)
+        frame, pic = art_widget(42)
+        win.art.apply(pic, track)
+        box.append(frame)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        title = Gtk.Label(label=track["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        title.add_css_class("title")
+        dur = f" · {fmt_time(track['duration'])}" if track.get("duration") else ""
+        sub = Gtk.Label(label=f"{track['artist']}{dur}", xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        sub.add_css_class("sub")
+        text.append(title)
+        text.append(sub)
+        box.append(text)
+        vid = track["id"]
+        if removable:
+            box.append(icon_button("user-trash-symbolic", "row-action", "Remove download",
+                                   lambda: win.remove_download(vid)))
+        elif win.lib.has(vid):
+            ok = Gtk.Label(label="✓", tooltip_text="Downloaded: plays without data")
+            ok.add_css_class("saved")
+            box.append(ok)
+        elif win.dl.busy(vid):
+            box.append(Adw.Spinner())
+        elif win.lib.recently_missing(vid):
+            miss = Gtk.Label(label="–", tooltip_text="No lossless copy on Tidal: skipped")
+            miss.add_css_class("pending")
+            box.append(miss)
+        else:
+            box.append(icon_button("folder-download-symbolic", "row-action", "Download in FLAC",
+                                   lambda: win.download_only(track)))
+        self.set_child(box)
+
+
+class PlaylistRow(Gtk.ListBoxRow):
+    def __init__(self, win, playlist):
+        super().__init__()
+        self.playlist = playlist
+        box = Gtk.Box(spacing=10)
+        frame, pic = art_widget(42)
+        win.art.apply(pic, {"id": "pl-" + playlist["id"], "thumb": playlist["thumb"]})
+        box.append(frame)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        title = Gtk.Label(label=playlist["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        title.add_css_class("title")
+        text.append(title)
+        if playlist.get("count"):
+            sub = Gtk.Label(label=f"{playlist['count']} songs", xalign=0)
+            sub.add_css_class("sub")
+            text.append(sub)
+        box.append(text)
+        arrow = Gtk.Label(label="›")
+        arrow.add_css_class("sub")
+        box.append(arrow)
+        self.set_child(box)
+
+
+class MusicWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Music", default_width=420, default_height=680)
+        self.app = app
+        self.lib, self.dl, self.art = app.lib, app.dl, app.art
+        self.set_hide_on_close(True)
+        self.results, self.search_seq = [], 0
+        self.dragging_until = 0.0
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.toasts = Adw.ToastOverlay(child=root)
+        self.set_content(self.toasts)
+
+        # ---- top: brand + search ----
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        top.add_css_class("top")
+        brand = Gtk.Box(spacing=6)
+        mark = Gtk.Label(label="▶")
+        mark.add_css_class("brand-mark")
+        name = Gtk.Label(label="MUSIC", xalign=0, hexpand=True)
+        name.add_css_class("brand")
+        self.count = Gtk.Label()
+        self.count.add_css_class("count")
+        brand.append(mark)
+        brand.append(name)
+        brand.append(self.count)
+        top.append(brand)
+        self.entry = Gtk.SearchEntry(placeholder_text="Search songs, or paste a link")
+        self.entry.add_css_class("search")
+        self.entry.connect("activate", lambda *_: self.search())
+        self.entry.connect("search-changed", self.on_search_changed)
+        self.entry.connect("stop-search", lambda *_: self.set_visible(False))
+        top.append(self.entry)
+        root.append(top)
+
+        # ---- tabs ----
+        tabs = Gtk.Box(spacing=4)
+        tabs.add_css_class("tabs")
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=120, vexpand=True)
+        self.tab_buttons = {}
+        first = None
+        for key, label in (("search", "Search"), ("account", "Library"), ("library", "Saved"), ("queue", "Up next")):
+            b = Gtk.ToggleButton(label=label, group=first)
+            first = first or b
+            b.connect("toggled", lambda btn, k=key: btn.get_active() and self.show_tab(k))
+            tabs.append(b)
+            self.tab_buttons[key] = b
+            lst = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True)
+            lst.add_css_class("tracks")
+            lst.connect("row-activated", lambda _l, row, k=key: self.on_row(k, row))
+            sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=lst)
+            self.stack.add_named(sw, key)
+            setattr(self, f"{key}_list", lst)
+        root.append(tabs)
+        root.append(self.stack)
+
+        # ---- now playing ----
+        player = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        player.add_css_class("player")
+        row = Gtk.Box(spacing=12)
+        frame, self.np_art = art_widget(56)
+        row.append(frame)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=1)
+        self.np_title = Gtk.Label(label="Nothing playing", xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.np_title.add_css_class("title")
+        self.np_sub = Gtk.Label(label="Search for a song to start", xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.np_sub.add_css_class("sub")
+        self.np_status = Gtk.Label(xalign=0, visible=False)
+        self.np_status.add_css_class("status")
+        for w in (self.np_title, self.np_sub, self.np_status):
+            text.append(w)
+        row.append(text)
+        self.like_btn = Gtk.Button(child=Gtk.Label(label="󰋕"), valign=Gtk.Align.CENTER, visible=False,
+                                   tooltip_text="Like on YouTube Music (l)")
+        self.like_btn.add_css_class("ctl")
+        self.like_btn.add_css_class("heart")
+        self.like_btn.connect("clicked", lambda *_: app.toggle_like())
+        row.append(self.like_btn)
+        player.append(row)
+        prog = Gtk.Box(spacing=8)
+        self.t_pos = Gtk.Label(label="0:00")
+        self.t_len = Gtk.Label(label="0:00")
+        for w in (self.t_pos, self.t_len):
+            w.add_css_class("time")
+        self.scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, hexpand=True, draw_value=False)
+        self.scale.add_css_class("progress")
+        self.scale.set_range(0, 1)
+        self.scale.connect("change-value", self.on_seek)
+        prog.append(self.t_pos)
+        prog.append(self.scale)
+        prog.append(self.t_len)
+        player.append(prog)
+        controls = Gtk.CenterBox()
+        mid = Gtk.Box(spacing=10)
+        mid.append(icon_button("media-skip-backward-symbolic", "ctl", "Previous", app.previous))
+        self.play_btn = icon_button("media-playback-start-symbolic", "play", "Play / pause", app.toggle_pause)
+        mid.append(self.play_btn)
+        mid.append(icon_button("media-skip-forward-symbolic", "ctl", "Next", app.next))
+        controls.set_center_widget(mid)
+        modes = Gtk.Box(spacing=2)
+        modes.append(icon_button("media-playlist-shuffle-symbolic", "ctl", "Shuffle up next", app.shuffle))
+        self.repeat_btn = icon_button("media-playlist-repeat-symbolic", "ctl", "", app.cycle_repeat)
+        modes.append(self.repeat_btn)
+        controls.set_start_widget(modes)
+        self.saved_label = Gtk.Label(valign=Gtk.Align.CENTER)
+        self.saved_label.add_css_class("time")
+        end = Gtk.Box(spacing=4)
+        end.append(self.saved_label)
+        end.append(self.eq_button())
+        end.append(self.volume_button())
+        controls.set_end_widget(end)
+        player.append(controls)
+        root.append(player)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+        self.update_repeat()
+        self.refresh_library()
+        self.refresh_queue()
+        self.refresh_account()
+        self.show_tab("library" if self.lib.items else "search")
+        self.set_empty(self.search_list, "Find something to play",
+                       "Type a song or artist and press Enter.\nPaste a YouTube Music playlist link to load it.")
+
+    def volume_button(self):
+        """Click for a slider, scroll on it to step, middle-click (or m) to mute."""
+        self.vol_scale = Gtk.Scale(orientation=Gtk.Orientation.VERTICAL, inverted=True, draw_value=False)
+        self.vol_scale.add_css_class("volume")
+        self.vol_scale.set_range(0, 100)
+        self.vol_scale.set_increments(5, 10)
+        self.vol_scale.set_value(self.app.volume)
+        self.vol_scale.connect("value-changed", lambda sc: self.app.set_volume(sc.get_value()))
+        self.vol_btn = Gtk.MenuButton(popover=Gtk.Popover(child=self.vol_scale), valign=Gtk.Align.CENTER,
+                                      direction=Gtk.ArrowType.UP)
+        self.vol_btn.add_css_class("ctl")
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", lambda _c, _dx, dy: (self.app.set_volume(self.app.volume - 5 * dy), True)[1])
+        self.vol_btn.add_controller(scroll)
+        middle = Gtk.GestureClick(button=Gdk.BUTTON_MIDDLE)
+        middle.connect("pressed", lambda *_: self.app.toggle_mute())
+        self.vol_btn.add_controller(middle)
+        self.update_volume()
+        return self.vol_btn
+
+    def update_volume(self):
+        a = self.app
+        level = 0 if a.muted else a.volume
+        icon = ("muted" if level == 0 else "low" if level < 34 else "medium" if level < 67 else "high")
+        self.vol_btn.set_icon_name(f"audio-volume-{icon}-symbolic")
+        self.vol_btn.set_tooltip_text(("Muted" if a.muted else f"Volume {a.volume:.0f}%")
+                                      + "  (scroll, + / −, m to mute)")
+        if abs(self.vol_scale.get_value() - a.volume) > 0.5:
+            self.vol_scale.set_value(a.volume)
+
+    def eq_button(self):
+        """The equalizer: a correction for your headphones, then ten bands to taste."""
+        a = self.app
+        self.syncing_eq = False
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.add_css_class("eq")
+        head = Gtk.Box(spacing=8)
+        title = Gtk.Label(label="Equalizer", xalign=0, hexpand=True)
+        title.add_css_class("title")
+        self.eq_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self.eq_switch.connect("notify::active", lambda sw, _p: self.syncing_eq or a.set_eq_on(sw.get_active()))
+        head.append(title)
+        head.append(self.eq_switch)
+        box.append(head)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=6)
+        self.eq_phones = Gtk.DropDown.new_from_strings([name for name, _ in HEADPHONES.values()])
+        self.eq_phones.connect("notify::selected", lambda dd, _p: self.syncing_eq
+                               or a.set_eq_headphones(list(HEADPHONES)[dd.get_selected()]))
+        self.eq_preset = Gtk.DropDown.new_from_strings([name for name, _ in EQ_PRESETS.values()])
+        self.eq_preset.connect("notify::selected", lambda dd, _p: self.syncing_eq
+                               or a.set_eq_preset(list(EQ_PRESETS)[dd.get_selected()]))
+        for row, (label, dd) in enumerate((("Headphones", self.eq_phones), ("Sound", self.eq_preset))):
+            name = Gtk.Label(label=label, xalign=0)
+            name.add_css_class("sub")
+            dd.set_hexpand(True)
+            grid.attach(name, 0, row, 1, 1)
+            grid.attach(dd, 1, row, 1, 1)
+        box.append(grid)
+
+        bands = Gtk.Box(homogeneous=True)
+        self.eq_scales, self.eq_values = [], []
+        for i, hz in enumerate(EQ_BANDS):
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            value = Gtk.Label(width_chars=4)
+            value.add_css_class("time")
+            sc = Gtk.Scale(orientation=Gtk.Orientation.VERTICAL, inverted=True, draw_value=False,
+                           halign=Gtk.Align.CENTER, tooltip_text=f"{hz} Hz")
+            sc.add_css_class("volume")
+            sc.add_css_class("eqband")
+            sc.set_range(-EQ_RANGE, EQ_RANGE)
+            sc.set_increments(0.5, 1)
+            sc.connect("value-changed", lambda s, i=i: self.syncing_eq or a.set_eq_band(i, s.get_value()))
+            reset = Gtk.GestureClick(button=Gdk.BUTTON_MIDDLE)  # middle-click a band: back to 0
+            reset.connect("pressed", lambda *_, i=i: a.set_eq_band(i, 0))
+            sc.add_controller(reset)
+            hz_label = Gtk.Label(label=f"{hz // 1000}k" if hz >= 1000 else str(hz))
+            hz_label.add_css_class("hz")
+            for w in (value, sc, hz_label):
+                col.append(w)
+            bands.append(col)
+            self.eq_scales.append(sc)
+            self.eq_values.append(value)
+        box.append(bands)
+        self.eq_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=44)
+        self.eq_note.add_css_class("sub")
+        box.append(self.eq_note)
+
+        pop = Gtk.Popover(child=box)
+        pop.connect("closed", lambda *_: a.eq_settled())
+        self.eq_btn = Gtk.MenuButton(popover=pop, label="EQ", valign=Gtk.Align.CENTER, direction=Gtk.ArrowType.UP,
+                                     tooltip_text="Equalizer (e)")
+        self.eq_btn.add_css_class("ctl")
+        self.eq_btn.add_css_class("eq-btn")
+        self.update_eq()
+        return self.eq_btn
+
+    def update_eq(self):
+        eq = self.app.eq
+        self.syncing_eq = True  # show the settings without the widgets setting them again
+        self.eq_switch.set_active(eq["on"])
+        self.eq_phones.set_selected(list(HEADPHONES).index(eq["headphones"]))
+        self.eq_preset.set_selected(list(EQ_PRESETS).index(eq["preset"]))
+        for sc, value, g in zip(self.eq_scales, self.eq_values, eq["bands"]):
+            if abs(sc.get_value() - g) > 0.01:
+                sc.set_value(g)
+            value.set_label(fmt_db(g))
+        self.syncing_eq = False
+        (self.eq_btn.add_css_class if eq["on"] else self.eq_btn.remove_css_class)("on")
+        if eq["on"]:
+            pre = self.app.eq_preamp()
+            self.eq_note.set_label(f"Pre-gain {fmt_db(pre)} dB so boosts can't clip. Middle-click a band to zero it."
+                                   if pre else "Middle-click a band to zero it.")
+        else:
+            self.eq_note.set_label("Off: the music plays untouched.")
+
+    # ---- tabs & lists ----
+    def show_tab(self, key):
+        if not self.tab_buttons[key].get_active():
+            self.tab_buttons[key].set_active(True)
+        self.stack.set_visible_child_name(key)
+
+    def set_empty(self, lst, title, body):
+        lst.remove_all()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("empty")
+        t = Gtk.Label(label=title)
+        t.add_css_class("empty-title")
+        b = Gtk.Label(label=body, justify=Gtk.Justification.CENTER, wrap=True)
+        box.append(t)
+        box.append(b)
+        row = Gtk.ListBoxRow(activatable=False, selectable=False, child=box)
+        lst.append(row)
+
+    def fill(self, lst, tracks, removable=False, playing=None):
+        lst.remove_all()
+        for i, t in enumerate(tracks):
+            row = TrackRow(self, t, i, removable)
+            if playing is not None and i == playing:
+                row.add_css_class("playing")
+            lst.append(row)
+
+    def section(self, lst, label):
+        lab = Gtk.Label(label=label, xalign=0)
+        lab.add_css_class("section")
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=lab))
+
+    def refresh_count(self):
+        n = len(self.lib.items)
+        self.count.set_label(f"{n} saved · {self.lib.size_text()}" if n else "")
+
+    def refresh_library(self):
+        tracks = self.lib.tracks()
+        self.refresh_count()
+        lst = self.library_list
+        if not tracks:
+            self.set_empty(lst, "Nothing saved yet",
+                           "Every song you play, and every song in your playlists,\nis saved here in FLAC and plays without data.")
+            return
+        lst.remove_all()
+        playing_id = (self.app.current_track() or {}).get("id")
+        for i, t in enumerate(tracks):
+            row = TrackRow(self, t, i, removable=True)
+            if t["id"] == playing_id:
+                row.add_css_class("playing")
+            lst.append(row)
+
+    # ---- your YouTube Music library ----
+    playlists = None        # your playlists, once loaded
+    open_playlist = None    # (playlist, tracks) while one is open
+
+    def refresh_account(self):
+        lst = self.account_list
+        ytm = self.app.ytm
+        if not ytm:
+            self.set_empty(lst, "Connecting…", "Reading your YouTube login from the browser.")
+            return
+        if not ytm.account:
+            self.set_empty(lst, "Not signed in",
+                           "Sign in at music.youtube.com in Chromium,\nthen reopen Music to see your playlists.")
+            return
+        if self.open_playlist:
+            pl, tracks = self.open_playlist
+            lst.remove_all()
+            back = Gtk.ListBoxRow(child=Gtk.Label(label=f"‹  {pl['title']}", xalign=0))
+            back.add_css_class("back")
+            back.account_action = "back"
+            lst.append(back)
+            if tracks is None:
+                self.section(lst, "LOADING…")
+                return
+            playing_id = (self.app.current_track() or {}).get("id")
+            for i, t in enumerate(tracks):
+                row = TrackRow(self, t, i)
+                if t["id"] == playing_id:
+                    row.add_css_class("playing")
+                lst.append(row)
+            return
+        if self.playlists is None:
+            self.set_empty(lst, "Loading your library…", "")
+            in_thread(ytm.my_playlists, done=self._playlists_loaded)
+            self.playlists = []
+            return
+        lst.remove_all()
+        lst.append(self.sync_row())
+        if self.app.tidal_link:
+            paste = Gtk.Entry(placeholder_text="Paste the “Oops” page address, then Enter")
+            paste.add_css_class("search")
+            paste.connect("activate", lambda e: e.get_text().strip() and self.app.finish_tidal_login(e.get_text()))
+            lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=paste))
+        for pl in self.playlists:
+            lst.append(PlaylistRow(self, pl))
+
+    sync_label = None
+
+    def sync_row(self):
+        """Tidal and the FLAC sync: connect, or how far it has got."""
+        self.sync_label = Gtk.Label(xalign=0, wrap=True)
+        self.sync_label.add_css_class("sync")
+        row = Gtk.ListBoxRow(child=self.sync_label)
+        row.account_action = "tidal"
+        self.update_sync()
+        return row
+
+    def update_sync(self):
+        self.refresh_count()
+        if self.sync_label:
+            self.sync_label.set_label(self.app.sync_status())
+
+    def _playlists_loaded(self, res, err):
+        if err:
+            self.playlists = None
+            self.set_empty(self.account_list, "Couldn't load your library", str(err)[:120])
+            return
+        self.playlists = res or []
+        self.refresh_account()
+
+    def open_list(self, pl):
+        self.open_playlist = (pl, None)
+        self.refresh_account()
+
+        def done(res, err):
+            if not self.open_playlist or self.open_playlist[0] is not pl:
+                return
+            if err:
+                self.open_playlist = None
+                self.toast(f"Couldn't open {pl['title']}: {str(err)[:80]}")
+            else:
+                self.open_playlist = (pl, res or [])
+            self.refresh_account()
+        in_thread(self.app.ytm.playlist, pl["id"], done=done)
+
+    def refresh_queue(self):
+        q, i = self.app.queue, self.app.index
+        if not q:
+            self.set_empty(self.queue_list, "Queue is empty", "Pick a song and a radio of similar songs follows it.")
+            return
+        self.fill(self.queue_list, q, playing=i)
+
+    def refresh_results(self):
+        if self.results:
+            self.fill(self.search_list, self.results)
+
+    def refresh_all(self):
+        self.refresh_library()
+        if self.open_playlist and self.open_playlist[1] is not None:
+            self.refresh_account()
+        self.refresh_queue()
+        self.refresh_results()
+
+    def on_row(self, key, row):
+        if getattr(row, "account_action", None) == "back":
+            self.open_playlist = None
+            self.refresh_account()
+            return
+        if getattr(row, "account_action", None) == "tidal":
+            self.app.connect_tidal()
+            return
+        if isinstance(row, PlaylistRow):
+            self.open_list(row.playlist)
+            return
+        if not isinstance(row, TrackRow):
+            return
+        if key == "search":
+            self.app.play_from(self.results, row.index, radio=len(self.results) > 1 and not self.results_is_list)
+        elif key == "library":
+            self.app.play_from(self.lib.tracks(), row.index, radio=False)
+        elif key == "account" and self.open_playlist:
+            self.app.play_from(self.open_playlist[1], row.index, radio=False)
+        else:
+            self.app.play_index(row.index)
+
+    # ---- search ----
+    results_is_list = False
+
+    def on_search_changed(self, entry):
+        if entry.get_text().strip():
+            self.show_tab("search")
+
+    def search(self):
+        q = self.entry.get_text().strip()
+        if not q:
+            return
+        if not self.app.ytm:
+            self.toast("Still connecting to YouTube Music…")
+            return
+        self.show_tab("search")
+        self.search_seq += 1
+        seq = self.search_seq
+        self.set_empty(self.search_list, "Searching…", q)
+        self.results_is_list = "list=" in q
+
+        def done(res, err):
+            if seq != self.search_seq:
+                return
+            if err:
+                self.set_empty(self.search_list, "Search failed", "Offline? Downloaded songs still play.\n" + str(err)[:120])
+                return
+            self.results = res or []
+            if not self.results:
+                self.set_empty(self.search_list, "No songs found", q)
+            else:
+                self.refresh_results()
+        in_thread(self.app.ytm.search, q, done=done)
+
+    # ---- actions ----
+    def download_only(self, track):
+        self.dl.fetch(track, lambda _p, err: (self.toast(f"Download failed: {err}") if err else None, self.refresh_all()))
+        self.refresh_all()
+
+    def remove_download(self, vid):
+        cur = self.app.current_track()
+        if cur and cur["id"] == vid:
+            self.toast("That song is playing; skip it first")
+            return
+        self.lib.remove(vid)
+        self.refresh_all()
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=3))
+
+    # ---- now playing ----
+    def update_now_playing(self):
+        a = self.app
+        t = a.current_track()
+        if not t:
+            return
+        self.np_title.set_label(t["title"])
+        self.np_sub.set_label(t["artist"] + (f" · {t['album']}" if t.get("album") else ""))
+        self.np_art.clear()
+        self.art.apply(self.np_art, t)
+        self.play_btn.set_icon_name("media-playback-start-symbolic" if a.paused else "media-playback-pause-symbolic")
+        saved = self.lib.items.get(t["id"]) if self.lib.has(t["id"]) else None
+        flac = bool(saved) and saved.get("format") == "flac"
+        self.saved_label.set_label("FLAC" if flac else "✓ offline" if saved else "")
+        self.saved_label.set_tooltip_text(f"FLAC {saved.get('quality', '')} on disk: plays without data" if flac
+                                          else "Saved on disk: plays without data" if saved else None)
+        self.update_like()
+
+    def update_like(self):
+        t = self.app.current_track()
+        liked = bool(t) and t["id"] in self.app.liked
+        self.like_btn.set_visible(bool(t) and bool(self.app.ytm and self.app.ytm.account))
+        self.like_btn.get_child().set_label("󰋑" if liked else "󰋕")
+        (self.like_btn.add_css_class if liked else self.like_btn.remove_css_class)("liked")
+        self.like_btn.set_tooltip_text(("Unlike" if liked else "Like on YouTube Music") + " (l)")
+
+    def update_repeat(self):
+        mode = self.app.repeat
+        self.repeat_btn.set_icon_name("media-playlist-repeat-song-symbolic" if mode == "one"
+                                      else "media-playlist-repeat-symbolic")
+        (self.repeat_btn.add_css_class if mode != "off" else self.repeat_btn.remove_css_class)("on")
+        self.repeat_btn.set_tooltip_text({"off": "Repeat: off", "all": "Repeat: all",
+                                          "one": "Repeat: this song"}[mode] + " (r)")
+
+    def set_status(self, text):
+        self.np_status.set_label(text or "")
+        self.np_status.set_visible(bool(text))
+
+    def update_position(self, pos, dur):
+        if time.monotonic() < self.dragging_until:
+            return
+        self.scale.set_range(0, max(dur or 1, 1))
+        self.scale.set_value(pos or 0)
+        self.t_pos.set_label(fmt_time(pos))
+        self.t_len.set_label(fmt_time(dur))
+
+    def on_seek(self, _scale, _scroll, value):
+        self.dragging_until = time.monotonic() + 0.4
+        self.t_pos.set_label(fmt_time(value))
+        self.app.player.seek(value)
+        return False
+
+    def on_key(self, _ctl, keyval, _code, state):
+        ctrl = state & Gdk.ModifierType.CONTROL_MASK
+        if keyval == Gdk.KEY_Escape:
+            self.set_visible(False)
+            return True
+        if ctrl and keyval == Gdk.KEY_q:
+            self.app.quit_app()
+            return True
+        if ctrl and keyval in (Gdk.KEY_f, Gdk.KEY_l):
+            self.entry.grab_focus()
+            return True
+        if state & Gdk.ModifierType.ALT_MASK and Gdk.KEY_1 <= keyval <= Gdk.KEY_4:
+            self.show_tab(list(self.tab_buttons)[keyval - Gdk.KEY_1])
+            return True
+        focus = self.get_focus()
+        if focus and (focus == self.entry or focus.is_ancestor(self.entry)):
+            return False
+        if keyval == Gdk.KEY_space:
+            self.app.toggle_pause()
+            return True
+        if keyval in (Gdk.KEY_Right, Gdk.KEY_n):
+            self.app.next()
+            return True
+        if keyval in (Gdk.KEY_Left, Gdk.KEY_p):
+            self.app.previous()
+            return True
+        if keyval == Gdk.KEY_slash:
+            self.entry.grab_focus()
+            return True
+        if keyval == Gdk.KEY_r:
+            self.app.cycle_repeat()
+            return True
+        if keyval == Gdk.KEY_l:
+            self.app.toggle_like()
+            return True
+        if keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add):
+            self.app.set_volume(self.app.volume + 5)
+            return True
+        if keyval in (Gdk.KEY_minus, Gdk.KEY_KP_Subtract):
+            self.app.set_volume(self.app.volume - 5)
+            return True
+        if keyval == Gdk.KEY_m:
+            self.app.toggle_mute()
+            return True
+        if keyval == Gdk.KEY_e:
+            self.eq_btn.popup()
+            return True
+        return False
+
+
+class MusicApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        self.win = None
+        self.provider = None
+        self.ytm = None
+        self.queue, self.index = [], -1
+        self.paused, self.position, self.duration = True, 0.0, 0.0
+        self.radio_from = None
+        self.repeat = "off"     # off | all | one
+        self.liked = set()      # your liked songs on YouTube Music
+        self.load_seq = 0
+        self.volume, self.muted = 100.0, False
+        self.eq = json.loads(json.dumps(EQ_DEFAULT))
+        self.eq_synced = True   # mpv's filter graph matches self.eq, not just its running gains
+        self.tidal_error = None
+        self.tidal_link = None  # the page to approve the Tidal login on, while connecting
+        self.syncing = False
+        self.sync_tracks = []   # every song in your YouTube Music library
+
+    # ---- lifecycle ----
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        self.hold()  # keep playing with the window hidden
+        self.lib = Library()
+        self.dl = Downloader(self.lib)
+        self.art = ArtCache(self.lib)
+        self.player = Player(self.on_mpv)
+        self.mpris = Mpris(self)
+        self.reload_theme()
+        self.watch_theme()
+        state = read_json(STATE, {})
+        self.queue = [t for t in state.get("queue", []) if isinstance(t, dict) and t.get("id")]
+        self.index = min(state.get("index", -1), len(self.queue) - 1)
+        self.radio_from = state.get("radio_from")
+        self.repeat = state.get("repeat") if state.get("repeat") in ("off", "all", "one") else "off"
+        self.volume = max(0.0, min(100.0, float(state.get("volume", 100))))
+        self.muted = bool(state.get("muted", False))
+        self.player.set_volume(self.volume, self.muted)
+        self.load_eq(state.get("eq") or {})
+        if self.current_track():
+            self.load_current(autoplay=False)
+
+        def connected(ytm, err):
+            self.ytm = ytm
+            if ytm and self.win:
+                self.win.refresh_account()
+            if ytm and ytm.account:
+                in_thread(ytm.liked_ids, done=got_likes)
+                self.sync_library()
+
+        def got_likes(ids, err):
+            if ids:
+                self.liked = ids
+            if self.win:
+                self.win.update_like()
+
+        def tidal_ready(tidal, err):
+            self.dl.tidal, self.tidal_error = tidal, err
+            if self.win:
+                self.win.refresh_account()
+            self.sync_library()
+        in_thread(YTM, done=connected)
+        in_thread(Tidal, done=tidal_ready)
+        GLib.timeout_add_seconds(SYNC_EVERY, lambda: (self.sync_library(), True)[1])
+
+    def do_activate(self):
+        if not self.win:
+            self.win = MusicWindow(self)
+            self.win.update_now_playing()
+            self.win.update_position(self.position, self.duration or (self.current_track() or {}).get("duration"))
+            self.win.present()
+            self.win.entry.grab_focus()
+            return
+        if self.win.get_visible():  # bar icon / keybind toggle the dropdown
+            self.win.set_visible(False)
+        else:
+            self.show_window()
+
+    def show_window(self):
+        if self.win:
+            self.win.present()
+            self.win.entry.grab_focus()
+
+    def quit_app(self):
+        self.save_state()
+        self.player.quit()
+        self.quit()
+
+    def save_state(self):
+        write_atomic(STATE, json.dumps({"queue": self.queue, "index": self.index, "radio_from": self.radio_from,
+                                       "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
+                                       "eq": self.eq}))
+
+    def save_soon(self):
+        """Remember the settings, without a disk write per scroll step or slider move."""
+        if getattr(self, "_save_timer", 0):
+            GLib.source_remove(self._save_timer)
+        self._save_timer = GLib.timeout_add(800, lambda: (setattr(self, "_save_timer", 0), self.save_state(), False)[2])
+
+    # ---- theme ----
+    def reload_theme(self):
+        theme = load_theme()
+        provider = Gtk.CssProvider()
+        provider.load_from_string(theme_css(theme))
+        display = Gdk.Display.get_default()
+        if display:
+            if self.provider:
+                Gtk.StyleContext.remove_provider_for_display(display, self.provider)
+            Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+        self.provider = provider
+        Adw.StyleManager.get_default().set_color_scheme(
+            Adw.ColorScheme.FORCE_LIGHT if theme["c"].get("mode") == "light" else Adw.ColorScheme.FORCE_DARK)
+
+    def watch_theme(self):
+        self.monitors, self._theme_timer = [], 0
+        for path in (CURRENT, THEME_DIR):
+            try:
+                mon = Gio.File.new_for_path(str(path)).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+                mon.connect("changed", lambda *_: self._debounce_theme())
+                self.monitors.append(mon)
+            except GLib.Error:
+                pass
+
+    def _debounce_theme(self):
+        if self._theme_timer:
+            GLib.source_remove(self._theme_timer)
+        self._theme_timer = GLib.timeout_add(400, lambda: (setattr(self, "_theme_timer", 0), self.reload_theme(), False)[2])
+
+    # ---- Tidal and the FLAC sync of your whole library ----
+    def connect_tidal(self):
+        """Open Tidal's sign-in page; the Library tab then asks for the address it ends on."""
+        tidal = self.dl.tidal
+        if not tidal or tidal.connected:
+            return
+        self.tidal_link = self.tidal_link or tidal.login_url()
+        try:
+            Gio.AppInfo.launch_default_for_uri(self.tidal_link, None)
+        except GLib.Error:
+            Gdk.Display.get_default().get_clipboard().set_content(Gdk.ContentProvider.new_for_value(self.tidal_link))
+            if self.win:
+                self.win.toast("Couldn't open a browser; the sign-in link is copied")
+        if self.win:
+            self.win.refresh_account()
+
+    def finish_tidal_login(self, oops_url):
+        def done(_res, err):
+            if err:
+                if self.win:
+                    self.win.toast(f"Tidal didn't accept that: {str(err)[:80]}")
+                return
+            self.tidal_link = None
+            if self.win:
+                self.win.refresh_account()
+                self.win.toast("Tidal connected: downloading your music in FLAC")
+            self.sync_library()
+        in_thread(self.dl.tidal.finish_login, oops_url, done=done)
+
+    def sync_library(self):
+        """Download every song in your playlists and liked songs in FLAC, and
+        replace songs saved lossy before."""
+        if self.syncing or not (self.ytm and self.ytm.account and self.dl.tidal and self.dl.tidal.connected):
+            return
+        self.syncing = True
+        self.update_sync()
+        lossy = self.lib.lossy()
+
+        def work():
+            tracks = self.ytm.library_tracks()
+            GLib.idle_add(lambda: (setattr(self, "sync_tracks", tracks), self.update_sync(), False)[2])
+            ids = {t["id"] for t in tracks}
+            self.dl.sync(tracks + [t for t in lossy if t["id"] not in ids], self.update_sync)
+
+        def done(_res, err):
+            self.syncing = False
+            self.update_sync()
+            if err and self.win:
+                self.win.toast(f"FLAC sync stopped: {str(err)[:80]}")
+            if self.win:
+                self.win.refresh_all()
+        in_thread(work, done=done)
+
+    def sync_status(self):
+        tidal = self.dl.tidal
+        if not tidal:
+            return f"Tidal isn't available: {str(self.tidal_error)[:80]}" if self.tidal_error else "Connecting to Tidal…"
+        if not tidal.connected:
+            return ("Sign in on the Tidal page that opened. It ends on an “Oops” page:\n"
+                    "copy that page's address and paste it below." if self.tidal_link
+                    else "Connect Tidal to download your music in FLAC  ›")
+        tracks = self.sync_tracks
+        if not tracks:
+            return "FLAC · reading your playlists…" if self.syncing else "FLAC · Tidal connected"
+        flac = sum(self.lib.is_flac(t["id"]) for t in tracks)
+        missing = sum(self.lib.recently_missing(t["id"]) and not self.lib.is_flac(t["id"]) for t in tracks)
+        text = f"FLAC · {flac} of {len(tracks)} songs saved"
+        if missing:
+            text += f" · {missing} not on Tidal"
+        return text + (" · downloading…" if self.syncing else "")
+
+    def update_sync(self):
+        if self.win:
+            self.win.update_sync()
+
+    # ---- queue ----
+    def current_track(self):
+        return self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+
+    def play_from(self, tracks, i, radio):
+        self.queue = list(tracks)
+        self.index = i
+        self.radio_from = None
+        self.load_current()
+        if radio:
+            self.extend_radio(self.queue[i]["id"], keep_until=i)
+
+    def extend_radio(self, vid, keep_until=None):
+        if not self.ytm:
+            return
+        self.radio_from = vid
+
+        def done(res, err):
+            if err or not res:
+                return
+            have = {t["id"] for t in self.queue}
+            if keep_until is not None:
+                # A song picked from results: its radio replaces the rest of the results.
+                self.queue = self.queue[:keep_until + 1]
+                have = {t["id"] for t in self.queue}
+            self.queue += [t for t in res if t["id"] not in have]
+            self.after_queue_change()
+        in_thread(self.ytm.radio, vid, done=done)
+
+    def play_index(self, i):
+        if 0 <= i < len(self.queue):
+            self.index = i
+            self.load_current()
+
+    def next(self):
+        if self.index + 1 < len(self.queue):
+            self.index += 1
+            self.load_current()
+        elif self.repeat == "all" and self.queue:
+            self.index = 0
+            self.load_current()
+        else:
+            self.set_paused(True)
+
+    def track_ended(self):
+        if self.repeat == "one":
+            self.load_current()
+        else:
+            self.next()
+
+    def cycle_repeat(self):
+        self.repeat = {"off": "all", "all": "one", "one": "off"}[self.repeat]
+        self.save_state()
+        self.mpris.changed()
+        if self.win:
+            self.win.update_repeat()
+
+    def toggle_like(self):
+        t = self.current_track()
+        if not t or not (self.ytm and self.ytm.account):
+            return
+        vid, like = t["id"], t["id"] not in self.liked
+        (self.liked.add if like else self.liked.discard)(vid)  # show it now; undo if YouTube refuses
+
+        def done(_res, err):
+            if err:
+                (self.liked.discard if like else self.liked.add)(vid)
+                if self.win:
+                    self.win.toast(f"Couldn't {'like' if like else 'unlike'} it: {str(err)[:80]}")
+            if self.win:
+                self.win.update_like()
+        if self.win:
+            self.win.update_like()
+        in_thread(self.ytm.rate, vid, like, done=done)
+
+    def previous(self):
+        if self.position > 4 or self.index <= 0:
+            self.player.seek(0)
+        else:
+            self.index -= 1
+            self.load_current()
+
+    def shuffle(self):
+        rest = self.queue[self.index + 1:]
+        random.shuffle(rest)
+        self.queue = self.queue[:self.index + 1] + rest
+        self.after_queue_change()
+
+    def after_queue_change(self):
+        self.save_state()
+        self.prefetch()
+        if self.win:
+            self.win.refresh_queue()
+
+    def load_current(self, autoplay=True):
+        t = self.current_track()
+        if not t:
+            return
+        self.load_seq += 1
+        seq = self.load_seq
+        self.position, self.duration = 0.0, t.get("duration") or 0
+        if self.win:
+            self.win.update_now_playing()
+            self.win.update_position(0, self.duration)
+            self.win.set_status("" if self.lib.has(t["id"]) else "Downloading FLAC…")
+            self.win.refresh_queue()
+
+        def ready(path, err):
+            if seq != self.load_seq:
+                return  # user moved on while it downloaded
+            if err:
+                if self.win:
+                    self.win.set_status("")
+                    self.win.toast(f"Skipped “{t['title']}”: {err}" if isinstance(err, NoLosslessMatch)
+                                   else f"Couldn't get “{t['title']}”: {err}")
+                GLib.timeout_add(1500, lambda: (seq == self.load_seq and self.next(), False)[1])
+                return
+            if self.win:
+                self.win.set_status("")
+            self.player.load(path, paused=not autoplay)
+            self.paused = not autoplay
+            if autoplay:
+                self.lib.played(t["id"])
+            if self.win:
+                self.win.refresh_all()
+                self.win.update_now_playing()
+            self.mpris.changed()
+            self.prefetch()
+        self.dl.fetch(t, ready)
+        self.save_state()
+        # Keep a radio going: near the end of the queue, ask for more like the last song.
+        if self.radio_from and self.index >= len(self.queue) - 2:
+            self.extend_radio(self.queue[-1]["id"])
+
+    def prefetch(self):
+        nxt = self.queue[self.index + 1] if self.index + 1 < len(self.queue) else None
+        if nxt and not self.lib.has(nxt["id"]):
+            self.dl.fetch(nxt, lambda *_: self.win and self.win.refresh_all())
+
+    # ---- playback ----
+    def toggle_pause(self):
+        if not self.current_track():
+            return
+        self.set_paused(not self.paused)
+
+    def set_paused(self, paused):
+        self.player.set_pause(paused)
+
+    def set_volume(self, volume):
+        volume = round(max(0.0, min(100.0, volume)))
+        if volume == self.volume and not self.muted:
+            return
+        self.volume, self.muted = volume, False
+        self.volume_changed()
+
+    def toggle_mute(self):
+        self.muted = not self.muted
+        self.volume_changed()
+
+    def volume_changed(self):
+        self.player.set_volume(self.volume, self.muted)
+        self.mpris.changed()
+        if self.win:
+            self.win.update_volume()
+        self.save_soon()
+
+    # ---- equalizer ----
+    def load_eq(self, saved):
+        eq = self.eq
+        if saved.get("headphones") in HEADPHONES:
+            eq["headphones"] = saved["headphones"]
+        if saved.get("preset") in EQ_PRESETS:
+            eq["preset"] = saved["preset"]
+        for key in ("bands", "custom"):
+            vals = saved.get(key)
+            if isinstance(vals, list) and len(vals) == len(EQ_BANDS):
+                eq[key] = [max(-EQ_RANGE, min(EQ_RANGE, float(g))) for g in vals]
+        eq["on"] = bool(saved.get("on"))
+        if eq["on"]:
+            self.apply_eq()
+
+    def eq_correction(self):
+        return HEADPHONES[self.eq["headphones"]][1]
+
+    def eq_preamp(self):
+        return eq_preamp([*self.eq_correction(), *(("pk", hz, g, EQ_Q) for hz, g in zip(EQ_BANDS, self.eq["bands"]))])
+
+    def apply_eq(self):
+        """(Re)build mpv's filters from the settings; the music skips a beat."""
+        self.player.set_filters(eq_graph(self.eq_correction(), self.eq["bands"], self.eq_preamp())
+                                if self.eq["on"] else "")
+        self.eq_synced = True
+
+    def retune_eq(self):
+        """Set the bands and pre-gain in the running filters, without a gap. mpv
+        rebuilds its filters from the graph on a seek or a new song, so eq_settled
+        rebuilds that too once you're done adjusting."""
+        for i, g in enumerate(self.eq["bands"]):
+            self.player.filter_cmd("g", g, f"equalizer@g{i}")
+        self.player.filter_cmd("volume", f"{self.eq_preamp()}dB", "volume@pre")
+        self.eq_synced = False
+
+    def eq_settled(self):
+        if not self.eq_synced:
+            self.apply_eq()
+
+    def eq_changed(self, rebuild=False):
+        if rebuild or not self.eq["on"]:
+            self.eq["on"] = True
+            self.apply_eq()
+        else:
+            self.retune_eq()
+        if self.win:
+            self.win.update_eq()
+        self.save_soon()
+
+    def set_eq_on(self, on):
+        if on != self.eq["on"]:
+            self.eq["on"] = on
+            self.apply_eq()
+            if self.win:
+                self.win.update_eq()
+            self.save_soon()
+
+    def set_eq_headphones(self, key):
+        if key != self.eq["headphones"]:
+            self.eq["headphones"] = key
+            self.eq_changed(rebuild=True)  # a different set of filters
+
+    def set_eq_preset(self, key):
+        bands = EQ_PRESETS[key][1] or self.eq["custom"]
+        self.eq["preset"], self.eq["bands"] = key, [float(g) for g in bands]
+        self.eq_changed()
+
+    def set_eq_band(self, i, gain):
+        gain = round(max(-EQ_RANGE, min(EQ_RANGE, gain)) * 2) / 2
+        if gain == self.eq["bands"][i] and self.eq["on"]:
+            return
+        self.eq["bands"][i] = gain
+        self.eq["custom"] = list(self.eq["bands"])
+        self.eq["preset"] = "custom"
+        self.eq_changed()
+
+    def on_mpv(self, msg):
+        ev = msg.get("event")
+        if ev == "property-change":
+            name, data = msg.get("name"), msg.get("data")
+            if name == "time-pos" and data is not None:
+                if abs(data - self.position) >= 0.25 or data < self.position:
+                    self.position = data
+                    if self.win:
+                        self.win.update_position(self.position, self.duration)
+            elif name == "duration" and data:
+                self.duration = data
+            elif name == "pause" and data is not None:
+                self.paused = bool(data)
+                if self.win:
+                    self.win.update_now_playing()
+                self.mpris.changed()
+        elif ev == "playback-restart" and not self.eq_synced:
+            self.retune_eq()  # a seek or new song rebuilt the filters from the graph, before the latest tweaks
+        elif ev == "end-file" and msg.get("reason") == "eof":
+            self.track_ended()
+
+
+def main():
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if "--tidal-login" in sys.argv:
+        tidal = Tidal()
+        if not tidal.connected:
+            print("Sign in to Tidal on this page; it ends on an \"Oops\" page:", tidal.login_url(), sep="\n", flush=True)
+            tidal.finish_login(input("Paste the address of that \"Oops\" page: "))
+        print("Tidal is connected.")
+        return 0
+    app = MusicApp()
+    return app.run(sys.argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
