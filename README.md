@@ -85,7 +85,14 @@ uninstall it once before it takes a release build, because the signatures differ
 
 On the phone, YouTube Music and Apple Music sign in on their own pages inside the app.
 Tidal, Spotify and Last.fm connect the same way as on the desktop. Downloads go to
-`Music/Omarchy Music/` on the phone.
+`Music/Omarchy Music/` on the phone. The Music tab reads `Music/` to start; **Choose
+folders** there (or **Folders** in the accounts menu) picks which folders it reads.
+
+**History** in the accounts menu adds your Spotify listening to Wrapped: import the zip
+from Spotify's data download (<https://www.spotify.com/account/privacy/>, the extended
+streaming history or the past year's), and with Spotify connected your last plays come in
+each time the app starts. A play Last.fm already has counts once. Nothing is sent to
+Last.fm, which takes nothing older than two weeks.
 
 ### Controlling the desktop from the phone
 
