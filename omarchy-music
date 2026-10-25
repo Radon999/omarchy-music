@@ -20,7 +20,7 @@ queue it or add it to a playlist. The window takes its colour from the album
 art. Saved songs are tagged in the background (genre, composer, label,
 MusicBrainz IDs, a big cover, lyrics), plays are scrobbled to Last.fm, the
 Lyrics tab shows Genius's lyrics (or lines timed to the music), and Wrapped
-looks back on any year of your Last.fm history (or all of it).
+looks back on any week, month or year of your Last.fm history (or all of it).
 
 The Android app (android/ in the repository) does all of this on a phone, and
 can play here instead: switch on "Phone" in the accounts menu and pair the
@@ -38,7 +38,8 @@ port 8897 of your network (allow it in your firewall) and is off to start.
   omarchy-music show [TAB]          open the popup on search, library, music, playlists, recent,
                                     added, top, queue or lyrics
   omarchy-music accounts            the accounts menu: sign-ins, folders, Last.fm, the tagger
-  omarchy-music wrapped [YEAR|all]  your year in music (or every year), from your Last.fm history
+  omarchy-music wrapped [YEAR|month|week|all]   your year (month, week or every year) in music,
+                                    from your Last.fm history
   omarchy-music source youtube|tidal|apple|spotify   switch the library you browse and search
   omarchy-music tag [all]           tag the saved songs not tagged yet (or all of them) now
   omarchy-music status              what's playing, what's next, how far the tagging is
@@ -79,7 +80,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -415,10 +416,14 @@ scale.tone {{ padding: 4px 0; }}
 scale.tone > trough > slider {{ opacity: 1; }}
 window.wrapped {{ background-color: {darker}; }}
 window.wrapped, window.wrapped * {{ font-family: "{t['font']}", monospace; }}
-.slide {{ padding: 64px 30px 40px 30px; }}
+.slide {{ padding: 104px 30px 40px 30px; }}
 """ + "".join(f".slide.s{i} {{ background-color: {darker}; "
-              f"background-image: linear-gradient(165deg, {rgba(c[k], 0.50)}, {rgba(darker, 0.0)} 62%); }}\n"
-              for i, k in enumerate(("accent", "magenta", "green", "yellow", "red", "blue", "cyan", "orange"))) + f"""
+              f"background-image: radial-gradient(circle at 92% 8%, {rgba(c[k2], 0.30)}, {rgba(darker, 0.0)} 38%), "
+              f"radial-gradient(circle at 0% 100%, {rgba(c[k], 0.22)}, {rgba(darker, 0.0)} 45%), "
+              f"linear-gradient(165deg, {rgba(c[k], 0.50)}, {rgba(darker, 0.0)} 62%); }}\n"
+              for i, (k, k2) in enumerate((("accent", "magenta"), ("magenta", "cyan"), ("green", "yellow"),
+                                           ("yellow", "red"), ("red", "magenta"), ("blue", "green"),
+                                           ("cyan", "blue"), ("orange", "yellow")))) + f"""
 .w-kicker {{ color: {rgba(fg, 0.72)}; font-weight: 800; letter-spacing: 2px; font-size: 0.82em; }}
 .w-big {{ color: {fg}; font-size: 2.1em; font-weight: 800; }}
 .w-huge {{ color: {fg}; font-size: 3.7em; font-weight: 900; }}
@@ -438,6 +443,31 @@ button.w-nav:hover {{ background: {rgba(acc, 0.25)}; }}
 window.wrapped button.pill {{ padding: 8px 18px; font-size: 0.95em; }}
 .w-seg {{ background-color: {rgba(fg, 0.25)}; border-radius: 2px; min-height: 3px; }}
 .w-seg.on {{ background-color: {fg}; }}
+.w-huge {{ text-shadow: 0 3px 18px {rgba(darker, 0.55)}; }}
+.w-mid {{ color: {fg}; font-size: 1.45em; font-weight: 800; }}
+.w-tile {{ background-color: {rgba(fg, 0.07)}; border: 1px solid {rgba(fg, 0.10)}; border-radius: {max(R, 6)}px;
+  padding: 12px 14px; }}
+.w-chip {{ border-radius: 999px; padding: 4px 12px; font-weight: 700; font-size: 0.86em; }}
+.w-chip.up {{ background-color: {rgba(c['green'], 0.18)}; color: {c['green']}; }}
+.w-chip.down {{ background-color: {rgba(c['red'], 0.18)}; color: {c['red']}; }}
+.w-rule {{ background-color: {acc}; min-height: 3px; min-width: 36px; border-radius: 2px; }}
+progressbar.w-meter trough {{ background: {rgba(fg, 0.12)}; border: none; box-shadow: none; border-radius: 999px;
+  min-height: 5px; padding: 0; }}
+progressbar.w-meter progress {{ background: {acc}; border: none; border-radius: 999px; min-height: 5px; }}
+.w-tabs button.w-tab {{ background: {rgba(darker, 0.45)}; color: {rgba(fg, 0.75)}; border: none; box-shadow: none;
+  padding: 4px 12px; min-height: 28px; font-weight: 700; font-size: 0.86em; }}
+.w-tabs button.w-tab:checked {{ background: {acc}; color: {darker}; }}
+.w-tabs button.w-tab:hover:not(:checked) {{ background: {rgba(acc, 0.25)}; color: {fg}; }}
+.w-card {{ background-image: linear-gradient(160deg, {rgba(acc, 0.20)}, {rgba(bg, 0.0)} 55%); }}
+window.wrapped.big .slide {{ padding: 120px 60px 60px 60px; }}
+window.wrapped.big .w-kicker {{ font-size: 1.05em; letter-spacing: 3px; }}
+window.wrapped.big .w-big {{ font-size: 3.2em; }}
+window.wrapped.big .w-huge {{ font-size: 6em; }}
+window.wrapped.big .w-mid {{ font-size: 2em; }}
+window.wrapped.big .w-sub {{ font-size: 1.35em; }}
+window.wrapped.big .w-small {{ font-size: 1.05em; }}
+window.wrapped.big .w-name {{ font-size: 1.35em; }}
+window.wrapped.big .w-rank {{ font-size: 1.6em; min-width: 40px; }}
 """
 
 
@@ -6508,6 +6538,96 @@ GENRE_NAMES = {"edm": "EDM", "idm": "IDM", "r&b": "R&B", "rnb": "R&B", "dnb": "D
                "hip hop": "Hip-hop", "uk drill": "UK Drill"}
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 WEEKDAYS = "Mondays Tuesdays Wednesdays Thursdays Fridays Saturdays Sundays".split()
+WEEK_LETTERS = "M T W T F S S".split()
+PERIOD_KINDS = (("week", "Week"), ("month", "Month"), ("year", "Year"), ("all", "All time"))
+
+
+def day_label(dt):
+    """"October 19" (strftime's %-d isn't there on Windows)."""
+    return f"{dt:%B} {dt.day}"
+
+
+def hour_label(h):
+    return f"{h % 12 or 12} {'AM' if h < 12 else 'PM'}"
+
+
+def add_months(dt, n):
+    m = dt.month - 1 + n
+    return datetime(dt.year + m // 12, m % 12 + 1, 1)
+
+
+def week_start(dt):
+    return datetime(dt.year, dt.month, dt.day) - timedelta(days=dt.weekday())
+
+
+# A Wrapped is of a period: a year (2026), a month ("m2026-10"), a week from its Monday
+# ("w2026-10-19") or "all".
+def period_kind(period):
+    return "all" if period == "all" else "year" if isinstance(period, int) else {"m": "month", "w": "week"}[period[0]]
+
+
+def period_start(period):
+    kind = period_kind(period)
+    return (datetime(period, 1, 1) if kind == "year" else datetime.strptime(period[1:], "%Y-%m")
+            if kind == "month" else datetime.strptime(period[1:], "%Y-%m-%d"))
+
+
+def period_end(period):
+    start, kind = period_start(period), period_kind(period)
+    return (datetime(start.year + 1, 1, 1) if kind == "year" else add_months(start, 1) if kind == "month"
+            else start + timedelta(days=7))
+
+
+def this_period(kind):
+    now = datetime.now()
+    return {"year": wrapped_year(), "month": f"m{now:%Y-%m}", "week": f"w{week_start(now):%Y-%m-%d}",
+            "all": "all"}[kind]
+
+
+def week_span(start):
+    end = start + timedelta(days=6)
+    return f"{start:%b} {start.day}–{end.day}" if start.month == end.month else f"{start:%b} {start.day}–{end:%b} {end.day}"
+
+
+def period_name(period):
+    """"2026", "October 2026", "Week of Oct 19–25", "All time"."""
+    kind = period_kind(period)
+    if kind == "all":
+        return "All time"
+    if kind == "year":
+        return str(period)
+    start = period_start(period)
+    return f"{start:%B %Y}" if kind == "month" else f"Week of {week_span(start)}"
+
+
+def period_title(period):
+    """The big word on the first slide: "2026", "October", "Oct 19–25"."""
+    kind, start = period_kind(period), period_start(period)
+    return str(period) if kind == "year" else f"{start:%B}" if kind == "month" else week_span(start)
+
+
+def period_of(period):
+    """For "your first song of ...": "2026", "October", "the week"."""
+    kind = period_kind(period)
+    return str(period) if kind == "year" else f"{period_start(period):%B}" if kind == "month" else "the week"
+
+
+def period_choices(kind, years):
+    """What the picker offers for a kind: [(period, its name)], the newest first."""
+    now = datetime.now()
+    if kind == "year":
+        return [(y, str(y)) for y in years]
+    if kind == "month":
+        first = datetime(now.year, now.month, 1)
+        return [(f"m{add_months(first, -i):%Y-%m}", f"{add_months(first, -i):%B %Y}") for i in range(12)]
+    if kind == "week":
+        monday = week_start(now)
+        out = []
+        for i in range(12):
+            start = monday - timedelta(weeks=i)
+            out.append((f"w{start:%Y-%m-%d}", "This week" if i == 0 else "Last week" if i == 1 else week_span(start)))
+        return out
+    return []
 
 
 def wrapped_year():
@@ -6662,7 +6782,7 @@ def wrapped_data(app, period, progress):
     me = fm.info()
     first_year = datetime.fromtimestamp(me["registered"]).year if me["registered"] else datetime.now().year
     years = list(range(datetime.now().year, first_year - 1, -1))
-    base = {"period": period, "user": me["name"], "years": years, "since": first_year}
+    base = {"period": period, "kind": period_kind(period), "user": me["name"], "years": years, "since": first_year}
     if period == "all":
         counts = []
         for y in reversed(years):
@@ -6678,14 +6798,16 @@ def wrapped_data(app, period, progress):
                        "years_count": counts, "artist_count": None,
                        "minutes": round(me["playcount"] * 3.5)}   # about three and a half minutes a song
     else:
-        start = datetime(period, 1, 1).timestamp()
-        end = min(datetime(period + 1, 1, 1).timestamp(), time.time())
+        start = period_start(period).timestamp()
+        natural_end = period_end(period).timestamp()
+        end = min(natural_end, time.time())
         path = WRAPPED / f"{safe_name(fm.user.lower())}-{period}.json"
         saved = read_json(path, {})
         rows = [tuple(r) for r in saved.get("rows", [])]
         since = saved.get("until", start)
         if since < end - 60:
-            new = fm.recent(since, end, lambda p, n: progress(f"Reading your {period} scrobbles · page {p} of {n}"))
+            new = fm.recent(since, end, lambda p, n: progress(f"Reading your scrobbles · {period_name(period)} · "
+                                                               f"page {p} of {n}"))
             have = {(r[0], r[2]) for r in rows}
             rows = sorted(rows + [r for r in new if (r[0], r[2]) not in have])
             write_atomic(path, json.dumps({"rows": rows, "until": end}))
@@ -6695,6 +6817,22 @@ def wrapped_data(app, period, progress):
         progress("Adding up your minutes…")
         data["minutes"] = listening_minutes(app, rows)
         del data["plays"], data["names"]
+        data["span_days"] = max(1, math.ceil((end - start) / 86400))
+        data["partial"] = end < natural_end - 60
+        if data["kind"] != "year":   # day by day
+            first_day = period_start(period).date()
+            daily = [0] * (period_end(period).date() - first_day).days
+            for r in rows:
+                i = (datetime.fromtimestamp(r[0]).date() - first_day).days
+                if 0 <= i < len(daily):
+                    daily[i] += 1
+            data["daily"] = daily
+        progress("Comparing with before…")
+        try:   # as far into the period before as this one has gone
+            length = natural_end - start
+            data["prev_count"] = fm.count(start - length, start - length + (end - start))
+        except Exception:  # noqa: BLE001 -- no comparison, then
+            data["prev_count"] = None
     progress("Finding your genres…")
     data["genres"] = top_genres(app, data["artists"])
     progress("Getting the pictures…")
@@ -6747,6 +6885,49 @@ def w_label(text, css, wrap=True, xalign=0.0, ellipsize=False):
     return lab
 
 
+def w_meter(fraction):
+    """A thin bar, filled as far as fraction (0..1)."""
+    bar = Gtk.ProgressBar(fraction=max(0.02, min(1.0, fraction)), hexpand=True, valign=Gtk.Align.CENTER)
+    bar.add_css_class("w-meter")
+    return bar
+
+
+def w_stat(value, label):
+    tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+    tile.add_css_class("w-tile")
+    tile.append(w_label(value, "w-mid", wrap=False, ellipsize=True))
+    tile.append(w_label(label, "w-small"))
+    return tile
+
+
+def w_stats(*tiles):
+    grid = Gtk.Grid(column_spacing=10, row_spacing=10, column_homogeneous=True, margin_top=10)
+    for i, (value, label) in enumerate(tiles):
+        grid.attach(w_stat(value, label), i % 2, i // 2, 1, 1)
+    return grid
+
+
+def w_change(d):
+    """"▲ 12% more than the month before", or None when there's nothing to compare with."""
+    before, now = d.get("prev_count"), d.get("scrobbles") or 0
+    if not before or d.get("kind") not in ("year", "month", "week"):
+        return None
+    pct = round((now - before) * 100 / before)
+    than = f"this far into the {d['kind']} before" if d.get("partial") else f"the {d['kind']} before"
+    text = (f"▲ {pct}% more than {than}" if pct > 0 else f"▼ {-pct}% less than {than}" if pct < 0
+            else f"Just like {than}")
+    lab = w_label(text, "w-chip", xalign=0)
+    lab.add_css_class("up" if pct >= 0 else "down")
+    lab.set_halign(Gtk.Align.START)
+    return lab
+
+
+def w_rule():
+    rule = Gtk.Box(halign=Gtk.Align.START)
+    rule.add_css_class("w-rule")
+    return rule
+
+
 def w_picture(path, px, round_=False):
     frame, pic = art_widget(px)
     frame.add_css_class("w-art")
@@ -6760,12 +6941,15 @@ def w_picture(path, px, round_=False):
 
 
 class WrappedWindow(Adw.Window):
-    """Your year in music from your Last.fm history, a slide at a time: click the
-    right of a slide (or press →) for the next, the left (←) to go back."""
+    """Your week, month or year in music (or all of it) from your Last.fm history, a slide at
+    a time: click the right of a slide (or press →) for the next, the left (←) to go back.
+    F11 (or the button by the close one) fills the screen; so does maximizing it."""
 
     def __init__(self, app, period):
-        super().__init__(title="Wrapped", default_width=430, default_height=780)
+        super().__init__(title="Wrapped", default_width=430, default_height=780, resizable=True)
         self.app, self.period, self.seq, self.data = app, period, 0, None
+        self.k = 1.0             # how much bigger pictures and charts are drawn: 1.5 full screen
+        self.choices = []        # the picker's [(period, name)]
         self.add_css_class("wrapped")
         self.toasts = Adw.ToastOverlay()
         overlay = Gtk.Overlay()
@@ -6773,26 +6957,59 @@ class WrappedWindow(Adw.Window):
         self.set_content(self.toasts)
         self.carousel = Adw.Carousel(allow_scroll_wheel=True, vexpand=True, hexpand=True)
         overlay.set_child(self.carousel)
-        top = Gtk.Box(spacing=8, valign=Gtk.Align.START, margin_top=14, margin_start=16, margin_end=12)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=12, margin_start=16,
+                      margin_end=12, margin_bottom=6)
+        row = Gtk.Box(spacing=8)
         # A segment a slide, story style (libadwaita's indicator lines need ~40px a slide: too wide for 12)
         self.segments = Gtk.Box(spacing=4, homogeneous=True, hexpand=True, valign=Gtk.Align.CENTER)
-        top.append(self.segments)
+        row.append(self.segments)
         self.carousel.connect("notify::n-pages", lambda *_: self.make_segments())
         self.carousel.connect("notify::position", lambda *_: self.light_segments())
-        self.picker = Gtk.DropDown(valign=Gtk.Align.CENTER, visible=False)
-        self.picker.connect("notify::selected", self.on_pick)
-        top.append(self.picker)
+        self.full = Gtk.Button(icon_name="view-fullscreen-symbolic", valign=Gtk.Align.CENTER,
+                               tooltip_text="Full screen (F11)")
+        self.full.add_css_class("w-nav")
+        self.full.connect("clicked", lambda *_: self.toggle_fullscreen())
+        row.append(self.full)
         close = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Close (Esc)")
         close.add_css_class("w-nav")
         close.connect("clicked", lambda *_: self.close())
-        top.append(close)
-        overlay.add_overlay(top)
+        row.append(close)
+        top.append(row)
+
+        # Week · Month · Year · All time, and which one of them
+        row = Gtk.Box(spacing=8)
+        tabs = Gtk.Box(valign=Gtk.Align.CENTER)
+        tabs.add_css_class("linked")
+        tabs.add_css_class("w-tabs")
+        self.tabs, group = {}, None
+        for kind, name in PERIOD_KINDS:
+            b = Gtk.ToggleButton(label=name)
+            b.add_css_class("w-tab")
+            if group:
+                b.set_group(group)
+            group = group or b
+            b.connect("toggled", self.on_tab, kind)
+            self.tabs[kind] = b
+            tabs.append(b)
+        row.append(tabs)
+        row.append(Gtk.Box(hexpand=True))
+        self.picker = Gtk.DropDown(valign=Gtk.Align.CENTER, visible=False)
+        self.picker.connect("notify::selected", self.on_pick)
+        row.append(self.picker)
+        top.append(row)
+        # The bar moves the window (it has no title bar) and double-clicking it maximizes it.
+        handle = Gtk.WindowHandle(child=top, valign=Gtk.Align.START)
+        overlay.add_overlay(handle)
+
         click = Gtk.GestureClick()
         click.connect("released", self.on_click)
         self.carousel.add_controller(click)
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self.on_key)
         self.add_controller(keys)
+        self.connect("notify::fullscreened", lambda *_: self.on_size_mode())
+        self.connect("notify::maximized", lambda *_: self.on_size_mode())
         # Its own app ID, so the music dropdown's window rules leave it alone.
         self.connect("realize", lambda *_: self.own_app_id())
         self.picking = False
@@ -6808,16 +7025,40 @@ class WrappedWindow(Adw.Window):
         except (ImportError, ValueError, AttributeError):
             pass
 
+    # ---- full screen ----
+    def toggle_fullscreen(self):
+        if self.is_fullscreen():
+            self.unfullscreen()
+        else:
+            self.fullscreen()
+
+    def on_size_mode(self):
+        big = self.is_fullscreen() or self.is_maximized()
+        self.full.set_icon_name("view-restore-symbolic" if self.is_fullscreen() else "view-fullscreen-symbolic")
+        self.full.set_tooltip_text("Leave full screen (F11)" if self.is_fullscreen() else "Full screen (F11)")
+        (self.add_css_class if big else self.remove_css_class)("big")
+        k = 1.5 if big else 1.0
+        if k != self.k:
+            self.k = k
+            if self.data:   # draw the slides again at the new size, staying on the same one
+                at = round(self.carousel.get_position())
+                self.show(self.data, None)
+                n = self.carousel.get_n_pages()
+                if n:
+                    GLib.idle_add(lambda: (self.carousel.scroll_to(self.carousel.get_nth_page(min(at, n - 1)), False),
+                                           False)[1])
+
     # ---- loading ----
     def load(self, period):
         self.seq += 1
         seq = self.seq
         self.period = period
+        self.set_tabs(period)
         self.clear()
         slide = self.slide(0)
         spinner = Adw.Spinner(width_request=48, height_request=48, halign=Gtk.Align.START)
         slide.append(spinner)
-        slide.append(w_label("ALL TIME" if period == "all" else str(period), "w-kicker"))
+        slide.append(w_label(period_name(period).upper(), "w-kicker"))
         slide.append(w_label("Your Wrapped is on its way", "w-big"))
         self.progress = w_label("", "w-sub")
         slide.append(self.progress)
@@ -6848,14 +7089,21 @@ class WrappedWindow(Adw.Window):
             seg, i = seg.get_next_sibling(), i + 1
 
     def slide(self, color):
-        """A new page; returns the box to fill, centred on the page (its parent)."""
+        """A new page; returns the box to fill, centred on the page (its parent) and kept to
+        a readable width however wide the window is."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
         page.add_css_class("slide")
         page.add_css_class(f"s{color % 8}")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, vexpand=True, valign=Gtk.Align.CENTER)
-        page.append(box)
+        clamp = Adw.Clamp(maximum_size=round(560 * self.k), tightening_threshold=round(420 * self.k), vexpand=True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=round(10 * self.k), vexpand=True,
+                      valign=Gtk.Align.CENTER)
+        clamp.set_child(box)
+        page.append(clamp)
         self.carousel.append(page)
         return box
+
+    def px(self, n):
+        return round(n * self.k)
 
     def show(self, d, err):
         self.clear()
@@ -6872,71 +7120,94 @@ class WrappedWindow(Adw.Window):
         self.fill_picker(d)
         if d.get("empty"):
             s = self.slide(0)
-            s.append(w_label("ALL TIME" if d["period"] == "all" else str(d["period"]), "w-kicker"))
+            s.append(w_label(period_name(d["period"]).upper(), "w-kicker"))
             s.append(w_label("No scrobbles here yet", "w-big"))
             s.append(w_label("Play some music and come back: everything you play is scrobbled to Last.fm.", "w-sub"))
             return
         if d["period"] == "all":
             self.all_time(d)
         else:
-            self.year(d)
+            self.period_slides(d)
 
-    def fill_picker(self, d):
-        labels = [str(y) for y in d["years"]] + ["All time"]
+    def set_tabs(self, period):
         self.picking = True
-        self.picker.set_model(Gtk.StringList.new(labels))
-        self.picker.set_selected(len(labels) - 1 if d["period"] == "all" else d["years"].index(d["period"])
-                                 if d["period"] in d["years"] else 0)
-        self.picker.set_visible(True)
+        self.tabs[period_kind(period)].set_active(True)
         self.picking = False
 
-    def on_pick(self, dd, _p):
-        if self.picking or not self.data:
+    def fill_picker(self, d):
+        self.choices = period_choices(period_kind(d["period"]), d["years"])
+        self.picking = True
+        if self.choices:
+            self.picker.set_model(Gtk.StringList.new([name for _p, name in self.choices]))
+            self.picker.set_selected(next((i for i, (p, _n) in enumerate(self.choices) if p == d["period"]), 0))
+        self.picker.set_visible(bool(self.choices))
+        self.picking = False
+
+    def on_tab(self, button, kind):
+        if self.picking or not button.get_active():
             return
-        years = self.data["years"]
-        i = dd.get_selected()
-        period = "all" if i >= len(years) else years[i]
+        period = this_period(kind)
         if period != self.period:
             self.load(period)
 
+    def on_pick(self, dd, _p):
+        if self.picking or not self.choices:
+            return
+        i = dd.get_selected()
+        if 0 <= i < len(self.choices) and self.choices[i][0] != self.period:
+            self.load(self.choices[i][0])
+
     # ---- the slides ----
-    def ranked(self, box, items, with_art=False):
+    def ranked(self, box, items, with_art=False, meter=False):
+        top = max((item[2] if len(item) > 2 else item[1] for item in items), default=0) or 1
         for i, item in enumerate(items, 1):
+            plays = item[2] if len(item) > 2 else item[1]
             row = Gtk.Box(spacing=12)
             row.append(w_label(str(i), "w-rank", wrap=False))
             if with_art:
-                row.append(w_picture(item[3], 44))
-            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+                row.append(w_picture(item[3], self.px(44)))
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER, hexpand=True)
             name = Gtk.Label(label=item[0], xalign=0, ellipsize=Pango.EllipsizeMode.END)
             name.add_css_class("w-name")
             text.append(name)
             if len(item) > 2 and item[1]:
                 text.append(w_label(item[1], "w-small", wrap=False, ellipsize=True))
+            if meter:
+                text.append(w_meter(plays / top))
             row.append(text)
-            row.append(w_label(f"{item[2] if len(item) > 2 else item[1]:,}", "w-small", wrap=False))
+            row.append(w_label(f"{plays:,}", "w-small", wrap=False))
             box.append(row)
 
-    def year(self, d):
-        y, user = d["period"], d["user"]
+    def period_slides(self, d):
+        """A year's, a month's or a week's Wrapped."""
+        period, user, kind = d["period"], d["user"], d["kind"]
         s = self.slide(0)
         s.append(w_label("YOUR", "w-kicker"))
-        s.append(w_label(str(y), "w-huge w-accent"))
+        s.append(w_label(period_title(period), "w-huge w-accent"))
         s.append(w_label("WRAPPED", "w-big"))
+        s.append(w_rule())
         s.append(w_label(f"{user} · {d['scrobbles']:,} scrobbles", "w-sub"))
-        s.append(w_label("Click, or press →, to start", "w-small"))
+        if chip := w_change(d):
+            s.append(chip)
+        s.append(w_label("Click, or press →, to start · F11 for full screen", "w-small"))
 
         s = self.slide(1)
         s.append(w_label("YOU LISTENED FOR", "w-kicker"))
         s.append(w_label(f"{d['minutes']:,}", "w-huge"))
         s.append(w_label("minutes", "w-big"))
-        s.append(w_label(f"That's {d['minutes'] / 1440:.1f} days of music: {d['song_count']:,} different songs "
-                         f"by {d['artist_count']:,} artists.", "w-sub"))
+        hours = d["minutes"] / 60
+        s.append(w_label(f"That's {d['minutes'] / 1440:.1f} days of music." if hours >= 48
+                         else f"That's {hours:.1f} hours of music.", "w-sub"))
+        s.append(w_stats((f"{d['song_count']:,}", "different songs"), (f"{d['artist_count']:,}", "artists"),
+                         (f"{d['days']} of {d['span_days']}", "days with music"),
+                         (f"{round(d['minutes'] / d['span_days']):,}", "minutes a day")))
 
         if d["genres"]:
             s = self.slide(2)
             s.append(w_label("YOUR TOP GENRE", "w-kicker"))
             s.append(w_label(d["genres"][0], "w-big w-accent"))
-            more = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=18)
+            s.append(w_rule())
+            more = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12)
             for i, g in enumerate(d["genres"][1:], 2):
                 row = Gtk.Box(spacing=12)
                 row.append(w_label(str(i), "w-rank", wrap=False))
@@ -6947,46 +7218,52 @@ class WrappedWindow(Adw.Window):
         name, plays = d["artists"][0]
         s = self.slide(3)
         s.append(w_label("YOUR TOP ARTIST", "w-kicker"))
-        s.append(w_picture(d.get("artist_image"), 230, round_=True))
+        s.append(w_picture(d.get("artist_image"), self.px(230), round_=True))
         s.append(w_label(name, "w-big"))
-        s.append(w_label(f"{plays:,} plays · #1 of {d['artist_count']:,} artists", "w-sub"))
+        share = round(plays * 100 / d["scrobbles"]) if d["scrobbles"] else 0
+        s.append(w_label(f"{plays:,} plays · {share}% of everything you played", "w-sub"))
+        s.append(w_meter(plays / d["scrobbles"] if d["scrobbles"] else 0))
         if d.get("top_artist_song"):
             title, n = d["top_artist_song"]
             s.append(w_label(f"Most of all, “{title}”: {n:,} plays", "w-small"))
 
         s = self.slide(4)
         s.append(w_label("YOUR TOP ARTISTS", "w-kicker"))
+        s.append(w_label(f"#1 of {d['artist_count']:,}", "w-mid w-accent"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=12)
-        self.ranked(lst, [(n, "", p) for n, p in d["artists"][:5]])
+        self.ranked(lst, [(n, "", p) for n, p in d["artists"][:5]], meter=True)
         s.append(lst)
 
         title, artist, plays, art, first = d["songs"][0]
         s = self.slide(5)
         s.append(w_label("YOUR TOP SONG", "w-kicker"))
-        s.append(w_picture(art, 240))
+        s.append(w_picture(art, self.px(240)))
         s.append(w_label(title, "w-big"))
         s.append(w_label(artist, "w-sub"))
-        s.append(w_label(f"{plays:,} plays · first played on {datetime.fromtimestamp(first):%B %-d}", "w-small"))
+        s.append(w_label(f"{plays:,} plays · first played on {day_label(datetime.fromtimestamp(first))}", "w-small"))
 
         s = self.slide(6)
         s.append(w_label("YOUR TOP SONGS", "w-kicker"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
-        self.ranked(lst, [(t, a, p, img) for t, a, p, img, _f in d["songs"][:5]], with_art=True)
+        self.ranked(lst, [(t, a, p, img) for t, a, p, img, _f in d["songs"][:5]], with_art=True, meter=True)
         s.append(lst)
 
         if d["albums"]:
             album, artist, plays, art = d["albums"][0]
             s = self.slide(7)
             s.append(w_label("YOUR TOP ALBUM", "w-kicker"))
-            s.append(w_picture(art, 220))
+            s.append(w_picture(art, self.px(220)))
             s.append(w_label(album, "w-big"))
             s.append(w_label(f"{artist} · {plays:,} plays", "w-sub"))
             if len(d["albums"]) > 1:
                 lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=10)
-                for i, (al, ar, p, _img) in enumerate(d["albums"][1:4], 2):
+                for i, (al, ar, p, img) in enumerate(d["albums"][1:4], 2):
                     row = Gtk.Box(spacing=12)
                     row.append(w_label(str(i), "w-rank", wrap=False))
-                    row.append(w_label(f"{al} · {ar}", "w-small"))
+                    row.append(w_picture(img, self.px(36)))
+                    label = w_label(f"{al} · {ar}", "w-small")
+                    label.set_hexpand(True)
+                    row.append(label)
                     lst.append(row)
                 s.append(lst)
 
@@ -6994,35 +7271,50 @@ class WrappedWindow(Adw.Window):
         peak = max(range(24), key=lambda h: hours[h])
         night = sum(hours[h] for h in (22, 23, 0, 1, 2, 3))
         morning = sum(hours[h] for h in range(5, 10))
-        kind = ("Night owl" if night > 0.25 * d["scrobbles"] else "Early bird" if morning > 0.3 * d["scrobbles"]
-                else "Daytime listener")
+        kind_of = ("Night owl" if night > 0.25 * d["scrobbles"] else "Early bird" if morning > 0.3 * d["scrobbles"]
+                   else "Daytime listener")
         s = self.slide(0)
         s.append(w_label("WHEN YOU LISTEN", "w-kicker"))
-        s.append(w_label(kind, "w-big w-accent"))
-        s.append(w_label(f"You listened most around {datetime(2000, 1, 1, peak):%-I %p}.", "w-sub"))
+        s.append(w_label(kind_of, "w-big w-accent"))
+        s.append(w_label(f"You listened most around {hour_label(peak)}.", "w-sub"))
         s.append(bars(hours, [("12a" if h == 0 else "6a" if h == 6 else "12p" if h == 12 else "6p" if h == 18 else "")
-                              for h in range(24)], top=peak))
+                              for h in range(24)], height=self.px(110), top=peak))
         day = max(range(7), key=lambda i: d["weekdays"][i])
         s.append(w_label(f"And most of all on {WEEKDAYS[day]}.", "w-sub"))
+        s.append(bars(d["weekdays"], WEEK_LETTERS, height=self.px(50), top=day))
 
-        months = d["months"]
-        best = max(range(12), key=lambda i: months[i])
         s = self.slide(1)
-        s.append(w_label("MONTH BY MONTH", "w-kicker"))
-        s.append(w_label(f"{datetime(2000, best + 1, 1):%B} was your month", "w-big"))
-        s.append(w_label(f"{months[best]:,} scrobbles in {MONTHS[best]}.", "w-sub"))
-        s.append(bars(months, [m[0] for m in MONTHS], height=150, top=best))
+        if kind == "year":
+            months = d["months"]
+            best = max(range(12), key=lambda i: months[i])
+            s.append(w_label("MONTH BY MONTH", "w-kicker"))
+            s.append(w_label(f"{datetime(2000, best + 1, 1):%B} was your month", "w-big"))
+            s.append(w_label(f"{months[best]:,} scrobbles in {MONTHS[best]}.", "w-sub"))
+            s.append(bars(months, [m[0] for m in MONTHS], height=self.px(150), top=best))
+        else:
+            daily, first_day = d["daily"], period_start(period)
+            best = max(range(len(daily)), key=lambda i: daily[i])
+            best_day = first_day + timedelta(days=best)
+            s.append(w_label("DAY BY DAY", "w-kicker"))
+            s.append(w_label(f"{best_day:%A} was your day" if kind == "week" else f"{day_label(best_day)} was your day",
+                             "w-big"))
+            s.append(w_label(f"{daily[best]:,} scrobbles that day.", "w-sub"))
+            labels = (WEEK_LETTERS if kind == "week"
+                      else [str(i + 1) if i % 7 == 0 else "" for i in range(len(daily))])
+            s.append(bars(daily, labels, height=self.px(150), top=best))
 
         s = self.slide(2)
         s.append(w_label("MOMENTS", "w-kicker"))
         busiest = datetime.fromisoformat(d["busiest"])
-        for big, small in ((f"{d['streak']} days", "your longest run of music, day after day"),
-                           (f"{busiest:%B %-d}", f"your biggest day: {d['busiest_n']:,} scrobbles"),
-                           (d["first"]["title"], f"your first song of {y}, by {d['first']['artist']}"),
-                           (f"{d['days']} days", f"of {y} had music in them")):
+        moments = [(day_label(busiest), f"your biggest day: {d['busiest_n']:,} scrobbles"),
+                   (d["first"]["title"], f"your first song of {period_of(period)}, by {d['first']['artist']}"),
+                   (f"{d['days']} days", f"of {d['span_days']} had music in them")]
+        if kind != "week":
+            moments.insert(0, (f"{d['streak']} days", "your longest run of music, day after day"))
+        for big, small in moments:
             s.append(w_label(big, "w-big"))
             s.append(w_label(small, "w-sub"))
-        self.summary(d, str(y))
+        self.summary(d, period_name(period).upper())
 
     def all_time(self, d):
         user = d["user"]
@@ -7030,43 +7322,49 @@ class WrappedWindow(Adw.Window):
         s.append(w_label("YOUR", "w-kicker"))
         s.append(w_label("ALL TIME", "w-huge w-accent"))
         s.append(w_label(f"since {d['since']}", "w-big"))
+        s.append(w_rule())
         s.append(w_label(f"{user} · {d['scrobbles']:,} scrobbles", "w-sub"))
-        s.append(w_label("Click, or press →, to start", "w-small"))
+        s.append(w_label("Click, or press →, to start · F11 for full screen", "w-small"))
 
         s = self.slide(1)
         s.append(w_label("YOU'VE LISTENED FOR ABOUT", "w-kicker"))
         s.append(w_label(f"{d['minutes']:,}", "w-huge"))
         s.append(w_label("minutes", "w-big"))
         s.append(w_label(f"That's around {d['minutes'] / 1440:,.0f} days of music.", "w-sub"))
+        years = max(1, datetime.now().year - d["since"] + 1)
+        s.append(w_stats((f"{d['scrobbles']:,}", "scrobbles"), (f"{years}", "years of history"),
+                         (f"{round(d['scrobbles'] / years):,}", "scrobbles a year"),
+                         (f"{round(d['minutes'] / (years * 365)):,}", "minutes a day")))
 
         if d["genres"]:
             s = self.slide(2)
             s.append(w_label("YOUR GENRES", "w-kicker"))
             s.append(w_label(d["genres"][0], "w-big w-accent"))
+            s.append(w_rule())
             for g in d["genres"][1:]:
                 s.append(w_label(g, "w-sub"))
 
         name, plays = d["artists"][0]
         s = self.slide(3)
         s.append(w_label("YOUR ARTIST OF ALL TIME", "w-kicker"))
-        s.append(w_picture(d.get("artist_image"), 230, round_=True))
+        s.append(w_picture(d.get("artist_image"), self.px(230), round_=True))
         s.append(w_label(name, "w-big"))
         s.append(w_label(f"{plays:,} plays", "w-sub"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
-        self.ranked(lst, [(n, "", p) for n, p in d["artists"][1:5]])
+        self.ranked(lst, [(n, "", p) for n, p in d["artists"][1:5]], meter=True)
         s.append(lst)
 
         s = self.slide(5)
         s.append(w_label("YOUR SONGS OF ALL TIME", "w-kicker"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
-        self.ranked(lst, [(t, a, p, img) for t, a, p, img, _f in d["songs"][:6]], with_art=True)
+        self.ranked(lst, [(t, a, p, img) for t, a, p, img, _f in d["songs"][:6]], with_art=True, meter=True)
         s.append(lst)
 
         if d["albums"]:
             s = self.slide(7)
             s.append(w_label("YOUR ALBUMS OF ALL TIME", "w-kicker"))
             lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
-            self.ranked(lst, d["albums"][:5], with_art=True)
+            self.ranked(lst, d["albums"][:5], with_art=True, meter=True)
             s.append(lst)
 
         counts = d["years_count"]
@@ -7076,7 +7374,7 @@ class WrappedWindow(Adw.Window):
         s.append(w_label(f"{counts[best][0]} was your year", "w-big"))
         s.append(w_label(f"{counts[best][1]:,} scrobbles.", "w-sub"))
         s.append(bars([n for _y, n in counts], [f"’{str(y)[2:]}" if len(counts) <= 14 or i % 2 == 0 else ""
-                                                for i, (y, _n) in enumerate(counts)], height=150, top=best))
+                                                for i, (y, _n) in enumerate(counts)], height=self.px(150), top=best))
         self.summary(d, "ALL TIME")
 
     def summary(self, d, title):
@@ -7084,12 +7382,19 @@ class WrappedWindow(Adw.Window):
         s = self.slide(3)
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         card.add_css_class("w-card")
-        card.append(w_label(f"{title} WRAPPED · {d['user']}", "w-kicker"))
+        head = Gtk.Box(spacing=12)
+        head.append(w_picture(d.get("artist_image"), self.px(64), round_=True))
+        words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        words.append(w_label(f"{title} WRAPPED", "w-kicker"))
+        words.append(w_label(d["user"], "w-mid", wrap=False, ellipsize=True))
+        head.append(words)
+        card.append(head)
+        card.append(w_rule())
         cols = Gtk.Box(spacing=16, homogeneous=True)
-        for head, items in (("TOP ARTISTS", [n for n, _p in d["artists"][:5]]),
-                            ("TOP SONGS", [t for t, *_rest in d["songs"][:5]])):
+        for head_, items in (("TOP ARTISTS", [n for n, _p in d["artists"][:5]]),
+                             ("TOP SONGS", [t for t, *_rest in d["songs"][:5]])):
             col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            col.append(w_label(head, "w-small"))
+            col.append(w_label(head_, "w-small"))
             for i, item in enumerate(items, 1):
                 lab = Gtk.Label(label=f"{i}  {item}", xalign=0, ellipsize=Pango.EllipsizeMode.END)
                 lab.add_css_class("w-name")
@@ -7097,16 +7402,17 @@ class WrappedWindow(Adw.Window):
             cols.append(col)
         card.append(cols)
         foot = Gtk.Box(spacing=16, homogeneous=True, margin_top=6)
-        for head, value in (("MINUTES", f"{d['minutes']:,}"), ("TOP GENRE", d["genres"][0] if d["genres"] else "—")):
+        for head_, value in (("MINUTES", f"{d['minutes']:,}"), ("SCROBBLES", f"{d['scrobbles']:,}"),
+                             ("TOP GENRE", d["genres"][0] if d["genres"] else "—")):
             col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            col.append(w_label(head, "w-small"))
-            col.append(w_label(value, "w-big w-accent"))
+            col.append(w_label(head_, "w-small"))
+            col.append(w_label(value, "w-mid w-accent", wrap=False, ellipsize=True))
             foot.append(col)
         card.append(foot)
         s.append(card)
         save = Gtk.Button(label="Save as a picture", halign=Gtk.Align.START, margin_top=8)
         save.add_css_class("pill")
-        save.connect("clicked", lambda *_: self.save_picture(s.get_parent(), save, title))
+        save.connect("clicked", lambda *_: self.save_picture(s.get_parent().get_parent(), save, title))
         s.append(save)
 
     def save_picture(self, slide, button, title):
@@ -7132,7 +7438,8 @@ class WrappedWindow(Adw.Window):
                 raise RuntimeError("the slide wasn't drawn yet")
             tex = self.get_renderer().render_texture(node, Graphene.Rect().init(0, 0, w * scale, h * scale))
             pictures = Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or HOME / "Pictures")
-            path = pictures / f"Wrapped {title.title()} · {self.data['user']}.png"
+            name = re.sub(r'[<>:"/\\|?*]', "", f"Wrapped {title.title()} · {self.data['user']}.png")
+            path = pictures / name
             path.parent.mkdir(parents=True, exist_ok=True)
             tex.save_to_png(str(path))
             self.toasts.add_toast(Adw.Toast(title=f"Saved to {path.parent.name}/{path.name}", timeout=4))
@@ -7153,7 +7460,12 @@ class WrappedWindow(Adw.Window):
 
     def on_key(self, _ctl, keyval, _code, _state):
         if keyval == Gdk.KEY_Escape:
-            self.close()
+            if self.is_fullscreen():
+                self.unfullscreen()
+            else:
+                self.close()
+        elif keyval in (Gdk.KEY_F11, Gdk.KEY_f):
+            self.toggle_fullscreen()
         elif keyval in (Gdk.KEY_Right, Gdk.KEY_space, Gdk.KEY_l, Gdk.KEY_Page_Down):
             self.go(1)
         elif keyval in (Gdk.KEY_Left, Gdk.KEY_h, Gdk.KEY_Page_Up):
@@ -7456,9 +7768,10 @@ class MusicApp(Adw.Application):
                 self.win.search()
         elif verb == "wrapped":
             arg = (rest or [""])[0].lower()
-            if arg and not arg.startswith("all") and not arg.isdigit():
-                return fail("omarchy-music wrapped [YEAR|all]", 2)
-            self.open_wrapped("all" if arg.startswith("all") else int(arg) if arg else None)
+            if arg and not arg.startswith("all") and not arg.isdigit() and arg not in ("month", "week"):
+                return fail("omarchy-music wrapped [YEAR|month|week|all]", 2)
+            self.open_wrapped("all" if arg.startswith("all") else this_period(arg) if arg in ("month", "week")
+                              else int(arg) if arg else None)
             if not self.lastfm.connected:
                 return fail("Wrapped is made from your Last.fm scrobbles: connect Last.fm first "
                             "(the accounts menu, or omarchy-music --lastfm-login)")
