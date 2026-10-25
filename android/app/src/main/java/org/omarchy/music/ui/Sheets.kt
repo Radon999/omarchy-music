@@ -53,8 +53,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewFeature
 import org.omarchy.music.DESKTOP_UA
 import org.omarchy.music.Eq
 import org.omarchy.music.LastFm
@@ -72,8 +70,9 @@ fun Sheets(ui: Ui) {
         "tidal-login" -> WebLogin(Music.tidal.loginUrl(), { it.startsWith(Tidal.REDIRECT) }) { url ->
             ui.sheet = "accounts"; if (url != null) Music.tidalLoggedIn(url)
         }
-        "ytm-login" -> WebLogin("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F",
-            { it.startsWith("https://music.youtube.com") && Services.ytmCookiesReady() }, desktop = true) { url ->
+        "ytm-login" -> WebLogin("https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&passive=true&continue=" +
+            "https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F",
+            { it.startsWith("https://music.youtube.com") && Services.ytmCookiesReady() }) { url ->
             ui.sheet = "accounts"; if (url != null) Services.ytmSignedIn()
         }
         "apple-login" -> WebLogin("https://music.apple.com/login", { Services.appleCookiesReady() }, desktop = true) { url ->
@@ -390,11 +389,8 @@ fun WebLogin(url: String, isDone: (String) -> Boolean, desktop: Boolean = false,
                     layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    // Google turns sign-ins away inside apps: it looks for the WebView's "wv" and
-                    // the X-Requested-With header naming the app. Without them it's the browser it is.
-                    settings.userAgentString = if (desktop) DESKTOP_UA else settings.userAgentString.replace("; wv", "")
-                    if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST))
-                        WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+                    // Google's sign-in takes the WebView as it is; a borrowed browser name gives it away.
+                    if (desktop) settings.userAgentString = DESKTOP_UA
                     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                     webViewClient = object : WebViewClient() {
                         fun check(u: String): Boolean {

@@ -178,6 +178,8 @@ fun MusicTab(ui: Ui) {
         }
         val state = rememberLazyListState()
         LazyColumn(Modifier.fillMaxSize(), state = state) {
+            Music.musicVersion   // read here too: the list is built apart from the screen, and must follow a scan
+            Music.savedVersion
             if (!granted && ui.musicView in setOf("all", "added")) item {
                 ActionRow("Allow access to the music on this phone  ›") { ask.launch(perm) }
             }
