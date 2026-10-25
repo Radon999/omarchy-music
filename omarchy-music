@@ -3402,8 +3402,11 @@ class LastFM:
 # =============================================================================
 DJ_SET = 6   # songs in a set
 DJ_ORDER = ("repeat", "fresh", "throwback", "deep", "fresh", "genre", "like")
+# Playing from songs you picked (a playlist, a folder, an album): sets of only those.
+DJ_FROM_ORDER = ("loved", "unplayed", "artist", "throwback", "mix")
 DJ_KINDS = {"repeat": "On repeat", "fresh": "New for you", "throwback": "Throwback", "deep": "Deep cuts",
-            "genre": "Your genre", "like": "More like this", "ask": "You asked"}
+            "genre": "Your genre", "like": "More like this", "ask": "You asked", "loved": "Your favourites",
+            "unplayed": "Not played yet", "artist": "One artist", "mix": "Mix"}
 # Words in a request and the Last.fm tags they mean.
 DJ_MOODS = {
     "chill": ("chill", "chillout"), "chilled": ("chill", "chillout"), "relax": ("chill", "relaxing"),
@@ -3471,7 +3474,13 @@ class DJ:
         self.app = app
         self.taste_at, self.taste = 0, None
         self.used = set()      # song keys the DJ has played this session
-        self.step = 0          # where in DJ_ORDER the next set comes from
+        self.step = 0          # where in DJ_ORDER (or DJ_FROM_ORDER) the next set comes from
+        self.scope = None      # (name, songs): what the DJ plays from; None: everything
+
+    def play_from(self, name, songs):
+        """Play only songs (named name: a playlist, a folder), or with None everything."""
+        self.scope = (name, [dict(t) for t in songs]) if songs else None
+        self.step = 0
 
     # ---- what you like ----
     def load_taste(self):
@@ -3625,8 +3634,83 @@ class DJ:
         pool.sort(key=lambda t: norm(t["artist"].split(",")[0]) not in yours)   # stable: Last.fm's order within each
         return dj_pick(pool, DJ_SET, self.used)
 
+    # ---- playing from songs you picked ----
+    def from_set(self, kind, taste, first):
+        """A set of kind from the songs the DJ plays from: (songs, line) or None."""
+        name, pool = self.scope
+        fresh = [t for t in pool if song_key(t) not in self.used]
+        if len(fresh) < min(3, len(pool)):   # all of them played: around again, but not with songs still to come
+            a = self.app
+            coming = {song_key(t) for t in a.queue[a.index:]}
+            fresh = [t for t in pool if song_key(t) not in coming]
+            if len(fresh) < min(3, len(pool)):
+                fresh = list(pool)
+        plays = {song_key(e["track"]): e.get("plays", 0) for e in self.app.plays.items.values()}
+        for t in taste["all"]:
+            plays[song_key(t)] = max(plays.get(song_key(t), 0), t.get("plays") or 0)
+        last, now = taste["last"], time.time()
+        recent = {song_key(t) for t in taste["recent"]}
+        n, least = min(DJ_SET, len(fresh)), min(3, len(fresh))
+        songs, line = [], ""
+        if kind == "loved":
+            loved = sorted((t for t in fresh if plays.get(song_key(t))), key=lambda t: -plays[song_key(t)])
+            songs = dj_pick(loved[:30], n, set())
+            if songs:
+                line = f"From {name}, the ones you keep coming back to, like “{songs[0]['title']}” by {dj_names(songs[:1])}."
+        elif kind == "unplayed":
+            new = [t for t in fresh if not plays.get(song_key(t)) and song_key(t) not in last]
+            songs = random.sample(new, min(n, len(new)))
+            if songs:
+                line = f"Some from {name} you haven't played yet, starting with “{songs[0]['title']}” by {dj_names(songs[:1])}."
+        elif kind == "throwback":
+            old = [t for t in fresh if plays.get(song_key(t)) and song_key(t) not in recent
+                   and now - last.get(song_key(t), 0) > 21 * 86400]
+            songs = random.sample(old, min(n, len(old)))
+            if songs:
+                line = f"From {name}, a few you haven't played in a while, like “{songs[0]['title']}”."
+        elif kind == "artist":
+            count = Counter((t.get("artist") or "").split(",")[0].strip() for t in fresh)
+            who = [a for a, c in count.items() if a and c >= least]
+            if len(who) > 1:   # one artist in it all: that's not a set of its own
+                a = random.choices(who, weights=[count[w] for w in who])[0]
+                theirs = [t for t in fresh if (t.get("artist") or "").split(",")[0].strip() == a]
+                songs = random.sample(theirs, min(n, len(theirs)))
+                line = f"A few from {a}, from {name}."
+        else:
+            songs = random.sample(fresh, n)
+            line = f"More from {name}: {dj_names(songs, 3)}." if songs else ""
+        if len(songs) < least or not songs:
+            return None
+        if first:
+            line = f"{greeting()}, I'm your DJ, playing {name}. " + line[0].upper() + line[1:]
+        return songs, line
+
+    def ask_from(self, text):
+        """A set of the songs the DJ plays from that match what you asked (artist, title, album, genre)."""
+        name, pool = self.scope
+        words = [norm(w) for w in re.findall(r"[\w'&.-]+", text) if w.lower() not in DJ_FILLER and norm(w)]
+        if not words:
+            return None
+        hits = [t for t in pool if all(w in norm(" ".join(str(t.get(k) or "") for k in ("title", "artist", "album", "genre")))
+                                       for w in words)]
+        unplayed = [t for t in hits if song_key(t) not in self.used]
+        songs = dj_pick(random.sample(unplayed, len(unplayed)) + random.sample(hits, len(hits)), DJ_SET, set())
+        if not songs:
+            return None
+        return "ask", songs, f"From {name}, you asked for {text.strip()}: “{songs[0]['title']}” by {dj_names(songs[:1])} first."
+
     def ask(self, text):
-        """(blocking) A set for what you asked, ("ask", songs, line): an artist, a mood, a decade or a genre."""
+        """(blocking) A set for what you asked, ("ask", songs, line): an artist, a mood, a decade or a genre.
+        Playing from songs you picked: the ones of them that match, else from everywhere."""
+        if self.scope:
+            got = self.ask_from(text)
+            if got:
+                return got
+            got = self.ask_all(text)
+            return got and (got[0], got[1], f"There's nothing like that in {self.scope[0]}, so from everywhere: {got[2]}")
+        return self.ask_all(text)
+
+    def ask_all(self, text):
         taste = self.load_taste()
         words = " ".join(w for w in re.findall(r"[\w'&.-]+", text) if w.lower() not in DJ_FILLER)
         names = {norm(n): n for n in taste["artists"]}
@@ -3669,14 +3753,16 @@ class DJ:
         """(blocking) The next set: of kind, else the next kind in the DJ's order that has songs
         (not avoid, the kind playing now). (kind, songs, line), or None."""
         taste = self.load_taste()
-        kinds = [kind] if kind else [DJ_ORDER[(self.step + i) % len(DJ_ORDER)] for i in range(len(DJ_ORDER))]
-        for i, k in enumerate(kinds):
-            if k == avoid and not kind:
-                continue
-            got = getattr(self, f"set_{k}")(taste, first)
+        order = DJ_FROM_ORDER if self.scope else DJ_ORDER
+        spots = [None] if kind else [(self.step + i) % len(order) for i in range(len(order))]
+        if avoid and not kind:   # the kind playing now only when nothing else has songs
+            spots = [i for i in spots if order[i] != avoid] + [i for i in spots if order[i] == avoid][:1]
+        for spot in spots:
+            k = kind or order[spot]
+            got = self.from_set(k, taste, first) if self.scope else getattr(self, f"set_{k}")(taste, first)
             if got:
                 if not kind:
-                    self.step += i + 1
+                    self.step = spot + 1
                 return k, [dict(t) for t in got[0]], got[1]
         return None
 
@@ -4010,6 +4096,7 @@ class Remote:
                "message": a.win.np_status.get_label() if a.win and a.win.np_status.get_visible() else ""}
         shown = (a.dj["sets"].get(str(a.dj.get("shown") or "")) if a.dj["on"] else None) or {}
         out["dj"] = {"on": a.dj["on"], "busy": a.dj_busy or "", "kind": shown.get("kind", ""), "line": shown.get("line", ""),
+                     "from": (a.dj_source(a.dj.get("from")) or ("",))[0] if a.dj.get("from") else "",
                      "kinds": {n: s["kind"] for n, s in a.dj["sets"].items()}}
         if qv != version:   # the queue only when it changed: a long one is big
             out["queue"] = [self.for_phone(x) for x in a.queue]
@@ -4083,7 +4170,14 @@ class Remote:
         elif verb == "dj":
             do = b.get("do")
             if do == "start":
-                a.dj_start()
+                if b.get("from") == "all":
+                    a.dj_start({"kind": "all"})
+                elif b.get("tracks") is not None:   # the phone's playlist, folder or album
+                    if not tracks:
+                        raise ValueError("no songs the desktop can play")
+                    a.dj_start({"kind": "songs", "name": str(b.get("name") or "the phone's songs")[:80], "songs": tracks})
+                else:
+                    a.dj_start()
             elif do == "stop":
                 a.dj_stop()
             elif do == "switch":
@@ -5370,6 +5464,14 @@ class MusicWindow(Adw.ApplicationWindow):
             busy = Gtk.Label(label=a.dj_busy, xalign=0)
             busy.add_css_class("sub")
             box.append(busy)
+        src = dj.get("from")
+        name = (a.dj_source(src) or ("songs that are gone",))[0] if src else "everything"
+        pick = Gtk.Button(label=f"From: {name}  ▾", halign=Gtk.Align.START, sensitive=not a.dj_busy,
+                          tooltip_text="Play from everything, or only from your music, a folder or a playlist")
+        pick.add_css_class("pill")
+        pick.add_css_class("quiet")
+        pick.connect("clicked", self.dj_from_menu)
+        box.append(pick)
         btns = Gtk.Box(spacing=6)
         for label, cb, quiet in ([("↻  Switch it up", lambda _b: a.dj_switch(), False), ("Stop the DJ", lambda _b: a.dj_stop(), True)]
                                  if dj["on"] else [("▶  Start the DJ", lambda _b: a.dj_start(), False)]):
@@ -5398,6 +5500,64 @@ class MusicWindow(Adw.ApplicationWindow):
             hint.add_css_class("sub")
             hint.set_margin_start(8)
             lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=hint))
+
+    def dj_from(self, src):
+        """Start the DJ on src (see MusicApp.dj_source) and show it."""
+        self.app.dj_start(src)
+        self.show_tab("music")
+        self.set_music_view("dj")
+
+    def dj_from_menu(self, parent):
+        """What the DJ plays from: everything, your music, one of your folders (or a folder in
+        one), a playlist, or any folder you choose."""
+        a = self.app
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        head = Gtk.Label(label="PLAY FROM", xalign=0)
+        head.add_css_class("section")
+        box.append(head)
+        pop = Gtk.Popover(child=Gtk.ScrolledWindow(child=box, propagate_natural_height=True, max_content_height=420,
+                                                   hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_width=True))
+        pop.set_parent(parent)
+
+        def item(label, cb):
+            b = Gtk.Button(label=label)
+            b.add_css_class("menu-item")
+            b.get_child().set_xalign(0)
+            b.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+            # After the menu has let go of its button: picking rebuilds the DJ screen, button and all.
+            b.connect("clicked", lambda *_: (pop.popdown(), GLib.idle_add(lambda: (cb(), False)[1])))
+            box.append(b)
+        item("Everything: your history and new songs", lambda: self.dj_from({"kind": "all"}))
+        mine = a.my_songs()
+        item(f"All your music · {len(mine)}", lambda: self.dj_from({"kind": "mine"}))
+        for folder in a.folders:
+            root = str(Path(folder).expanduser()).rstrip("/\\")
+            inside = [str(t.get("file") or "")[len(root) + 1:] for t in mine if str(t.get("file") or "").startswith(root + os.sep)]
+            if not inside:
+                continue
+            item(f"{short_path(root)} · {len(inside)}", lambda r=root: self.dj_from({"kind": "folder", "path": r}))
+            subs = Counter(rel.split(os.sep)[0] for rel in inside if os.sep in rel)
+            for sub in sorted(subs, key=str.lower):
+                item(f"      {sub} · {subs[sub]}", lambda r=os.path.join(root, sub): self.dj_from({"kind": "folder", "path": r}))
+        for pl in a.lists.all():
+            if pl["tracks"]:
+                item(f"{pl['name']} · {len(pl['tracks'])}", lambda pid=pl["id"]: self.dj_from({"kind": "playlist", "id": pid}))
+        item("Choose a folder…", self.dj_pick_folder)
+        pop.connect("closed", lambda p: GLib.idle_add(lambda: (p.unparent(), False)[1]))
+        pop.popup()
+
+    def dj_pick_folder(self):
+        dlg = Gtk.FileDialog(title="Play a folder with the DJ",
+                             initial_folder=Gio.File.new_for_path(str(HOME / "Music") if (HOME / "Music").is_dir() else str(HOME)))
+
+        def chosen(d, res):
+            try:
+                f = d.select_folder_finish(res)
+            except GLib.Error:
+                return   # cancelled
+            if f and f.get_path():
+                self.dj_from({"kind": "folder", "path": f.get_path()})
+        dlg.select_folder(self, None, chosen)
 
     def sort_chips(self):
         group = Adw.ToggleGroup(halign=Gtk.Align.START)
@@ -5470,11 +5630,12 @@ class MusicWindow(Adw.ApplicationWindow):
         tracks = [dict(t) for t in pl["tracks"]]
         buttons = [("Play", lambda _b: self.app.play_list(tracks), False),
                    ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
+                   ("DJ", lambda _b, pid=pl["id"]: self.dj_from({"kind": "playlist", "id": pid}), True),
                    ("Rename", lambda _b: self.rename_mine(), True)]
         if any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in tracks):
             buttons.append(("Download", lambda _b: self.app.download(tracks), True))
         buttons.append(("Delete", lambda _b: self.delete_mine(), True))
-        self.actions_row(lst, buttons if tracks else buttons[2:])
+        self.actions_row(lst, buttons if tracks else buttons[3:])
         if not tracks:
             self.section(lst, "EMPTY: RIGHT-CLICK A SONG › ADD TO PLAYLIST")
             return
@@ -5643,6 +5804,7 @@ class MusicWindow(Adw.ApplicationWindow):
                 tracks = page["tracks"]
                 self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
                                        ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
+                                       ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": al["title"], "songs": tracks}), True),
                                        ("+ Playlist", lambda b: self.playlist_menu(b, tracks), True)])
                 self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             self.scroll_top(lst)
@@ -5820,6 +5982,10 @@ class MusicWindow(Adw.ApplicationWindow):
             if tracks is None:
                 self.section(lst, "LOADING…")
                 return
+            if tracks:
+                self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
+                                       ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
+                                       ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": pl["title"], "songs": tracks}), True)])
             self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             return
         if key not in self.playlists:
@@ -7685,11 +7851,51 @@ class MusicApp(Adw.Application):
                 "title": name, "artist": artist, "thumb": img if img and LASTFM_BLANK not in img else ""}
 
     # ---- the DJ ----
-    def dj_start(self):
-        """Start the DJ: a first set of what you've had on repeat (or whatever it can make)."""
+    def dj_source(self, src):
+        """What the DJ plays from, as dj["from"] keeps it: (name, songs), or None if it's gone.
+        {"kind": "playlist", "id"}, {"kind": "folder", "path"}, {"kind": "mine"} (all your songs),
+        or {"kind": "songs", "name", "songs"} (an album, a service's playlist, the phone's)."""
+        kind = (src or {}).get("kind")
+        if kind == "playlist":
+            pl = self.lists.get(src.get("id"))
+            return (pl["name"], [dict(t) for t in pl["tracks"]]) if pl else None
+        if kind == "folder":
+            root = str(Path(src.get("path") or "").expanduser()).rstrip("/\\")
+            inside = [t for t in self.my_songs() if str(t.get("file") or "").startswith(root + os.sep)]
+            return Path(root).name or root, inside
+        if kind == "mine":
+            return "your music", self.my_songs()
+        if kind == "songs":
+            return src.get("name") or "these songs", [dict(t) for t in src.get("songs") or []]
+        return None
+
+    def dj_ready(self):
+        """The DJ playing from what dj["from"] says (after a restart, say)."""
+        src = self.dj.get("from")
+        if src and not self.djs.scope:
+            got = self.dj_source(src)
+            if got and got[1]:
+                self.djs.play_from(*got)
+
+    def dj_start(self, src="keep"):
+        """Start the DJ: a first set of what you've had on repeat (or whatever it can make). src: what
+        it plays from (see dj_source), {"kind": "all"} for everything, "keep" for what it played from."""
         if self.dj_busy:
             return
-        self.dj_busy = "Picking your first set…"
+        if src == "keep":
+            src = self.dj.get("from")
+        if src and src.get("kind") != "all":
+            got = self.dj_source(src)
+            if not got or not got[1]:
+                self.toast(f"No songs of yours in {got[0]}: add the folder under Folders in the accounts menu (☰) first"
+                           if src.get("kind") == "folder" and got else
+                           f"There are no songs in {got[0] if got else 'that'} for the DJ to play")
+                return
+            self.djs.play_from(*got)
+        else:
+            src = None
+            self.djs.play_from(None, None)
+        self.dj_busy = f"Picking your first set from {self.djs.scope[0]}…" if self.djs.scope else "Picking your first set…"
         self.dj_changed()
 
         def done(res, err):
@@ -7700,7 +7906,7 @@ class MusicApp(Adw.Application):
                 self.dj_changed()
                 return
             kind, songs, line = res
-            self.dj = {"on": False, "sets": {}, "shown": None}
+            self.dj = {"on": False, "sets": {}, "shown": None, "from": src}
             self.dj_tag(kind, songs, line)   # before play_from, which copies them
             self.play_from(songs, 0, radio=False)
             self.dj["on"] = True
@@ -7736,6 +7942,7 @@ class MusicApp(Adw.Application):
         """Near the end of the queue: the DJ's next set after it."""
         if self.dj_busy:
             return
+        self.dj_ready()
         self.dj_busy = "Picking the next set…"
         context = self.context
 
@@ -7760,6 +7967,7 @@ class MusicApp(Adw.Application):
         if not self.dj["on"] and not ask:
             self.dj_start()
             return
+        self.dj_ready()
         self.dj_busy = f"Looking for {ask.strip()}…" if ask else "Switching it up…"
         self.dj_changed()
 
@@ -7772,7 +7980,7 @@ class MusicApp(Adw.Application):
                 return
             kind, songs, line = res
             if not self.dj["on"]:
-                self.dj = {"on": True, "sets": {}, "shown": None}
+                self.dj = {"on": True, "sets": {}, "shown": None, "from": self.dj.get("from")}
             self.dj_tag(kind, songs, line)
             queued = [t for t in self.queue[self.index + 1:] if t.get("queued")]
             keep = self.queue[:self.index + 1] if self.current_track() else []
