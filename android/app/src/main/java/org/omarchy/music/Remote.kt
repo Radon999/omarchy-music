@@ -122,7 +122,7 @@ object Remote {
             statusAt = System.nanoTime()
             val d = s["dj"]
             val dj = Dj.Shown(d["on"].bool ?: false, d["busy"].str ?: "", d["kind"].str ?: "", d["line"].str ?: "",
-                (d["kinds"] as? kotlinx.serialization.json.JsonObject)?.mapValues { it.value.str ?: "" } ?: emptyMap())
+                (d["kinds"] as? kotlinx.serialization.json.JsonObject)?.mapValues { it.value.str ?: "" } ?: emptyMap(), d["from"].str ?: "")
             if (dj.on && dj.line.isNotEmpty() && dj.line != status.dj.line && status.track != null) Music.toast("DJ · ${dj.line}")
             status = Status(q.getOrNull(i), s["paused"].bool ?: true, s["position"].dbl ?: 0.0, s["duration"].dbl ?: 0.0,
                 s["repeat"].str ?: "off", s["liked"].bool ?: false, s["message"].str ?: "", i, q, s["radio"].bool ?: false, dj)
@@ -188,6 +188,17 @@ object Remote {
             val ok = out?.filterNotNull().orEmpty()
             if (ok.isEmpty()) return@bg
             cmd("play_from", "tracks" to ok, "index" to maxOf(0, ok.indexOf(t)), "radio" to (radio && ok.none { it.isFile }))
+        }
+    }
+
+    /** Start the desktop's DJ: on what it played from last (null), everything ("all"), or songs of this phone's. */
+    fun djStart(from: Dj.From?) {
+        if (from == null) { cmd("dj", "do" to "start"); return }
+        if (from.kind == "all") { cmd("dj", "do" to "start", "from" to "all"); return }
+        val (name, songs) = Music.djSource(from)?.takeIf { it.second.isNotEmpty() } ?: run { Music.toast("There are no songs in that for the DJ to play"); return }
+        val some = if (songs.size > 2000) songs.shuffled().take(2000) else songs   // a request the desktop reads at once
+        Music.bg({ playable(some).filterNotNull() }) { ok, _ ->
+            if (!ok.isNullOrEmpty()) cmd("dj", "do" to "start", "name" to name, "tracks" to ok)
         }
     }
 

@@ -44,6 +44,10 @@ an **Android** app.
     artists you play, your top genre and more like what's playing (from your Last.fm history
     when it's connected, else what you played here). **Switch it up** starts another kind of
     set, and the box under it asks the DJ for a mood, a decade, a genre or an artist.
+    **From** (or **DJ** on a playlist's or album's page) has it play only some of your songs:
+    all your music, one of your folders or a folder in one, a playlist, an album, or any folder
+    you choose. It then makes sets of just those: your favourites, ones you haven't played, a
+    few by one artist, ones you haven't heard in a while, and a mix.
 - **Playlists.** Create, rename and delete them, and add or remove songs. They are stored in
   `playlists.json`.
 - **Import .m3u8 playlists.** Pick **Import a playlist (.m3u8)** under Playlists, for example

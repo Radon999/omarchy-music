@@ -21,6 +21,7 @@ class LocalFiles(private val ctx: Context) {
     data class Seen(val modified: Long, val added: Double)
 
     @Volatile var files: List<Track> = emptyList()
+    @Volatile var paths: Map<String, String> = emptyMap()   // a song's address: its folder, as "Music/Album/"
         private set
     @Volatile var scanning = false
     var scanned = 0.0
@@ -41,8 +42,10 @@ class LocalFiles(private val ctx: Context) {
         val first = seen.isEmpty()
         val keep = HashMap<String, Seen>()
         val out = ArrayList<Track>()
+        val where = HashMap<String, String>()
         query { c, uri, path, modified ->
             if (if (path.startsWith(DOWNLOADS)) mediaId(uri) in saved else folders.none { path.startsWith(it) }) return@query
+            where[uri] = path.trimEnd('/') + "/"
             val old = seen[uri]
             val added = old?.added ?: if (first) modified.toDouble() else now()
             keep[uri] = Seen(modified, added)
@@ -50,6 +53,7 @@ class LocalFiles(private val ctx: Context) {
         }
         val changed = out.map { it.file } != files.map { it.file }
         files = out
+        paths = where
         if (keep.keys != seen.keys) writeAtomic(index, JSON.encodeToString(ser, keep))
         scanned = now()
         return changed

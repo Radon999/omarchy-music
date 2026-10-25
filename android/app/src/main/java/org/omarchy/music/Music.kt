@@ -265,21 +265,56 @@ object Music {
     fun shownDj(): Dj.Shown {
         if (Remote.active) return Remote.status.dj
         val shown = dj.sets[dj.shown].takeIf { dj.on }
-        return Dj.Shown(dj.on, djBusy ?: "", shown?.kind ?: "", shown?.line ?: "", dj.sets.mapValues { it.value.kind })
+        return Dj.Shown(dj.on, djBusy ?: "", shown?.kind ?: "", shown?.line ?: "", dj.sets.mapValues { it.value.kind }, djFromName(dj.from))
     }
 
-    /** Start the DJ: a first set of what you've had on repeat (or whatever it can make). */
-    fun djStart() {
-        if (Remote.active) { Remote.cmd("dj", "do" to "start"); return }
+    /** What the DJ plays from, as [Dj.From] keeps it: (name, songs), or null if it's gone. */
+    fun djSource(f: Dj.From?): Pair<String, List<Track>>? = when (f?.kind) {
+        "playlist" -> lists.get(f.id)?.let { it.name to it.tracks }
+        "folder" -> djFromName(f) to mySongs().filter { (local.paths[it.file] ?: "").startsWith(f.path) }
+        "mine" -> "your music" to mySongs()
+        "songs" -> djFromName(f) to f.songs
+        else -> null
+    }
+
+    fun djFromName(f: Dj.From?): String = when (f?.kind) {
+        null, "all" -> ""
+        "playlist" -> lists.get(f.id)?.name ?: "a playlist that's gone"
+        "folder" -> f.path.trimEnd('/').substringAfterLast('/').ifEmpty { f.path }
+        "mine" -> "your music"
+        else -> f.name.ifEmpty { "these songs" }
+    }
+
+    /** The DJ playing from what dj.from says (after a restart, say). */
+    private fun djReady() {
+        if (dj.from == null || Dj.scope != null) return
+        djSource(dj.from)?.takeIf { it.second.isNotEmpty() }?.let { Dj.playFrom(it.first, it.second) }
+    }
+
+    private fun coming() = queue.drop(maxOf(0, index)).map { songKey(it) }.toSet()
+
+    /** Start the DJ: a first set of what you've had on repeat (or whatever it can make). from: what it
+     *  plays from; Dj.From("all") for everything; null for what it played from last. */
+    fun djStart(from: Dj.From? = null) {
+        if (Remote.active) { Remote.djStart(from); return }
         if (djBusy != null) return
-        djBusy = "Picking your first set…"
+        val src = (from ?: dj.from)?.takeIf { it.kind != "all" }
+        if (src != null) {
+            val got = djSource(src)
+            if (got == null || got.second.isEmpty()) {
+                toast("There are no songs in ${got?.first ?: "that"} for the DJ to play")
+                return
+            }
+            Dj.playFrom(got.first, got.second)
+        } else Dj.playFrom(null, null)
+        djBusy = Dj.scope?.let { "Picking your first set from ${it.first}…" } ?: "Picking your first set…"
         bg({ Dj.build(first = true) }) { res, err ->
             djBusy = null
             if (res == null) {
                 toast(if (err == null) "The DJ couldn't find songs yet. Play a few, or connect Last.fm." else "The DJ couldn't start: ${err.message?.take(100)}")
                 return@bg
             }
-            dj = Dj.State()
+            dj = Dj.State(from = src)
             playFrom(djTag(res), 0, radio = false)
             dj = dj.copy(on = true)
             djAnnounce(current())
@@ -314,10 +349,12 @@ object Music {
     /** Near the end of the queue: the DJ's next set after it. */
     private fun djMore() {
         if (djBusy != null) return
+        djReady()
         djBusy = "Picking the next set…"
         val ctxNow = context
         val avoid = djKind()
-        bg({ Dj.build(avoid = avoid) }) { res, _ ->
+        val coming = coming()
+        bg({ Dj.build(avoid = avoid, coming = coming) }) { res, _ ->
             djBusy = null
             if (res != null && ctxNow == context && dj.on) {
                 queue = queue + djTag(res)
@@ -333,16 +370,18 @@ object Music {
         if (Remote.active) { if (ask != null) Remote.cmd("dj", "do" to "ask", "text" to ask) else Remote.cmd("dj", "do" to "switch"); return }
         if (djBusy != null) return
         if (!dj.on && ask == null) { djStart(); return }
+        djReady()
         djBusy = if (ask != null) "Looking for ${ask.trim()}…" else "Switching it up…"
         val avoid = djKind()
-        bg({ if (ask != null) Dj.ask(ask) else Dj.build(avoid = avoid) }) { res, err ->
+        val coming = coming()
+        bg({ if (ask != null) Dj.ask(ask) else Dj.build(avoid = avoid, coming = coming) }) { res, err ->
             djBusy = null
             if (res == null) {
                 toast(if (ask != null) "The DJ found nothing for “${ask.trim()}”. Try a mood, a decade, a genre or an artist."
                       else "The DJ has nothing else right now" + (err?.let { ": ${it.message?.take(80)}" } ?: "."))
                 return@bg
             }
-            if (!dj.on) dj = Dj.State(on = true)
+            if (!dj.on) dj = Dj.State(on = true, from = dj.from)
             val songs = djTag(res)
             val queued = queue.drop(index + 1).filter { it.queued }
             val keep = if (current() != null) queue.take(index + 1) else emptyList()

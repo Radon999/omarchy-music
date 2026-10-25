@@ -23,6 +23,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -147,7 +150,7 @@ fun LibraryTab(ui: Ui) {
                 val tracks = open.second
                 if (tracks == null) item { Section("LOADING…") }
                 else {
-                    item { ListActions(tracks) }
+                    item { ListActions(tracks, onDj = { ui.djFrom(Dj.From("songs", name = open.first.title, songs = tracks)) }) }
                     tracks(tracks, ui, "list")
                 }
             }
@@ -190,12 +193,13 @@ fun SyncLine() {
 }
 
 @Composable
-fun ListActions(tracks: List<Track>, extra: List<Pair<String, () -> Unit>> = emptyList()) {
+fun ListActions(tracks: List<Track>, extra: List<Pair<String, () -> Unit>> = emptyList(), onDj: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (tracks.isNotEmpty()) {
             Pill("Play") { Music.playList(tracks) }
             Pill("Shuffle") { Music.playList(tracks, shuffled = true) }
+            if (onDj != null) Pill("DJ", quiet = true, onClick = onDj)
             if (tracks.any { !it.isFile && !Music.lib.has(it.id) }) Pill("Download", quiet = true) { Music.download(tracks) }
         }
         extra.forEach { (label, act) -> Pill(label, quiet = true, onClick = act) }
@@ -286,6 +290,27 @@ private fun androidx.compose.foundation.lazy.LazyListScope.djView(ui: Ui, ask: S
                     "a decade, a genre or an artist."
             }, style = if (d.line.isNotEmpty()) T.title else T.body)
             if (d.busy.isNotEmpty()) Text(d.busy, style = T.sub)
+            Box {
+                var menu by remember { mutableStateOf(false) }
+                Pill("From: ${d.from.ifEmpty { "everything" }}  ▾", quiet = true) { menu = true }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    val pick = { f: Dj.From -> menu = false; ui.djFrom(f) }
+                    val item = @Composable { label: String, f: Dj.From ->
+                        DropdownMenuItem(text = { Text(label, style = T.body, maxLines = 1, overflow = TextOverflow.Ellipsis) }, onClick = { pick(f) })
+                    }
+                    item("Everything: your history and new songs", Dj.From("all"))
+                    item("All your music · ${Music.mySongs().size}", Dj.From("mine"))
+                    // The folders your songs are in, under the ones you picked, with how many each holds.
+                    val counts = Music.local.paths.values.groupingBy { it }.eachCount()
+                    val tops = Music.folders.filter { f -> counts.keys.any { it.startsWith(f) } }
+                    for (top in tops) {
+                        item("${top.trimEnd('/')} · ${counts.filterKeys { it.startsWith(top) }.values.sum()}", Dj.From("folder", path = top))
+                        val subs = counts.keys.filter { it.startsWith(top) && it != top }.map { top + it.removePrefix(top).substringBefore('/') + "/" }.distinct().sorted()
+                        for (sub in subs) item("      ${sub.removePrefix(top).trimEnd('/')} · ${counts.filterKeys { it.startsWith(sub) }.values.sum()}", Dj.From("folder", path = sub))
+                    }
+                    Music.lists.all().filter { it.tracks.isNotEmpty() }.forEach { item("${it.name} · ${it.tracks.size}", Dj.From("playlist", id = it.id)) }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (d.on) {
                     Pill("↻  Switch it up") { Music.djSwitch() }
@@ -375,7 +400,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, i
     }
     item { BackRow(open.name) { ui.openMine = null } }
     item {
-        ListActions(open.tracks, listOf(
+        ListActions(open.tracks, onDj = { ui.djFrom(Dj.From("playlist", id = open.id)) }, extra = listOf(
             "Rename" to { ui.askName = Triple("Rename playlist", open.name) { n -> Music.renamePlaylist(open.id, n) } },
             "Delete" to { ui.confirm = "Delete the playlist “${open.name}”? The songs stay where they are." to { Music.deletePlaylist(open.id); ui.openMine = null } },
         ))
@@ -491,7 +516,7 @@ private fun AlbumPage(ui: Ui, page: Ui.Page.AlbumPage) {
         }
         val t = tracks
         if (t == null) item { Section("LOADING…") } else {
-            item { ListActions(t) }
+            item { ListActions(t, onDj = { ui.djFrom(Dj.From("songs", name = page.album.title, songs = t)) }) }
             tracks(t, ui, "album")
         }
     }

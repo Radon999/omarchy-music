@@ -14,8 +14,11 @@ import kotlin.random.Random
 object Dj {
     const val SET = 6   // songs in a set
     val ORDER = listOf("repeat", "fresh", "throwback", "deep", "fresh", "genre", "like")
+    /** Playing from songs you picked (a playlist, a folder, an album): sets of only those. */
+    val FROM_ORDER = listOf("loved", "unplayed", "artist", "throwback", "mix")
     val KINDS = mapOf("repeat" to "On repeat", "fresh" to "New for you", "throwback" to "Throwback", "deep" to "Deep cuts",
-        "genre" to "Your genre", "like" to "More like this", "ask" to "You asked")
+        "genre" to "Your genre", "like" to "More like this", "ask" to "You asked", "loved" to "Your favourites",
+        "unplayed" to "Not played yet", "artist" to "One artist", "mix" to "Mix")
     /** Words in a request and the Last.fm tags they mean. */
     val MOODS = mapOf(
         "chill" to listOf("chill", "chillout"), "chilled" to listOf("chill", "chillout"), "relax" to listOf("chill", "relaxing"),
@@ -41,12 +44,17 @@ object Dj {
     @Serializable
     data class Info(val kind: String, val line: String)
 
+    /** What the DJ plays from: kind "all" (everything), "mine" (all your songs), "folder" (path, as
+     *  "Music/Album/"), "playlist" (id, one of yours) or "songs" (an album's or a service playlist's). */
     @Serializable
-    data class State(val on: Boolean = false, val sets: Map<String, Info> = emptyMap(), val shown: String? = null)
+    data class From(val kind: String, val id: String = "", val path: String = "", val name: String = "", val songs: List<Track> = emptyList())
 
-    /** What the DJ screen shows: on, what it's doing, the kind of set playing and its line. */
+    @Serializable
+    data class State(val on: Boolean = false, val sets: Map<String, Info> = emptyMap(), val shown: String? = null, val from: From? = null)
+
+    /** What the DJ screen shows: on, what it's doing, the kind of set playing and its line, what it plays from. */
     data class Shown(val on: Boolean = false, val busy: String = "", val kind: String = "", val line: String = "",
-                     val kinds: Map<String, String> = emptyMap())
+                     val kinds: Map<String, String> = emptyMap(), val from: String = "")
 
     data class Built(val kind: String, val songs: List<Track>, val line: String)
 
@@ -97,7 +105,15 @@ object Dj {
     private var taste: Taste? = null
     private var tasteAt = 0.0
     val used: MutableSet<Pair<String, String>> = ConcurrentHashMap.newKeySet()   // song keys the DJ has played since the app started
-    private var step = 0   // where in ORDER the next set comes from
+    private var step = 0   // where in ORDER (or FROM_ORDER) the next set comes from
+    @Volatile var scope: Pair<String, List<Track>>? = null   // (name, songs) the DJ plays from; null: everything
+        private set
+
+    /** Play only songs (named name: a playlist, a folder), or with null everything. */
+    fun playFrom(name: String?, songs: List<Track>?) {
+        scope = if (name != null && !songs.isNullOrEmpty()) name to songs else null
+        step = 0
+    }
 
     /** (blocking) Your history, asked of Last.fm at most every ten minutes. */
     @Synchronized private fun loadTaste(): Taste {
@@ -216,8 +232,78 @@ object Dj {
         return pick(pool, SET, used)
     }
 
-    /** (blocking) A set for what you asked: an artist, a mood, a decade or a genre; null if nothing fits. */
+    // ---- playing from songs you picked ----
+    /** A set of kind from the songs the DJ plays from, or null. coming: the song keys still to come in the queue. */
+    private fun fromSet(kind: String, taste: Taste, first: Boolean, coming: Set<Pair<String, String>>): Pair<List<Track>, String>? {
+        val (name, pool) = scope ?: return null
+        var fresh = pool.filter { songKey(it) !in used }
+        if (fresh.size < minOf(3, pool.size)) {   // all of them played: around again, but not with songs still to come
+            fresh = pool.filter { songKey(it) !in coming }
+            if (fresh.size < minOf(3, pool.size)) fresh = pool
+        }
+        val plays = HashMap<Pair<String, String>, Int>()
+        Music.plays.items.values.forEach { plays[songKey(it.track)] = it.plays }
+        taste.all.forEach { plays.merge(songKey(it), it.plays) { a, b -> maxOf(a, b) } }
+        val recent = taste.recent.map { songKey(it) }.toSet()
+        val t = now()
+        val n = minOf(SET, fresh.size)
+        val least = minOf(3, fresh.size)
+        var songs: List<Track> = emptyList()
+        var line = ""
+        when (kind) {
+            "loved" -> {
+                songs = pick(fresh.filter { (plays[songKey(it)] ?: 0) > 0 }.sortedByDescending { plays[songKey(it)] }.take(30), n, emptySet())
+                if (songs.isNotEmpty()) line = "From $name, the ones you keep coming back to, like “${songs[0].title}” by ${names(songs.take(1))}."
+            }
+            "unplayed" -> {
+                songs = fresh.filter { (plays[songKey(it)] ?: 0) == 0 && songKey(it) !in taste.last }.shuffled().take(n)
+                if (songs.isNotEmpty()) line = "Some from $name you haven't played yet, starting with “${songs[0].title}” by ${names(songs.take(1))}."
+            }
+            "throwback" -> {
+                songs = fresh.filter { (plays[songKey(it)] ?: 0) > 0 && songKey(it) !in recent && t - (taste.last[songKey(it)] ?: 0.0) > 21 * 86400 }
+                    .shuffled().take(n)
+                if (songs.isNotEmpty()) line = "From $name, a few you haven't played in a while, like “${songs[0].title}”."
+            }
+            "artist" -> {
+                val lead = { s: Track -> s.artist.split(",")[0].trim() }
+                val count = fresh.groupingBy(lead).eachCount().filter { it.key.isNotEmpty() && it.value >= least }
+                if (count.size > 1) {   // one artist in it all: that's not a set of its own
+                    var r = Random.nextInt(count.values.sum())
+                    val who = count.entries.first { r -= it.value; r < 0 }.key
+                    songs = fresh.filter { lead(it) == who }.shuffled().take(n)
+                    line = "A few from $who, from $name."
+                }
+            }
+            else -> {
+                songs = fresh.shuffled().take(n)
+                if (songs.isNotEmpty()) line = "More from $name: ${names(songs, 3)}."
+            }
+        }
+        if (songs.isEmpty() || songs.size < least) return null
+        if (first) line = "${greeting()}, I'm your DJ, playing $name. " + line.replaceFirstChar { it.uppercase() }
+        return songs to line
+    }
+
+    /** A set of the songs the DJ plays from that match what you asked (artist, title, album). */
+    private fun askFrom(text: String): Built? {
+        val (name, pool) = scope ?: return null
+        val words = WORD.findAll(text).map { it.value }.filter { it.lowercase() !in FILLER }.map { norm(it) }.filter { it.isNotEmpty() }.toList()
+        if (words.isEmpty()) return null
+        val hits = pool.filter { t -> val all = norm("${t.title} ${t.artist} ${t.album}"); words.all { it in all } }
+        val songs = pick(hits.filter { songKey(it) !in used }.shuffled() + hits.shuffled(), SET, emptySet())
+        if (songs.isEmpty()) return null
+        return Built("ask", songs, "From $name, you asked for ${text.trim()}: “${songs[0].title}” by ${names(songs.take(1))} first.")
+    }
+
+    /** (blocking) A set for what you asked: an artist, a mood, a decade or a genre; null if nothing fits.
+     *  Playing from songs you picked: the ones of them that match, else from everywhere. */
     fun ask(text: String): Built? {
+        val sc = scope ?: return askAll(text)
+        askFrom(text)?.let { return it }
+        return askAll(text)?.let { it.copy(line = "There's nothing like that in ${sc.first}, so from everywhere: ${it.line}") }
+    }
+
+    private fun askAll(text: String): Built? {
         val taste = loadTaste()
         val asked = text.trim()
         val words = Regex("[\\p{L}\\p{N}_'&.-]+").findAll(asked).map { it.value }.filter { it.lowercase() !in FILLER }.joinToString(" ")
@@ -253,13 +339,16 @@ object Dj {
     }
 
     /** (blocking) The next set: of kind, else the next kind in the DJ's order that has songs
-     *  (not avoid, the kind playing now). Null if there are none. */
-    fun build(kind: String? = null, avoid: String? = null, first: Boolean = false): Built? {
+     *  (avoid, the kind playing now, only when no other has). coming: the song keys still to
+     *  come in the queue. Null if there are none. */
+    fun build(kind: String? = null, avoid: String? = null, first: Boolean = false, coming: Set<Pair<String, String>> = emptySet()): Built? {
         val taste = loadTaste()
-        val kinds = if (kind != null) listOf(kind) else ORDER.indices.map { ORDER[(step + it) % ORDER.size] }
-        for ((i, k) in kinds.withIndex()) {
-            if (k == avoid && kind == null) continue
-            val got = when (k) {
+        val order = if (scope != null) FROM_ORDER else ORDER
+        var spots = if (kind != null) listOf(-1) else order.indices.map { (step + it) % order.size }
+        if (avoid != null && kind == null) spots = spots.filter { order[it] != avoid } + spots.filter { order[it] == avoid }.take(1)
+        for (spot in spots) {
+            val k = kind ?: order[spot]
+            val got = (if (scope != null) fromSet(k, taste, first, coming) else when (k) {
                 "repeat" -> setRepeat(taste, first)
                 "throwback" -> setThrowback(taste)
                 "fresh" -> setFresh(taste)
@@ -267,8 +356,8 @@ object Dj {
                 "genre" -> setGenre(taste)
                 "like" -> setLike(taste)
                 else -> null
-            } ?: continue
-            if (kind == null) step += i + 1
+            }) ?: continue
+            if (kind == null) step = spot + 1
             return Built(k, got.first, got.second)
         }
         return null

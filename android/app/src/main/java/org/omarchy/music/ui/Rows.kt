@@ -84,6 +84,13 @@ class Ui {
         first?.let { selected += it.id }
     }
 
+    /** Start the DJ on f (see [org.omarchy.music.Dj.From]) and show it. */
+    fun djFrom(f: org.omarchy.music.Dj.From) {
+        Music.djStart(f)
+        stopSelecting()
+        tab = "music"; pages.clear(); openMine = null; musicView = "dj"
+    }
+
     fun stopSelecting() {
         selecting = false
         selected.clear()
