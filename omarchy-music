@@ -3885,9 +3885,13 @@ class Updater:
             self.app.accounts_changed()
             return
         if WINDOWS:
+            import tempfile
             # The installer replaces the files this copy runs from, so it starts once this has
-            # quit (a moment later), and /UPDATE=1 has it open the new copy when it's done.
-            subprocess.Popen(f'cmd /c ping -n 3 127.0.0.1 >nul & "{setup}" /SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1',
+            # quit (a moment later; it also waits for anything still running from here), and
+            # /UPDATE=1 has it open the new copy when it's done. /LOG leaves a record in %TEMP%.
+            log = Path(tempfile.gettempdir()) / "OmarchyMusic-Update.log"
+            subprocess.Popen(f'cmd /c ping -n 4 127.0.0.1 >nul & "{setup}" /SILENT /SUPPRESSMSGBOXES /NORESTART '
+                             f'/CLOSEAPPLICATIONS /UPDATE=1 /LOG="{log}"',
                              creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
             self.app.quit_app()
             return

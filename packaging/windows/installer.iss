@@ -28,6 +28,13 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 LicenseFile=..\..\LICENSE
+; Write a log to %TEMP% ("Setup Log <date> #<n>.txt") so a failed install says why.
+SetupLogging=yes
+; An update runs while the old copy may still be closing: close whatever still holds its
+; files instead of failing on the first file in use (which, with /SUPPRESSMSGBOXES, aborts
+; and rolls the whole update back). The app is reopened by [Run] below, not by Windows.
+CloseApplications=force
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Add a shortcut to the desktop"; Flags: unchecked
@@ -54,4 +61,29 @@ Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; Workin
 function IsUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
+{ Before any file is touched: wait for the programs running from this install (the app's
+  pythonw.exe, mpv.exe, ffmpeg.exe...) to quit, and end the ones that don't within 20 s.
+  The app quits a moment after starting the update, but saving its state and stopping mpv
+  can take longer than that, and a file still in use made the update roll back. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Dir, Match, Script: String;
+  Code: Integer;
+begin
+  Result := '';
+  Dir := ExpandConstant('{app}');
+  if not DirExists(Dir) then
+    exit;
+  Match := '$d = ''' + AddBackslash(Dir) + '''; ' +
+           'function Mine { Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) } }; ';
+  Script := Match +
+            '$p = Mine; if ($p) { $p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue }; ' +
+            '$p = Mine; if ($p) { $p | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }';
+  Log('Waiting for programs running from ' + Dir + ' to quit');
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+              '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('Could not run PowerShell to wait for the old copy: ' + SysErrorMessage(Code));
 end;
