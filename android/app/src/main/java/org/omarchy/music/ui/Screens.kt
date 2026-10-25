@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -172,7 +173,7 @@ fun MusicTab(ui: Ui) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "added" to "Added", "top" to "Most played").forEach { (k, l) ->
+            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played").forEach { (k, l) ->
                 Chip(l, ui.musicView == k) { ui.musicView = k; ui.openMine = null; ui.stopSelecting() }
             }
         }
@@ -180,22 +181,20 @@ fun MusicTab(ui: Ui) {
         LazyColumn(Modifier.fillMaxSize(), state = state) {
             Music.musicVersion   // read here too: the list is built apart from the screen, and must follow a scan
             Music.savedVersion
-            if (!granted && ui.musicView in setOf("all", "added")) item {
+            if (!granted && ui.musicView == "all") item {
                 ActionRow("Allow access to the music on this phone  ›") { ask.launch(perm) }
             }
             when (ui.musicView) {
                 "playlists" -> myPlaylists(ui)
                 else -> {
                     val tracks = when (ui.musicView) {
-                        "all" -> Music.mySongs().sortedWith(compareBy({ norm(it.title) }, { norm(it.artist) }))
-                        "added" -> Music.mySongs().sortedByDescending { it.added }.take(300)
+                        "all" -> sorted(Music.mySongs(), Music.musicSort)
                         "recent" -> Music.plays.recent()
                         else -> Music.plays.top()
                     }
                     if (tracks.isEmpty()) item {
                         val (t, b) = when (ui.musicView) {
                             "all" -> "No music yet" to "Songs you download, and the music in your folders\n(${Music.folders.joinToString()}), show up here."
-                            "added" -> "Nothing added yet" to "Songs you download or put in your folders show up here, newest first."
                             "recent" -> "Nothing played yet" to "The songs you listen to show up here, the last one first."
                             else -> "Nothing played yet" to "The songs you play most show up here."
                         }
@@ -205,13 +204,56 @@ fun MusicTab(ui: Ui) {
                             if (ui.musicView == "all") {
                                 val dl = Music.lib.items.size
                                 Section("${tracks.size} SONGS · $dl DOWNLOADED · ${fmtTotal(tracks).uppercase()}")
-                            } else Section(mapOf("added" to "RECENTLY ADDED", "recent" to "RECENTLY PLAYED", "top" to "MOST PLAYED")[ui.musicView]!!)
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("SORT", style = T.section, modifier = Modifier.padding(end = 2.dp))
+                                    listOf("title" to "Title", "artist" to "Artist", "album" to "Album", "added" to "Added").forEach { (k, l) ->
+                                        Chip(l, Music.musicSort == k) { Music.setMusicSort(k) }
+                                    }
+                                }
+                            } else Section(mapOf("recent" to "RECENTLY PLAYED", "top" to "MOST PLAYED")[ui.musicView]!!)
                         }
-                        tracks(tracks, ui, ui.musicView) { t -> if (ui.musicView == "top") "${t.plays} play${if (t.plays != 1) "s" else ""}" else "" }
+                        if (ui.musicView == "all" && Music.musicSort in setOf("artist", "album")) grouped(tracks, ui, Music.musicSort == "artist")
+                        else tracks(tracks, ui, ui.musicView) { t -> if (ui.musicView == "top") "${t.plays} play${if (t.plays != 1) "s" else ""}" else "" }
                     }
                 }
             }
         }
+    }
+}
+
+private fun leadArtist(t: Track) = t.artist.split(",")[0].trim().ifEmpty { "Unknown artist" }
+
+/** Your songs, sorted as the Music tab's chips say: by title, artist, album, or newest first. */
+private fun sorted(songs: List<Track>, sort: String): List<Track> = when (sort) {
+    "artist" -> songs.sortedWith(compareBy({ norm(leadArtist(it)).ifEmpty { "~" } }, { norm(it.album) }, { norm(it.title) }))
+    "album" -> songs.sortedWith(compareBy({ norm(it.album).ifEmpty { "~" } }, { norm(leadArtist(it)) }, { norm(it.title) }))
+    "added" -> songs.sortedByDescending { it.added }
+    else -> songs.sortedWith(compareBy({ norm(it.title) }, { norm(it.artist) }))
+}
+
+/** The songs under a heading per artist (tap it for their page) or per album. */
+private fun androidx.compose.foundation.lazy.LazyListScope.grouped(list: List<Track>, ui: Ui, byArtist: Boolean) {
+    var start = 0
+    while (start < list.size) {
+        val key = { t: Track -> if (byArtist) norm(leadArtist(t)) else norm(t.album) }
+        val k = key(list[start])
+        var end = start
+        while (end < list.size && key(list[end]) == k) end++
+        val first = list[start]
+        val from = start
+        item(key = "head#$from") {
+            Column(Modifier.fillMaxWidth().then(if (byArtist) Modifier.clickable { ui.pages += Ui.Page.Artist(leadArtist(first), first.source) } else Modifier)
+                .padding(start = 12.dp, end = 12.dp, top = 14.dp, bottom = 4.dp)) {
+                Text(if (byArtist) leadArtist(first) else first.album.ifEmpty { "No album" }, style = T.title, maxLines = 1)
+                if (!byArtist) Text(leadArtist(first), style = T.sub, maxLines = 1)
+            }
+        }
+        items(end - start, key = { "${list[from + it].id}#${from + it}" }) { j ->
+            val i = from + j
+            TrackRow(list[i], RowPlace(list, i, "all"), ui, "") { Music.playFrom(list, i, false) }
+        }
+        start = end
     }
 }
 

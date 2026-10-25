@@ -8,9 +8,10 @@ import java.io.File
 
 /** Gets songs ready to play: Tidal's stream looked up (nothing saved), or the song
  *  downloaded as tagged FLAC into Music/Omarchy Music/. Songs Tidal has no lossless copy
- *  of are skipped, never saved lossy. */
+ *  of stream in what there is (Tidal's AAC, else YouTube's audio), but are never saved lossy. */
 class Downloader(private val ctx: Context, private val lib: Library, val tidal: Tidal) {
-    data class Ready(val uri: String, val isDash: Boolean = false, val quality: String = "", val onDisk: Boolean = false)
+    data class Ready(val uri: String, val isDash: Boolean = false, val quality: String = "", val onDisk: Boolean = false,
+                     val lossyFrom: String? = null)   // "Tidal" or "YouTube": no FLAC of it
 
     private val streams = HashMap<String, Pair<Ready, Double>>()   // id -> (stream, when looked up)
     private val active = HashSet<String>()                          // being downloaded now
@@ -18,6 +19,7 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
 
     fun busy(id: String) = synchronized(active) { id in active }
     fun streamQuality(id: String) = synchronized(streams) { streams[id]?.first?.quality ?: "" }
+    fun streamLossy(id: String) = synchronized(streams) { streams[id]?.first?.lossyFrom }
     fun forgetStream(id: String) = synchronized(streams) { streams.remove(id) }
 
     /** Play t without saving it (blocking): the file when it is on the phone, else Tidal's stream. */
@@ -25,13 +27,27 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
         if (t.isFile) return Ready(t.file!!, onDisk = true)
         lib.items[t.id]?.let { return Ready(it.file, quality = it.quality, onDisk = true) }
         synchronized(streams) { streams[t.id]?.takeIf { now() - it.second < STREAM_FOR }?.let { return it.first } }
-        if (!tidal.connected) error("connect Tidal in the accounts menu first")
-        val match = tidal.resolve(t) ?: run { lib.markMissing(t.id); throw NoLosslessMatch("not on Tidal in lossless") }
-        lib.byTidal(match["id"].long ?: 0)?.let { return Ready(it.file, quality = it.quality, onDisk = true) }   // saved from another service
-        val st = try { tidal.stream(match) } catch (e: NoLosslessMatch) { lib.markMissing(t.id); throw e }
-        val ready = Ready(st.uri, st.isDash, st.quality)
+        val ready = find(t)
         synchronized(streams) { streams[t.id] = ready to now() }
         return ready
+    }
+
+    /** FLAC from Tidal; else Tidal's AAC; else YouTube's own audio (no Tidal: YouTube). */
+    private fun find(t: Track): Ready {
+        val match = if (tidal.connected) tidal.resolve(t) else null
+        if (match != null) {
+            lib.byTidal(match["id"].long ?: 0)?.let { return Ready(it.file, quality = it.quality, onDisk = true) }   // saved from another service
+            try { return tidal.stream(match).let { Ready(it.uri, it.isDash, it.quality) } } catch (_: NoLosslessMatch) {}
+        }
+        if (tidal.connected) {
+            lib.markMissing(t.id)   // no FLAC to download: syncs leave it alone for a while
+            (match ?: tidal.resolve(t, lossy = true))?.let { m ->
+                return tidal.stream(m, lossy = true).let { Ready(it.uri, it.isDash, it.quality, lossyFrom = "Tidal") }
+            }
+        }
+        val yt = YouTubeAudio.find(t) ?: throw NoLosslessMatch(if (tidal.connected) "not on Tidal or YouTube Music"
+            else "not on YouTube Music (connect Tidal in the accounts menu for more)")
+        return Ready(yt.first, quality = yt.second, lossyFrom = "YouTube")
     }
 
     /** Save t as FLAC (blocking); returns its content:// address. */

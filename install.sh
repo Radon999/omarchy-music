@@ -8,6 +8,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 venv=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-music/venv
 bin=$HOME/.local/bin/omarchy-music
 desktop=${XDG_DATA_HOME:-$HOME/.local/share}/applications/org.omarchy.music.desktop
+icon=${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/org.omarchy.music.svg
 
 # GTK 4, libadwaita and PyGObject come from the system; mpv plays, ffmpeg repackages downloads.
 missing=()
@@ -36,6 +37,10 @@ exec "$venv/bin/python" "$repo/omarchy-music" "\$@"
 EOF
 chmod +x "$bin"
 
+mkdir -p "$(dirname "$icon")"
+cp "$repo/packaging/icon.svg" "$icon"
+gtk-update-icon-cache -qtf "${icon%/scalable/*}" 2>/dev/null || true
+
 mkdir -p "$(dirname "$desktop")"
 cat >"$desktop" <<EOF
 [Desktop Entry]
@@ -44,7 +49,7 @@ Name=Music
 GenericName=Music Player
 Comment=Lossless music popup for YouTube Music, Tidal, Apple Music, Spotify and your own files
 Exec=$bin
-Icon=multimedia-audio-player
+Icon=org.omarchy.music
 Categories=AudioVideo;Audio;Player;
 StartupWMClass=org.omarchy.music
 EOF

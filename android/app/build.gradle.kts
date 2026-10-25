@@ -29,8 +29,8 @@ android {
         applicationId = "org.omarchy.music"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 10100   // major·10000 + minor·100 + patch
+        versionName = "1.1.0"
         buildConfigField("String", "TIDAL_CLIENT_ID", "\"${tidal.getProperty("client_id", "")}\"")
         buildConfigField("String", "TIDAL_CLIENT_SECRET", "\"${tidal.getProperty("client_secret", "")}\"")
     }
@@ -51,6 +51,7 @@ android {
         }
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true   // NewPipe's extractor uses newer Java library parts
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -84,4 +85,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.5")
+    testImplementation("junit:junit:4.13.2")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 }

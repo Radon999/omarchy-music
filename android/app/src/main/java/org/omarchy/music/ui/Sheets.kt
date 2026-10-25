@@ -58,6 +58,7 @@ import org.omarchy.music.Eq
 import org.omarchy.music.LastFm
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
+import org.omarchy.music.Updater
 import org.omarchy.music.SOURCES
 import org.omarchy.music.Services
 import org.omarchy.music.Tidal
@@ -103,6 +104,14 @@ private fun AccountsSheet(ui: Ui) {
     ModalBottomSheet(onDismissRequest = { ui.sheet = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = C.light) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+            Updater.latest?.let { v ->
+                Line("Update", when (Updater.state) {
+                    "" -> "Omarchy Music $v is out (this is ${org.omarchy.music.BuildConfig.VERSION_NAME})"
+                    "working" -> "Downloading $v…"
+                    else -> Updater.state
+                }, false) { if (Updater.state != "working") Pill("Update") { Updater.install() } }
+                Divider()
+            }
             // ---- play on ----
             Line("Play on", if (Remote.active) "The desktop (${Remote.name})" + if (!Remote.reachable) " · not reachable" else ""
                 else "This phone", Remote.active) {
@@ -124,7 +133,7 @@ private fun AccountsSheet(ui: Ui) {
                 }
             }
             if (Music.tidal.connected) {
-                Line("Tidal", "Connected · every song plays in FLAC", true) {
+                Line("Tidal", "Connected · songs play in FLAC (lossy only where Tidal has no FLAC)", true) {
                     SyncSwitch("tidal"); Spacer(Modifier.width(6.dp)); Pill("Disconnect", quiet = true) { Music.tidalDisconnect() }
                 }
                 Line("Keep", "Save every song you play, in FLAC. Off: songs stream from Tidal and download only when you pick Download",

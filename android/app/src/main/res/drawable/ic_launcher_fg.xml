@@ -1,7 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A note in the accent colour, on the window's dark blue (the desktop's look). -->
+<!-- The icon's note, with a soft shadow under it (packaging/icon.svg). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#7AA2F7"
-        android:pathData="M46,32 L74,26 L74,64 A8,8 0 1,1 68,56.3 L68,38.5 L52,42 L52,70 A8,8 0 1,1 46,62.3 Z" />
+    <group android:translateY="1.6">
+    <group android:scaleX="0.78" android:scaleY="0.78" android:pivotX="54" android:pivotY="54" android:translateX="1.5" android:translateY="-2">
+        <path android:strokeColor="#331E1B4B" android:strokeWidth="7.5" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M44,40.5 L74,33.5 L74,68 M44,40.5 L44,73" />
+        <group android:rotation="-18" android:pivotX="36.5" android:pivotY="73.5">
+            <path android:fillColor="#331E1B4B" android:pathData="M26.5,73.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+        <group android:rotation="-18" android:pivotX="66.5" android:pivotY="68.5">
+            <path android:fillColor="#331E1B4B" android:pathData="M56.5,68.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+    </group>
+    </group>
+    <group android:scaleX="0.78" android:scaleY="0.78" android:pivotX="54" android:pivotY="54" android:translateX="1.5" android:translateY="-2">
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="7.5" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M44,40.5 L74,33.5 L74,68 M44,40.5 L44,73" />
+        <group android:rotation="-18" android:pivotX="36.5" android:pivotY="73.5">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M26.5,73.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+        <group android:rotation="-18" android:pivotX="66.5" android:pivotY="68.5">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M56.5,68.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+    </group>
 </vector>

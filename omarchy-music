@@ -90,6 +90,9 @@ gi.require_version("Graphene", "1.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
+VERSION = "1.1.0"            # the release this is; GitHub's latest release is compared with it
+REPO = "Varixxl/omarchy-music"
+
 # OMARCHY_MUSIC_PROFILE=dev runs a second copy beside the real one, with its own
 # window, state, mpv and media-key name; OMARCHY_MUSIC_DIR points it at a test
 # library, OMARCHY_MUSIC_MPV adds mpv options (--ao=null to keep it quiet),
@@ -319,6 +322,7 @@ list.tracks > row.playing {{ border-left-color: {acc}; background-color: {rgba(a
 list.tracks > row.playing .title {{ color: {acc}; }}
 list.tracks > row.back {{ color: {acc}; font-weight: 700; padding: 8px 8px; }}
 .section {{ color: {muted}; font-size: 0.74em; font-weight: 700; letter-spacing: 1.5px; padding: 10px 8px 4px 8px; }}
+.group-head {{ font-weight: 800; font-size: 1.02em; padding-top: 6px; }}
 .art {{ border-radius: {R}px; background-color: {light}; }}
 .title {{ font-weight: 700; color: {fg}; }}
 .sub {{ color: {muted}; font-size: 0.86em; }}
@@ -766,6 +770,54 @@ class NoLosslessMatch(RuntimeError):
     pass
 
 
+LOSSY = {"HIGH": "AAC 320 kbps", "LOW": "AAC 96 kbps"}   # Tidal's lossy qualities
+
+
+def youtube_audio(track, ytm=None):
+    """(address, "Opus 129 kbps") of the song's audio on YouTube Music, for when Tidal
+    has no FLAC of it, or None. A song from another service is found by a search.
+    It blocks for a few seconds: YouTube's address only answers a moment after it's made."""
+    import requests
+    import yt_dlp
+    vid = track["id"] if source_of(track) == "ytm" else None
+    if not vid:
+        if ytm is None:
+            from ytmusicapi import YTMusic
+            ytm = YTMusic()
+        artist = track["artist"].split(",")[0].strip()
+        best, best_score = None, 0.0
+        for hit in ytm.search(f"{artist} {bare_title(track['title'])}", filter="songs", limit=10):
+            t = track_from_ytm(hit)
+            if not t:
+                continue
+            if track.get("duration") and t.get("duration") and abs(t["duration"] - track["duration"]) > 6:
+                continue
+            title = similar(clean_title(track["title"]), clean_title(t["title"]))
+            lead = max((similar(x, y) for x in artist_names([artist]) for y in artist_names(t["artist"].split(","))),
+                       default=0.0)
+            if title >= 0.75 and lead >= 0.8 and 0.6 * title + 0.4 * lead > best_score:
+                best, best_score = t, 0.6 * title + 0.4 * lead
+        if not best:
+            return None
+        vid = best["id"]
+    with yt_dlp.YoutubeDL({"format": "bestaudio", "quiet": True, "no_warnings": True, "noplaylist": True,
+                           "logger": _QuietLogger()}) as y:
+        info = y.extract_info(f"https://music.youtube.com/watch?v={vid}", download=False)
+    url = info["url"]
+    for _ in range(20):
+        try:
+            with requests.get(url, headers={"Range": "bytes=0-1"}, timeout=10) as r:
+                if r.status_code in (200, 206):
+                    break
+        except requests.RequestException:
+            pass
+        time.sleep(0.5)
+    else:
+        raise RuntimeError("YouTube wouldn't send the audio")
+    codec = {"opus": "Opus", "mp4a.40.2": "AAC", "mp4a.40.5": "AAC"}.get(info.get("acodec") or "", info.get("acodec") or "")
+    return url, f"{codec} {round(info.get('abr') or 0)} kbps".strip()
+
+
 def clean_title(s):
     """A title without what YouTube adds: (Official Video), feat. credits,
     remaster notes, punctuation."""
@@ -879,18 +931,19 @@ class Tidal:
     def lossless(c):
         return bool(c and c.available and (c.audio_quality in LOSSLESS or "LOSSLESS" in (c.media_metadata_tags or [])))
 
-    def resolve(self, track):
-        """The Tidal track that is this song, in lossless, or None: Tidal's own
-        song, else the recording with the song's ISRC, else a search."""
+    def resolve(self, track, lossy=False):
+        """The Tidal track that is this song, in lossless (or in any quality: lossy), or
+        None: Tidal's own song, else the recording with the song's ISRC, else a search."""
+        ok = (lambda c: bool(c and c.available)) if lossy else self.lossless
         if track.get("tidal"):
             with self.lock:
                 c = self.session.track(int(track["tidal"]))
-            if self.lossless(c):
+            if ok(c):
                 return c
         if track.get("isrc"):
             try:
                 with self.lock:
-                    found = [c for c in self.session.get_tracks_by_isrc(track["isrc"]) if self.lossless(c)]
+                    found = [c for c in self.session.get_tracks_by_isrc(track["isrc"]) if ok(c)]
             except Exception:  # noqa: BLE001 -- the ISRC isn't on Tidal: search instead
                 found = []
             if found:
@@ -900,7 +953,7 @@ class Tidal:
                 found.sort(key=lambda c: (norm(getattr(c.album, "name", "")) != album,
                                           "HIRES_LOSSLESS" not in (c.media_metadata_tags or [])))
                 return found[0]
-        return self.match(track)
+        return self.match(track, lossy)
 
     # ---- as a library: your favourites and playlists, search and radio ----
     key, name = "tidal", "Tidal"
@@ -1029,8 +1082,8 @@ class Tidal:
             ly = self.session.track(int(tidal_id)).lyrics()
         return ly.subtitles or None, ly.text or None
 
-    def match(self, track):
-        """The Tidal track that is this song, available in lossless, or None."""
+    def match(self, track, lossy=False):
+        """The Tidal track that is this song, available in lossless (any quality: lossy), or None."""
         # (artists, title) readings of the song: as YouTube has it, and for
         # uploads titled "Artist - Song", the way the title has it.
         readings = [(track["artist"].split(","), track["title"])]
@@ -1050,7 +1103,7 @@ class Tidal:
             for c in found:
                 if c.id not in seen:
                     seen.add(c.id)
-                    score = max(self._score(track, artists, title, c) for artists, title in readings)
+                    score = max(self._score(track, artists, title, c, lossy) for artists, title in readings)
                     if score > best_score:
                         best, best_score = c, score
             if best_score >= 0.9:
@@ -1058,9 +1111,9 @@ class Tidal:
         return best
 
     @staticmethod
-    def _score(track, artists, title, c):
+    def _score(track, artists, title, c, lossy=False):
         """How sure we are that c is the song, 0 (it isn't) .. ~1."""
-        if not c.available or not (c.audio_quality in LOSSLESS or "LOSSLESS" in (c.media_metadata_tags or [])):
+        if not c.available or not (lossy or c.audio_quality in LOSSLESS or "LOSSLESS" in (c.media_metadata_tags or [])):
             return 0.0
         dur = track.get("duration") or 0
         if dur and abs((c.duration or 0) - dur) > 6:
@@ -1084,18 +1137,25 @@ class Tidal:
         same_album = 0.05 if track.get("album") and similar(track["album"].lower(), album.lower()) > 0.8 else 0.0
         return 0.55 * t + 0.2 * lead + 0.1 * credits + 0.15 * closeness + same_album
 
-    def stream(self, c):
+    def stream(self, c, lossy=False):
         """Tidal track c as something mpv plays straight from Tidal, nothing saved:
         (address, "24-bit/96 kHz"). CD quality comes as one FLAC file; hi-res as
         FLAC in MP4 segments, listed by a DASH manifest that goes to mpv inline
-        (ffmpeg won't let a manifest on disk point at the web)."""
+        (ffmpeg won't let a manifest on disk point at the web). lossy: AAC will do
+        when Tidal has no FLAC of it ("AAC 320 kbps")."""
         with self.lock:
             st = c.get_stream()
             manifest = st.get_stream_manifest()
-        if st.audio_quality not in LOSSLESS or "FLAC" not in str(manifest.get_codecs()).upper():
+        flac = st.audio_quality in LOSSLESS and "FLAC" in str(manifest.get_codecs()).upper()
+        if not flac and not lossy:
             raise NoLosslessMatch("Tidal only has it lossy")
         if manifest.is_encrypted:
             raise RuntimeError("Tidal sent an encrypted stream")
+        if not flac:
+            quality = LOSSY.get(st.audio_quality, "lossy")
+            if manifest.is_mpd:
+                return f"data://application/dash+xml;base64,{base64.b64encode(st.get_manifest_data().encode()).decode()}", quality
+            return manifest.get_urls()[0], quality
         rate = (manifest.sample_rate if manifest.is_mpd else st.sample_rate) or 44100
         bits = st.bit_depth or 16
         if bits == 16 and rate > 48000:
@@ -1183,8 +1243,9 @@ class Downloader:
     def __init__(self, library):
         self.lib = library
         self.tidal = None          # a Tidal once it is set up
+        self.ytm = None            # ytmusicapi, to find songs on YouTube Music when Tidal has no FLAC
         self.active = {}           # vid -> [callbacks]
-        self.streams = {}          # vid -> (address, quality, when): Tidal streams looked up
+        self.streams = {}          # vid -> (address, quality, when, lossy from): streams looked up
         self.lock = threading.Lock()
         self.on_saved = None       # on_saved(vid) after each new FLAC: the tagger takes it from there
 
@@ -1222,27 +1283,33 @@ class Downloader:
             return
 
         def work():
-            if not (self.tidal and self.tidal.connected):
-                raise RuntimeError("connect Tidal in the accounts menu first")
-            match = self.tidal.resolve(track)
-            if not match:
-                self.lib.mark_missing(vid)
-                raise NoLosslessMatch("not on Tidal in lossless")
-            same = self.lib.by_tidal(match.id)
-            if same and Path(same["file"]).exists():
-                return same["file"], same.get("quality", "")   # saved from another service already
-            try:
-                url, quality = self.tidal.stream(match)
-            except NoLosslessMatch:
-                self.lib.mark_missing(vid)
-                raise
-            return url, quality
+            # FLAC from Tidal; else Tidal's AAC; else YouTube's own audio (no Tidal: YouTube).
+            tidal = self.tidal if self.tidal and self.tidal.connected else None
+            match = tidal.resolve(track) if tidal else None
+            if match:
+                same = self.lib.by_tidal(match.id)
+                if same and Path(same["file"]).exists():
+                    return same["file"], same.get("quality", ""), None   # saved from another service already
+                try:
+                    return (*tidal.stream(match), None)
+                except NoLosslessMatch:
+                    pass
+            if tidal:
+                self.lib.mark_missing(vid)   # no FLAC to download: syncs leave it alone for a while
+                lossy = match or tidal.resolve(track, lossy=True)
+                if lossy:
+                    return (*tidal.stream(lossy, lossy=True), "Tidal")
+            got = youtube_audio(track, self.ytm)
+            if not got:
+                raise NoLosslessMatch("not on Tidal or YouTube Music" if tidal else
+                                      "not on YouTube Music (connect Tidal in the accounts menu for more)")
+            return (*got, "YouTube")
 
         def finish(res, err):
             if err:
                 done(None, err)
                 return
-            self.streams[vid] = (res[0], res[1], time.time())
+            self.streams[vid] = (res[0], res[1], time.time(), res[2])
             done(res[0], None)
         in_thread(work, done=finish)
 
@@ -1252,6 +1319,11 @@ class Downloader:
     def stream_quality(self, vid):
         got = self.streams.get(vid)
         return got[1] if got else ""
+
+    def stream_lossy(self, vid):
+        """Where a lossy stream of vid comes from ("Tidal", "YouTube"), or None for FLAC."""
+        got = self.streams.get(vid)
+        return got[3] if got else None
 
     def sync(self, tracks, progress):
         """Save every song in tracks as FLAC, one at a time (blocking). Songs
@@ -3193,6 +3265,102 @@ class LastFM:
 # =============================================================================
 
 REMOTE_PORT = 8896 if PROFILE else 8897
+
+
+def version_tuple(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3])
+
+
+class Updater:
+    """New releases on GitHub. It looks at start and every 12 hours, and installs only when
+    you pick Update: on Linux the git clone moves to the release and install.sh runs again;
+    on Windows the release's installer replaces this copy and opens the new one."""
+
+    def __init__(self, app):
+        self.app = app
+        self.latest = None       # the newer release's tag ("v1.2.0"), once there is one
+        self.installer = None    # its Windows installer's address
+        self.state = ""          # "", "working", "restart" (Linux, updated), or what went wrong
+        self.dir = Path(__file__).resolve().parent   # the git clone, or (Windows) where it's installed
+
+    def check(self):
+        def work():
+            import requests
+            r = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=15,
+                             headers={"User-Agent": f"omarchy-music/{VERSION}", "Accept": "application/vnd.github+json"})
+            r.raise_for_status()
+            return r.json()
+
+        def done(rel, err):
+            if err or not rel or version_tuple(rel.get("tag_name")) <= version_tuple(VERSION):
+                return
+            tag = rel["tag_name"]
+            if tag != self.latest:
+                self.app.toast(f"Omarchy Music {tag.lstrip('v')} is out: update it in the accounts menu (☰)")
+            self.latest = tag
+            self.installer = next((x["browser_download_url"] for x in rel.get("assets", [])
+                                   if x.get("name") == "OmarchyMusic-Setup.exe"), None)
+            self.app.accounts_changed()
+        in_thread(work, done=done)
+
+    def install(self):
+        if self.state in ("working", "restart") or not self.latest:
+            return
+        self.state = "working"
+        self.app.accounts_changed()
+        in_thread(self._windows if WINDOWS else self._linux, done=self._done)
+
+    def _linux(self):
+        def git(*args):
+            return subprocess.run(["git", "-C", str(self.dir), *args], capture_output=True, text=True, timeout=180)
+        if git("rev-parse", "--is-inside-work-tree").returncode:
+            raise RuntimeError("this copy isn't a git clone: get it again from GitHub")
+        if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            raise RuntimeError("this copy has changes of yours: update it with git")
+        for args in (("fetch", "--tags", "origin"), ("merge", "--ff-only", self.latest)):
+            r = git(*args)
+            if r.returncode:
+                raise RuntimeError((r.stderr.strip().splitlines() or ["git " + args[0] + " failed"])[-1])
+        r = subprocess.run([str(self.dir / "install.sh")], capture_output=True, text=True, timeout=900)
+        if r.returncode:
+            raise RuntimeError((r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip()
+                               else "install.sh failed")
+
+    def _windows(self):
+        import requests
+        import tempfile
+        if not self.installer:
+            raise RuntimeError("the release has no Windows installer yet: try again in a few minutes")
+        dest = Path(tempfile.gettempdir()) / "OmarchyMusic-Setup.exe"
+        with requests.get(self.installer, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(1 << 16):
+                    f.write(chunk)
+        return dest
+
+    def _done(self, setup, err):
+        if err:
+            self.state = f"Couldn't update: {err}"[:160]
+            self.app.accounts_changed()
+            return
+        if WINDOWS:
+            # The installer replaces the files this copy runs from, so it starts once this has
+            # quit (a moment later), and /UPDATE=1 has it open the new copy when it's done.
+            subprocess.Popen(f'cmd /c ping -n 3 127.0.0.1 >nul & "{setup}" /SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1',
+                             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+            self.app.quit_app()
+            return
+        self.state = "restart"
+        self.app.accounts_changed()
+        self.app.toast(f"Updated to {self.latest.lstrip('v')}: restart it from the accounts menu")
+
+    def restart(self):
+        """Start the new copy once this one has quit."""
+        subprocess.Popen(["sh", "-c", f"sleep 2; exec {shlex.quote(sys.executable)} {shlex.quote(str(self.dir / 'omarchy-music'))}"],
+                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        self.app.quit_app()
 REMOTE_SERVICE = "_omarchy-music._tcp"
 
 
@@ -4104,6 +4272,7 @@ class MusicWindow(Adw.ApplicationWindow):
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
         box.append(grid)
         row = 0
+        up = a.updater
 
         def pill(label, cb, quiet=False):
             b = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
@@ -4148,6 +4317,17 @@ class MusicWindow(Adw.ApplicationWindow):
             box.append(sw)
             return box
 
+        if up.latest:
+            new = up.latest.lstrip("v")
+            if up.state == "restart":
+                line("Update", f"Updated to {new}: restart to use it", True, pill("Restart", up.restart))
+            elif up.state == "working":
+                line("Update", f"Updating to {new}…" if not WINDOWS else f"Downloading {new}… (it reopens when it's done)")
+            else:
+                line("Update", up.state or f"Omarchy Music {new} is out (this is {VERSION})", False,
+                     pill("Update", up.install))
+            grid.attach(Gtk.Separator(), 0, row, 3, 1)
+            row += 1
         for key in ("ytm", "apple"):
             src = a.sources.get(key)
             if src and src.signed_in:
@@ -4159,7 +4339,7 @@ class MusicWindow(Adw.ApplicationWindow):
                 line(SOURCES[key], "Connecting…")
         tidal = a.dl.tidal
         if tidal and tidal.connected:
-            line("Tidal", "Connected · every song plays in FLAC", True, sync_switch("tidal"))
+            line("Tidal", "Connected · songs play in FLAC (lossy only where Tidal has no FLAC)", True, sync_switch("tidal"))
             keep = Gtk.Switch(active=a.keep_played, valign=Gtk.Align.CENTER)
             keep.connect("notify::active", lambda sw, _p: a.set_keep_played(sw.get_active()))
             line("Keep", "Save every song you play, in FLAC. Off: songs stream from Tidal and download "
@@ -4400,12 +4580,13 @@ class MusicWindow(Adw.ApplicationWindow):
         if sw:
             sw.get_vadjustment().set_value(0)
 
-    # ---- the Music tab: all your songs, your playlists, recent, added, most played ----
+    # ---- the Music tab: all your songs, your playlists, recent, most played ----
     MUSIC_VIEWS = (("all", "All", "All your songs: downloaded here and in your folders"),
                    ("playlists", "Playlists", "The playlists you make here"),
                    ("recent", "Recent", "Recently played"),
-                   ("added", "Added", "Recently added"),
                    ("top", "Most played", "The songs you play most"))
+    # How All is sorted: by title, by artist or album (in groups), or newest first.
+    MUSIC_SORTS = (("title", "Title"), ("artist", "Artist"), ("album", "Album"), ("added", "Added"))
 
     def music_chips(self):
         self.chips = Adw.ToggleGroup(halign=Gtk.Align.START)
@@ -4423,6 +4604,8 @@ class MusicWindow(Adw.ApplicationWindow):
     def set_music_view(self, view):
         if self.selecting:
             self.stop_selecting()
+        if view == "added":   # it was a list of its own; now it's All, newest first
+            view, self.app.music_sort = "all", "added"
         self.music_view, self.open_mine = view, None
         if self.chips.get_active_name() != view:
             self.chips.set_active_name(view)
@@ -4459,10 +4642,16 @@ class MusicWindow(Adw.ApplicationWindow):
         if view == "playlists":
             self.refresh_playlists()
             return
+        sort = a.music_sort
         if view == "all":
-            tracks = sorted(a.my_songs(), key=lambda t: (norm(t["title"]), norm(t["artist"])))
-        elif view == "added":
-            tracks = sorted(a.my_songs(), key=lambda t: -(t.get("added") or 0))[:300]
+            tracks = a.my_songs()
+            lead = lambda t: norm(t["artist"].split(",")[0]) or "~"   # noqa: E731 -- songs without an artist go last
+            tracks.sort(key={
+                "title": lambda t: (norm(t["title"]), norm(t["artist"])),
+                "artist": lambda t: (lead(t), norm(t.get("album")), norm(t["title"])),
+                "album": lambda t: (norm(t.get("album")) or "~", lead(t), norm(t["title"])),
+                "added": lambda t: -(t.get("added") or 0),
+            }.get(sort, lambda t: norm(t["title"])))
         elif view == "recent":
             tracks = a.plays.recent()
         else:
@@ -4471,7 +4660,6 @@ class MusicWindow(Adw.ApplicationWindow):
             folders = ", ".join(short_path(f) for f in a.folders) or "no folders yet"
             title, body = {
                 "all": ("No music yet", f"Songs you download, and the music in your folders\n({folders}), show up here."),
-                "added": ("Nothing added yet", "Songs you download or put in your folders show up here, newest first."),
                 "recent": ("Nothing played yet", "The songs you listen to show up here, the last one first."),
                 "top": ("Nothing played yet", "The songs you play most show up here."),
             }[view]
@@ -4483,11 +4671,55 @@ class MusicWindow(Adw.ApplicationWindow):
             self.count_label.add_css_class("section")
             lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=self.count_label))
             self.refresh_count()
+            lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=self.sort_chips()))
         else:
-            self.section(lst, {"added": "RECENTLY ADDED", "recent": "RECENTLY PLAYED", "top": "MOST PLAYED"}[view])
+            self.section(lst, {"recent": "RECENTLY PLAYED", "top": "MOST PLAYED"}[view])
+        group = None
         for i, t in enumerate(tracks):
+            if view == "all" and sort in ("artist", "album"):
+                artist = t["artist"].split(",")[0].strip() or "Unknown artist"
+                g = norm(artist) if sort == "artist" else norm(t.get("album"))
+                if g != group:
+                    group = g
+                    self.group_head(lst, artist if sort == "artist" else t.get("album") or "No album",
+                                    None if sort == "artist" else artist)
             extra = f"{t['plays']} play{'s' if t['plays'] != 1 else ''}" if view == "top" else ""
             self.add_track(lst, t, i, tracks, removable=view == "all" and self.lib.has(t["id"]), extra=extra)
+
+    def sort_chips(self):
+        group = Adw.ToggleGroup(halign=Gtk.Align.START)
+        group.add_css_class("sources")
+        for name, label in self.MUSIC_SORTS:
+            group.add(Adw.Toggle(label=label, name=name, tooltip=f"Sort by {label.lower()}"))
+        group.set_active_name(self.app.music_sort)
+
+        def picked(g, _p):
+            if g.get_active_name() and g.get_active_name() != self.app.music_sort:
+                self.app.music_sort = g.get_active_name()
+                self.app.save_soon()
+                GLib.idle_add(lambda: (self.refresh_music(), self.scroll_top(self.music_list), False)[2])
+        group.connect("notify::active-name", picked)
+        box = Gtk.Box()
+        box.add_css_class("chips")
+        box.append(group)
+        return box
+
+    def group_head(self, lst, title, sub=None):
+        """A heading in All sorted by artist (click it for the artist's page) or by album."""
+        label = Gtk.Label(label=title, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        label.add_css_class("group-head")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(label)
+        if sub:
+            s = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            s.add_css_class("sub")
+            box.append(s)
+        if sub is None:
+            btn = Gtk.Button(child=box, tooltip_text=f"{title}: their page")
+            btn.add_css_class("flat")
+            btn.connect("clicked", lambda _b: self.open_artist(title))
+            box = btn
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
 
     def refresh_playlists(self):
         lst = self.music_list
@@ -5158,12 +5390,15 @@ class MusicWindow(Adw.ApplicationWindow):
         saving = t["id"] in a.dl.active or any(d["id"] == t["id"] for d in a.downloads)
         stream = not saved and source_of(t) != "file"
         quality = a.dl.stream_quality(t["id"])
+        lossy = stream and a.dl.stream_lossy(t["id"])
         self.saved_label.set_label("FLAC" if flac else "✓ offline" if saved else "Saving…" if saving
-                                   else "󰇚 FLAC" if stream else "")
-        self.save_btn.set_can_target(stream and not saving)
+                                   else quality.split()[0] if lossy else "󰇚 FLAC" if stream else "")
+        self.save_btn.set_can_target(stream and not saving and not lossy)
         self.save_btn.set_tooltip_text(f"FLAC {saved.get('quality', '')} on disk: plays without data" if flac
                                        else "Saved on disk: plays without data" if saved
                                        else "Downloading it in FLAC" if saving
+                                       else f"Streaming {quality} from {lossy}: Tidal has no FLAC of this song"
+                                       if lossy
                                        else f"Streaming FLAC{' ' + quality if quality else ''} from Tidal. "
                                             "Click to download it" if stream else None)
 
@@ -6034,6 +6269,7 @@ class MusicApp(Adw.Application):
         self.folders = [str(HOME / "Music")]   # where your own music is
         self.art_colors = True  # the window takes the colour of the album art
         self.keep_played = False   # off: songs stream from Tidal and download only when you pick Download
+        self.music_sort = "title"  # how the Music tab's All is sorted
         self.streaming = False     # what's playing comes from Tidal's stream, not a file
         self.stream_retry = -1     # the load_seq whose broken stream was picked up again already
         self.tint_path = self.tint_provider = None
@@ -6046,6 +6282,8 @@ class MusicApp(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         self.hold()  # keep playing with the window hidden
+        Gtk.Window.set_default_icon_name("org.omarchy.music")   # installed by install.sh, bundled on Windows
+        self.updater = Updater(self)
         self.lib = Library()
         self.local = LocalFiles()
         self.plays = Plays()
@@ -6076,6 +6314,7 @@ class MusicApp(Adw.Application):
             self.folders = [f for f in state["folders"] if isinstance(f, str)]
         self.art_colors = bool(state.get("art_colors", True))
         self.keep_played = bool(state.get("keep_played", False))
+        self.music_sort = state.get("music_sort") if state.get("music_sort") in ("title", "artist", "album", "added") else "title"
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
         self.remote_tokens = {k: v for k, v in (state.get("remote_tokens") or {}).items() if isinstance(v, dict)}
         self.remote = Remote(self)
@@ -6092,6 +6331,8 @@ class MusicApp(Adw.Application):
         self.connect_sources()
         self.rescan()
         GLib.timeout_add_seconds(SYNC_EVERY, lambda: (self.sync_library(), True)[1])
+        GLib.timeout_add_seconds(10, lambda: (self.updater.check(), False)[1])
+        GLib.timeout_add_seconds(12 * 3600, lambda: (self.updater.check(), True)[1])
         in_thread(self.lastfm.flush, done=self.lastfm_result)   # scrobbles from last time, if offline then
         GLib.timeout_add_seconds(15 * 60, lambda: (in_thread(self.lastfm.flush, done=self.lastfm_result), True)[1])
 
@@ -6150,6 +6391,7 @@ class MusicApp(Adw.Application):
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
+                                       "music_sort": self.music_sort,
                                        "remote": self.remote_on, "remote_tokens": self.remote_tokens}))
 
     def save_soon(self):
@@ -6461,6 +6703,8 @@ class MusicApp(Adw.Application):
             self.source_errors.pop(key, None)
             if key == "tidal":
                 self.dl.tidal, self.tidal_error = src, None
+            elif key == "ytm":
+                self.dl.ytm = src.api
         elif key not in self.sources:   # a failed recheck keeps the one that worked
             self.source_errors[key] = err
             if key == "tidal":
@@ -7148,6 +7392,10 @@ class MusicApp(Adw.Application):
         def ready(path, err):
             if seq != self.load_seq:
                 return  # user moved on while it downloaded
+            if isinstance(err, NoLosslessMatch) and not self.streaming:
+                self.streaming = True   # no FLAC to keep: stream what there is instead
+                self.dl.stream(t, ready)
+                return
             if err:
                 if self.win:
                     self.win.set_status("")

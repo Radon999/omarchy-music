@@ -14,7 +14,13 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      # The app compares its VERSION with the latest release to offer updates: they must agree.
+      - name: Version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: grep -q "^VERSION = \"${GITHUB_REF_NAME#v}\"" omarchy-music || { echo "VERSION in omarchy-music isn't ${GITHUB_REF_NAME#v}"; exit 1; }
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -22,7 +28,7 @@ jobs:
           update: true
           pacboy: >-
             gtk4:p libadwaita:p adwaita-icon-theme:p python:p python-gobject:p
-            python-pip:p python-requests:p python-mutagen:p mpv:p ffmpeg:p
+            python-pip:p python-requests:p python-mutagen:p mpv:p ffmpeg:p ntldd:p
 
       - name: Bundle the app
         shell: msys2 {0}
@@ -50,7 +56,7 @@ jobs:
           }
           iscc /DAppVersion=$version packaging\windows\installer.iss
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: OmarchyMusic-Setup
           path: dist/OmarchyMusic-Setup.exe

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The status bar and media notification icon (Media3 looks for this name): the app's note. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="1.25" android:scaleY="1.25" android:pivotX="54" android:pivotY="54" android:translateX="2" android:translateY="-2.5">
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="8" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M44,40.5 L74,33.5 L74,68 M44,40.5 L44,73" />
+        <group android:rotation="-18" android:pivotX="36.5" android:pivotY="73.5">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M26.5,73.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+        <group android:rotation="-18" android:pivotX="66.5" android:pivotY="68.5">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M56.5,68.5 a10,8 0 1,0 20,0 a10,8 0 1,0 -20,0 z" />
+        </group>
+    </group>
+</vector>

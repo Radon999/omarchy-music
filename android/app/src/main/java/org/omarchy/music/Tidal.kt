@@ -97,18 +97,19 @@ class Tidal(ctx: Context) : Source {
     // ---- finding the song ----
     private fun lossless(c: JsonElement?): Boolean = c != null && c["allowStreaming"].bool == true &&
         (c["audioQuality"].str in LOSSLESS || c.path("mediaMetadata", "tags").list.any { it.str == "LOSSLESS" })
+    private fun ok(c: JsonElement?, lossy: Boolean) = if (lossy) c != null && c["allowStreaming"].bool == true else lossless(c)
 
     private fun trackJson(id: Long) = api("tracks/$id")
     fun albumJson(id: Long) = api("albums/$id")
 
-    /** The Tidal track (its JSON) that is this song, in lossless, or null: Tidal's own
-     *  song, else the recording with the song's ISRC, else a search. */
-    fun resolve(t: Track): JsonElement? {
-        t.tidal?.let { id -> runCatching { trackJson(id) }.getOrNull()?.takeIf { lossless(it) }?.let { return it } }
+    /** The Tidal track (its JSON) that is this song, in lossless (in any quality: lossy), or
+     *  null: Tidal's own song, else the recording with the song's ISRC, else a search. */
+    fun resolve(t: Track, lossy: Boolean = false): JsonElement? {
+        t.tidal?.let { id -> runCatching { trackJson(id) }.getOrNull()?.takeIf { ok(it, lossy) }?.let { return it } }
         t.isrc?.let { isrc ->
             val found = runCatching {
                 api("tracks", mapOf("filter[isrc]" to isrc), base = OPENAPI).get("data").list
-                    .mapNotNull { d -> d["id"].long?.let { runCatching { trackJson(it) }.getOrNull() } }.filter { lossless(it) }
+                    .mapNotNull { d -> d["id"].long?.let { runCatching { trackJson(it) }.getOrNull() } }.filter { ok(it, lossy) }
             }.getOrDefault(emptyList())
             if (found.isNotEmpty()) {
                 // One recording is often on the single and the album: take the release the
@@ -118,11 +119,11 @@ class Tidal(ctx: Context) : Source {
                     .thenBy { "HIRES_LOSSLESS" !in it.path("mediaMetadata", "tags").list.map { x -> x.str } }).first()
             }
         }
-        return match(t)
+        return match(t, lossy)
     }
 
-    /** The Tidal track that is this song, available in lossless, or null. */
-    fun match(t: Track): JsonElement? {
+    /** The Tidal track that is this song, available in lossless (any quality: lossy), or null. */
+    fun match(t: Track, lossy: Boolean = false): JsonElement? {
         // (artists, title) readings of the song: as the service has it, and for uploads
         // titled "Artist - Song", the way the title has it.
         val readings = mutableListOf(t.artist.split(",") to t.title)
@@ -140,7 +141,7 @@ class Tidal(ctx: Context) : Source {
             for (c in api("search", mapOf("query" to q, "types" to "TRACKS", "limit" to 20)).path("tracks", "items").list) {
                 val id = c["id"].long ?: continue
                 if (!seen.add(id)) continue
-                val score = readings.maxOf { (a, ti) -> score(t, a, ti, c) }
+                val score = readings.maxOf { (a, ti) -> score(t, a, ti, c, lossy) }
                 if (score > bestScore) { best = c; bestScore = score }
             }
             if (bestScore >= 0.9) break
@@ -149,8 +150,8 @@ class Tidal(ctx: Context) : Source {
     }
 
     /** How sure we are that c is the song, 0 (it isn't) .. ~1. */
-    private fun score(t: Track, artists: List<String>, title: String, c: JsonElement): Double {
-        if (!lossless(c)) return 0.0
+    private fun score(t: Track, artists: List<String>, title: String, c: JsonElement, lossy: Boolean): Double {
+        if (!ok(c, lossy)) return 0.0
         val dur = t.duration
         val cdur = c["duration"].dbl ?: 0.0
         if (dur > 0 && abs(cdur - dur) > 6) return 0.0
@@ -173,13 +174,23 @@ class Tidal(ctx: Context) : Source {
 
     /** Tidal track c as something the player plays straight from Tidal, nothing saved.
      *  CD quality comes as one FLAC file; hi-res as FLAC in MP4 segments, listed by a
-     *  DASH manifest (handed to the player inline, as a data: address). */
-    fun stream(c: JsonElement): Stream {
+     *  DASH manifest (handed to the player inline, as a data: address). lossy: AAC will do
+     *  when Tidal has no FLAC of it ("AAC 320 kbps"). */
+    fun stream(c: JsonElement, lossy: Boolean = false): Stream {
         val st = api("tracks/${c["id"].long}/playbackinfopostpaywall",
             mapOf("playbackmode" to "STREAM", "audioquality" to QUALITY, "assetpresentation" to "FULL"))
         val manifest = String(Base64.decode(st["manifest"].str ?: "", Base64.DEFAULT))
         val mime = st["manifestMimeType"].str ?: ""
-        if (st["audioQuality"].str !in LOSSLESS) throw NoLosslessMatch("Tidal only has it lossy")
+        val flac = st["audioQuality"].str in LOSSLESS && (if ("dash" in mime) Regex("codecs=\"flac\"", RegexOption.IGNORE_CASE).containsMatchIn(manifest)
+            else (runCatching { JSON.parseToJsonElement(manifest)["codecs"].str }.getOrNull() ?: "").uppercase().startsWith("FLAC"))
+        if (!flac) {
+            if (!lossy) throw NoLosslessMatch("Tidal only has it lossy")
+            val quality = LOSSY[st["audioQuality"].str] ?: "lossy"
+            if ("dash" in mime) return Stream("data:application/dash+xml;base64,${Base64.encodeToString(manifest.toByteArray(), Base64.NO_WRAP)}", true, quality, manifest)
+            val bts = JSON.parseToJsonElement(manifest)
+            if ((bts["encryptionType"].str ?: "NONE") != "NONE") error("Tidal sent an encrypted stream")
+            return Stream(bts["urls"][0].str ?: error("Tidal sent no stream"), false, quality)
+        }
         var rate = st["sampleRate"].long?.toInt() ?: 44100
         var bits = st["bitDepth"].long?.toInt() ?: 16
         val out: Stream
@@ -285,6 +296,7 @@ class Tidal(ctx: Context) : Source {
         const val OPENAPI = "https://openapi.tidal.com/v2/"
         const val QUALITY = "HI_RES_LOSSLESS"
         val LOSSLESS = setOf("LOSSLESS", "HI_RES", "HI_RES_LOSSLESS")
+        val LOSSY = mapOf("HIGH" to "AAC 320 kbps", "LOW" to "AAC 96 kbps")
         // Words that make a different recording: a match must agree on each of them.
         val VERSION_WORDS = listOf("live", "remix", "acoustic", "instrumental", "karaoke", "sped up", "slowed", "nightcore",
             "demo", "unplugged", "orchestral", "a cappella", "acapella", "radio edit", "extended")

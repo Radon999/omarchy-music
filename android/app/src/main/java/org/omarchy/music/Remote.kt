@@ -175,6 +175,11 @@ object Remote {
         else coil.request.ImageRequest.Builder(Music.ctx).data("http://$host/art?id=${enc(t.id)}")
             .addHeader("Authorization", "Bearer $token").build()
 
+    /** (blocking) The cover of a desktop song, for the notification and the lock screen. */
+    fun artBytes(t: Track): ByteArray? = runCatching {
+        if (t.thumb.isNotEmpty()) httpBytes(sizedThumb(t.thumb, 544)) else httpBytes("http://$host/art?id=${enc(t.id)}", headers())
+    }.getOrNull()
+
     /** Desktops on this network with the remote on (they announce _omarchy-music._tcp). */
     private fun discover(ctx: Context) {
         val nsd = ctx.getSystemService(NsdManager::class.java) ?: return

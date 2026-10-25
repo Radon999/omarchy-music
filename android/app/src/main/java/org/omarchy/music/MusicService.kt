@@ -16,12 +16,18 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /** Plays the music: ExoPlayer with the EQ in its audio path, and a media session so the
  *  notification, lock screen, Bluetooth buttons and Android Auto see what's playing.
- *  Next and previous go to [Music]'s queue, which holds one song in the player at a time. */
+ *  Next and previous go to [Music]'s queue, which holds one song in the player at a time.
+ *  While the phone is the desktop's remote, the session shows the desktop instead ([RemotePlayer]). */
 class MusicService : MediaSessionService() {
     private var session: MediaSession? = null
+    private var switching: Job? = null
+    private var players = emptyList<Player>()
 
     override fun onCreate() {
         super.onCreate()
@@ -61,27 +67,35 @@ class MusicService : MediaSessionService() {
                 }
             }
         })
-        // The session's buttons: next and previous always there, and they go to our queue.
-        val queueAware = object : ForwardingPlayer(exo) {
-            override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon()
-                .addAll(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_PREVIOUS,
-                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM).build()
-
-            override fun isCommandAvailable(command: Int) = command in setOf(Player.COMMAND_SEEK_TO_NEXT,
-                Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) || super.isCommandAvailable(command)
-
-            override fun seekToNext() = Music.next()
-            override fun seekToNextMediaItem() = Music.next()
-            override fun seekToPrevious() = Music.previous()
-            override fun seekToPreviousMediaItem() = Music.previous()
-            override fun play() { if (exo.mediaItemCount == 0) Music.togglePause() else super.play() }
-        }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        session = MediaSession.Builder(this, queueAware).setSessionActivity(open).build()
+        val local = queueAware(exo)
+        val remote = queueAware(RemotePlayer(mainLooper))
+        players = listOf(local, remote)
+        val s = MediaSession.Builder(this, if (Remote.active) remote else local).setSessionActivity(open).build()
+        session = s
+        switching = Music.scope.launch {
+            snapshotFlow { Remote.active }.collect { on -> s.player = if (on) remote else local }
+        }
         Music.player = exo
         Music.playerReady()
+    }
+
+    /** The session's buttons: next and previous always there, and they go to our queue (or the desktop's). */
+    private fun queueAware(p: Player) = object : ForwardingPlayer(p) {
+        override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon()
+            .addAll(Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM).build()
+
+        override fun isCommandAvailable(command: Int) = command in setOf(Player.COMMAND_SEEK_TO_NEXT,
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+            Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) || super.isCommandAvailable(command)
+
+        override fun seekToNext() = Music.next()
+        override fun seekToNextMediaItem() = Music.next()
+        override fun seekToPrevious() = Music.previous()
+        override fun seekToPreviousMediaItem() = Music.previous()
+        override fun play() { if (p is RemotePlayer || p.mediaItemCount > 0) super.play() else Music.togglePause() }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session
@@ -94,10 +108,9 @@ class MusicService : MediaSessionService() {
 
     override fun onDestroy() {
         Music.player = null
-        session?.run {
-            player.release()
-            release()
-        }
+        switching?.cancel()
+        players.forEach { it.release() }
+        session?.release()
         session = null
         super.onDestroy()
     }

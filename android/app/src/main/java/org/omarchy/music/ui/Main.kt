@@ -255,14 +255,19 @@ private fun SaveMark(ui: Ui) {
     val saved = Music.lib.items[t.id]
     val saving = Music.dl.busy(t.id) || Music.downloads.any { it.id == t.id }
     val stream = saved == null && !t.isFile
+    val lossy = if (stream) Music.dl.streamLossy(t.id) else null   // Tidal has no FLAC of it: nothing to download
     val label = when {
         saved?.format == "flac" -> "FLAC"
         saved != null -> "✓ offline"
         saving -> "Saving…"
+        lossy != null -> Music.dl.streamQuality(t.id).substringBefore(' ').ifEmpty { "lossy" }
         stream -> "⤓ FLAC"
         else -> ""
     }
     if (label.isEmpty()) return
     Text(label, style = T.time.copy(color = if (saved != null) C.accent else C.muted),
-        modifier = Modifier.clickable(enabled = stream && !saving) { Music.saveCurrent() }.padding(horizontal = 6.dp, vertical = 10.dp))
+        modifier = Modifier.clickable(enabled = stream && !saving) {
+            if (lossy != null) Music.toast("Streaming ${Music.dl.streamQuality(t.id)} from $lossy: Tidal has no FLAC of this song")
+            else Music.saveCurrent()
+        }.padding(horizontal = 6.dp, vertical = 10.dp))
 }

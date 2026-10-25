@@ -15,6 +15,7 @@ class MusicApp : Application(), ImageLoaderFactory {
         Music.init(this)
         LastFm.init(this)
         Services.start(this)
+        Updater.init(this)
     }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)

@@ -65,6 +65,7 @@ object Music {
     var folders by mutableStateOf(listOf("Music/"))
     var eq by mutableStateOf(EqSettings())
     var lyricsMode by mutableStateOf("genius")
+    var musicSort by mutableStateOf("title")   // how the Music tab's All is sorted: title, artist, album, added
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
     var syncing by mutableStateOf(false)
@@ -134,6 +135,7 @@ object Music {
         val repeat: String = "off", val eq: EqSettings = EqSettings(), val source: String = "ytm",
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
+        val music_sort: String = "title",
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -151,6 +153,7 @@ object Music {
         folders = st.folders
         artColors = st.art_colors
         keepPlayed = st.keep_played
+        musicSort = st.music_sort
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -159,7 +162,7 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -559,7 +562,8 @@ object Music {
         val onDisk = lib.has(t.id) || t.isFile
         streaming = !(onDisk || keepPlayed)
         status = if (onDisk) "" else if (keepPlayed) "Downloading FLAC…" else "Loading the stream…"
-        val work: () -> Downloader.Ready = if (streaming || onDisk) ({ dl.stream(t) }) else ({ dl.download(t); dl.stream(t) })
+        val work: () -> Downloader.Ready = if (streaming || onDisk) ({ dl.stream(t) })
+            else ({ try { dl.download(t) } catch (_: NoLosslessMatch) {}; dl.stream(t) })   // no FLAC to keep: stream what there is
         bg(work) { ready, err ->
             if (seq != loadSeq) return@bg   // you moved on while it loaded
             status = ""
@@ -568,6 +572,7 @@ object Music {
                 if (autoplay) scope.launch { delay(1500); if (seq == loadSeq) next() } else paused = true
                 return@bg
             }
+            if (!ready.onDisk) streaming = true   // Keep found no FLAC to save: it streams
             val start = { play(t, ready, autoplay) }
             if (player == null) pendingLoad = start else start()
             if (autoplay) beginListen(t)
@@ -642,4 +647,6 @@ object Music {
     fun setArtColors(on: Boolean) { artColors = on; saveState() }
     @JvmName("chooseLyricsMode")
     fun setLyricsMode(mode: String) { lyricsMode = mode; saveState() }
+    @JvmName("chooseMusicSort")
+    fun setMusicSort(sort: String) { musicSort = sort; saveState() }
 }

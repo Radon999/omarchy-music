@@ -47,3 +47,11 @@ Name: "{autodesktop}\Omarchy Music"; Filename: "{app}\bin\pythonw.exe"; Paramete
 
 [Run]
 Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; Description: "Start Omarchy Music"; Flags: nowait postinstall skipifsilent
+; An update started from the app (Setup.exe /SILENT /UPDATE=1) opens the new copy when it's done.
+Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; Flags: nowait; Check: IsUpdate
+
+[Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
