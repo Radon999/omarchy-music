@@ -27,6 +27,11 @@ object Updater {
     var state by mutableStateOf("")               // "", "working", or what went wrong
     private var apk: String? = null
 
+    /** The version installed, as Android has it. Not BuildConfig.VERSION_NAME: Kotlin copies that
+     *  into the code that reads it, and a build that doesn't recompile that code keeps the old one
+     *  (1.1.1 went out calling itself 1.1.0, so it offered itself as an update forever). */
+    val version: String by lazy { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "0" }
+
     fun init(c: Context) {
         if (::ctx.isInitialized) return
         ctx = c.applicationContext
@@ -43,11 +48,11 @@ object Updater {
     fun check() {
         Music.bg({
             httpJson("https://api.github.com/repos/$REPO/releases/latest",
-                mapOf("User-Agent" to "omarchy-music-android/${BuildConfig.VERSION_NAME}", "Accept" to "application/vnd.github+json"))
+                mapOf("User-Agent" to "omarchy-music-android/$version", "Accept" to "application/vnd.github+json"))
         }) { rel, _ ->
             val tag = rel["tag_name"].str ?: return@bg
             val url = rel["assets"].list.firstOrNull { it["name"].str == "OmarchyMusic.apk" }?.get("browser_download_url").str
-            if (url == null || !newer(tag, BuildConfig.VERSION_NAME)) return@bg
+            if (url == null || !newer(tag, version)) return@bg
             if (latest != tag.removePrefix("v")) Music.toast("Omarchy Music ${tag.removePrefix("v")} is out: update it in the accounts menu (☰)")
             latest = tag.removePrefix("v"); apk = url
             Music.accountsVersion++

@@ -108,7 +108,7 @@ private fun AccountsSheet(ui: Ui) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
             Updater.latest?.let { v ->
                 Line("Update", when (Updater.state) {
-                    "" -> "Omarchy Music $v is out (this is ${org.omarchy.music.BuildConfig.VERSION_NAME})"
+                    "" -> "Omarchy Music $v is out (this is ${org.omarchy.music.Updater.version})"
                     "working" -> "Downloading $v…"
                     else -> Updater.state
                 }, false) { if (Updater.state != "working") Pill("Update") { Updater.install() } }
