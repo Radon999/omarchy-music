@@ -152,9 +152,20 @@ object Remote {
             "pause" -> status = status.copy(paused = true)
         }
         Music.bg({ httpJson("http://$host/cmd", headers(), jsonBody(body)) }) { _, err ->
-            if (err != null) Music.toast("The desktop didn't answer: ${err.message?.take(80)}")
+            if (err != null) Music.toast(refusal(err, body))
             refresh()
         }
+    }
+
+    /** What to say when the desktop turned a command down (it says why) or didn't answer. */
+    private fun refusal(err: Throwable, body: JsonElement): String {
+        if (err !is HttpError) return "The desktop didn't answer: ${err.message?.take(80)}"
+        val why = runCatching { JSON.parseToJsonElement(err.body)["error"].str }.getOrNull() ?: "HTTP ${err.code}"
+        val phoneSongs = body["tracks"].list.any { it["id"].str?.startsWith("ph") == true }
+        // A desktop older than 1.1.2 takes no songs from the phone.
+        return if (phoneSongs && "no songs the desktop can play" in why)
+            "The desktop can't play this phone's songs yet: update the desktop app (☰ → Update there) to 1.1.2 or newer"
+        else "The desktop said no: ${why.take(120)}"
     }
 
     /** tracks as the desktop can play them (blocking): the songs on the phone stream from
