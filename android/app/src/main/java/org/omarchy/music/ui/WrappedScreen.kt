@@ -15,12 +15,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -62,13 +64,18 @@ import kotlinx.coroutines.launch
 import org.omarchy.music.Music
 import org.omarchy.music.Wrapped
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-// The slides' colours, a slide each in turn (the desktop's s0 to s7).
-private val SLIDE = listOf(C.accent, Color(0xFFBB9AF7), C.green, Color(0xFFE0AF68), C.red, Color(0xFF2AC3DE),
-    Color(0xFF7DCFFF), Color(0xFFFF9E64))
+// The slides' colours, a slide each in turn (the desktop's s0 to s7), and the second colour
+// each one glows with in its top corner.
+private val MAGENTA = Color(0xFFBB9AF7); private val YELLOW = Color(0xFFE0AF68); private val BLUE = Color(0xFF2AC3DE)
+private val CYAN = Color(0xFF7DCFFF); private val ORANGE = Color(0xFFFF9E64)
+private val SLIDE = listOf(C.accent, MAGENTA, C.green, YELLOW, C.red, BLUE, CYAN, ORANGE)
+private val GLOW = listOf(MAGENTA, CYAN, YELLOW, C.red, MAGENTA, C.green, BLUE, YELLOW)
+private val KINDS = listOf("week" to "Week", "month" to "Month", "year" to "Year", "all" to "All time")
 
 private object W {
     val kicker = T.body.copy(color = C.fg.copy(alpha = 0.72f), fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp, fontSize = 11.sp)
@@ -78,18 +85,20 @@ private object W {
     val small = T.body.copy(color = C.muted, fontSize = 11.5.sp)
     val rank = T.body.copy(color = C.accent, fontWeight = FontWeight.Black, fontSize = 16.sp)
     val name = T.body.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    val mid = T.body.copy(fontWeight = FontWeight.ExtraBold, fontSize = 19.sp)
 }
 
 private fun n(i: Int) = "%,d".format(i)
 
 private class Slide(val color: Int, val save: String? = null, val content: @Composable ColumnScope.() -> Unit)
 
-/** Your year in music from your Last.fm history, a slide at a time: tap the right of a
- *  slide for the next, the left to go back; pick another year (or all time) at the top. */
+/** Your week, month or year in music (or all of it) from your Last.fm history, a slide at a
+ *  time: tap the right of a slide for the next, the left to go back; Week · Month · Year ·
+ *  All time at the top, and which one of them. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WrappedScreen(onClose: () -> Unit) {
-    var period by remember { mutableStateOf<Int?>(Wrapped.year()) }
+    var period by remember { mutableStateOf<Wrapped.Period>(Wrapped.Period.Year(Wrapped.year())) }
     var data by remember { mutableStateOf<Wrapped.Data?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf("") }
@@ -102,7 +111,7 @@ fun WrappedScreen(onClose: () -> Unit) {
             data = d; error = err?.message?.take(200) ?: if (d == null) "nothing came back" else null
         }
     }
-    val label = period?.toString() ?: "ALL TIME"
+    val label = period.name.uppercase()
     val slides: List<Slide> = when {
         error != null -> listOf(Slide(4) {
             Text("COULDN'T OPEN YOUR WRAPPED", style = W.kicker)
@@ -122,8 +131,8 @@ fun WrappedScreen(onClose: () -> Unit) {
             Text("No scrobbles here yet", style = W.big)
             Text("Play some music and come back: everything you play is scrobbled to Last.fm.", style = W.sub)
         })
-        data!!.period == null -> allTime(data!!)
-        else -> yearSlides(data!!)
+        data!!.period == Wrapped.Period.All -> allTime(data!!)
+        else -> periodSlides(data!!)
     }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         val pager = rememberPagerState { slides.size }
@@ -135,43 +144,62 @@ fun WrappedScreen(onClose: () -> Unit) {
                 BoxWithConstraints(Modifier.fillMaxSize()) {
                     val w = constraints.maxWidth.toFloat(); val h = constraints.maxHeight.toFloat()
                     val tint = SLIDE[s.color % 8]
+                    val glow = GLOW[s.color % 8]
                     Box(Modifier.fillMaxSize()
                         .background(Brush.linearGradient(0f to tint.copy(alpha = 0.5f), 0.62f to C.darker.copy(alpha = 0f),
                             start = Offset(w * 0.4f, 0f), end = Offset(w * 0.6f + h * 0.27f, h)))
+                        .background(Brush.radialGradient(listOf(glow.copy(alpha = 0.30f), Color.Transparent),
+                            center = Offset(w * 0.92f, h * 0.08f), radius = maxOf(w, h) * 0.38f))
+                        .background(Brush.radialGradient(listOf(tint.copy(alpha = 0.22f), Color.Transparent),
+                            center = Offset(0f, h), radius = maxOf(w, h) * 0.45f))
                         .pointerInput(i, slides.size) {
                             detectTapGestures { o ->
                                 val to = (if (o.x < size.width * 0.3f) i - 1 else i + 1).coerceIn(0, slides.size - 1)
                                 scope.launch { pager.animateScrollToPage(to) }
                             }
                         }) {
-                        Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 72.dp, bottom = 40.dp),
+                        Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 112.dp, bottom = 40.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically), content = s.content)
                     }
                 }
             }
-            // The top: a segment a slide, the year picker, close.
-            Row(Modifier.statusBarsPadding().padding(start = 16.dp, end = 12.dp, top = 14.dp).fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (slides.size > 1) repeat(slides.size) { k ->
-                        Box(Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp))
-                            .background(if (k <= pager.currentPage) C.fg else C.fg.copy(alpha = 0.25f)))
+            // The top: a segment a slide and close; under them Week · Month · Year · All time, and which one.
+            Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 12.dp, top = 14.dp).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (slides.size > 1) repeat(slides.size) { k ->
+                            Box(Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp))
+                                .background(if (k <= pager.currentPage) C.fg else C.fg.copy(alpha = 0.25f)))
+                        }
                     }
+                    Text("✕", style = T.title, modifier = Modifier.clip(CircleShape).background(C.darker.copy(alpha = 0.4f))
+                        .pointerInput(Unit) { detectTapGestures { onClose() } }.padding(horizontal = 11.dp, vertical = 7.dp))
                 }
-                data?.let { d ->
-                    var open by remember { mutableStateOf(false) }
-                    Box {
-                        Pill(if (d.period == null) "All time ▾" else "${d.period} ▾", quiet = true) { open = true }
-                        DropdownMenu(open, { open = false }, containerColor = C.light) {
-                            (d.years.map { it as Int? } + listOf(null)).forEach { y ->
-                                DropdownMenuItem({ Text(y?.toString() ?: "All time", style = T.body) },
-                                    { open = false; if (y != period) period = y })
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.clip(RoundedCornerShape(4.dp)).background(C.darker.copy(alpha = 0.45f))) {
+                        KINDS.forEach { (kind, name) ->
+                            val on = period.kind == kind
+                            Text(name, style = T.tab.copy(color = if (on) C.darker else C.fg.copy(alpha = 0.75f), fontSize = 12.sp),
+                                modifier = Modifier.background(if (on) C.accent else Color.Transparent)
+                                    .pointerInput(kind, period) { detectTapGestures { if (!on) period = Wrapped.Period.current(kind) } }
+                                    .padding(horizontal = 11.dp, vertical = 6.dp))
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    val choices = Wrapped.Period.choices(period.kind, data?.years ?: listOf(LocalDate.now().year))
+                    if (choices.isNotEmpty()) {
+                        var open by remember { mutableStateOf(false) }
+                        Box {
+                            Pill("${choices.firstOrNull { it.first == period }?.second ?: period.name} ▾", quiet = true) { open = true }
+                            DropdownMenu(open, { open = false }, containerColor = C.light) {
+                                choices.forEach { (p, name) ->
+                                    DropdownMenuItem({ Text(name, style = T.body) }, { open = false; if (p != period) period = p })
+                                }
                             }
                         }
                     }
                 }
-                Text("✕", style = T.title, modifier = Modifier.clip(CircleShape).background(C.darker.copy(alpha = 0.4f))
-                    .pointerInput(Unit) { detectTapGestures { onClose() } }.padding(horizontal = 11.dp, vertical = 7.dp))
             }
         }
     }
@@ -185,20 +213,66 @@ private fun Pic(url: String, size: Dp, round: Boolean = false) {
 }
 
 @Composable
-private fun Ranked(items: List<Triple<String, String, Int>>, art: List<String>? = null, start: Int = 1) {
+private fun Ranked(items: List<Triple<String, String, Int>>, art: List<String>? = null, start: Int = 1, meter: Boolean = false) {
+    val top = (items.maxOfOrNull { it.third } ?: 0).coerceAtLeast(1)
     Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items.forEachIndexed { i, (name, sub, plays) ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("${i + start}", style = W.rank, modifier = Modifier.widthIn(min = 26.dp))
                 art?.let { Pic(it.getOrElse(i) { "" }, 44.dp) }
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(name, style = W.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (sub.isNotEmpty()) Text(sub, style = W.small, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (meter) Meter(plays.toFloat() / top)
                 }
                 Text(n(plays), style = W.small)
             }
         }
     }
+}
+
+/** A thin bar, filled as far as fraction (0..1). */
+@Composable
+private fun Meter(fraction: Float) {
+    Box(Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(50)).background(C.fg.copy(alpha = 0.12f))) {
+        Box(Modifier.fillMaxWidth(fraction.coerceIn(0.02f, 1f)).fillMaxHeight().clip(RoundedCornerShape(50)).background(C.accent))
+    }
+}
+
+/** A short accent line under a heading. */
+@Composable
+private fun Rule() = Box(Modifier.width(36.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(C.accent))
+
+/** Numbers in tiles, two to a row: (value, what it is). */
+@Composable
+private fun Stats(tiles: List<Pair<String, String>>) {
+    Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        tiles.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { (value, what) ->
+                    Column(Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(C.fg.copy(alpha = 0.07f))
+                        .border(1.dp, C.fg.copy(alpha = 0.10f), RoundedCornerShape(6.dp)).padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text(value, style = W.mid, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(what, style = W.small)
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** "▲ 12% more than the month before" (or less), when there's something to compare with. */
+@Composable
+private fun Change(d: Wrapped.Data) {
+    val before = d.prevCount ?: return
+    if (before <= 0 || d.period == Wrapped.Period.All) return
+    val pct = Math.round((d.scrobbles - before) * 100.0 / before).toInt()
+    val than = if (d.partial) "this far into the ${d.period.kind} before" else "the ${d.period.kind} before"
+    val text = if (pct > 0) "▲ $pct% more than $than" else if (pct < 0) "▼ ${-pct}% less than $than" else "Just like $than"
+    val color = if (pct >= 0) C.green else C.red
+    Text(text, style = W.small.copy(color = color, fontWeight = FontWeight.Bold),
+        modifier = Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.18f)).padding(horizontal = 12.dp, vertical = 4.dp))
 }
 
 /** A little bar chart; top is the bar to light up. A label sits under its bar and runs on
@@ -224,29 +298,39 @@ private fun Bars(values: List<Int>, labels: List<String>, height: Dp = 110.dp, t
     }
 }
 
+private val WEEK_LETTERS = listOf("M", "T", "W", "T", "F", "S", "S")
+
 private fun day(t: Long, pattern: String) =
     DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).format(Instant.ofEpochSecond(t).atZone(ZoneId.systemDefault()))
 
-private fun yearSlides(d: Wrapped.Data): List<Slide> {
-    val y = d.period!!
+/** A year's, a month's or a week's Wrapped. */
+private fun periodSlides(d: Wrapped.Data): List<Slide> {
+    val p = d.period
     val out = ArrayList<Slide>()
     out += Slide(0) {
         Text("YOUR", style = W.kicker)
-        Text("$y", style = W.huge.copy(color = C.accent))
+        Text(p.title, style = W.huge.copy(color = C.accent))
         Text("WRAPPED", style = W.big)
+        Rule()
         Text("${d.user} · ${n(d.scrobbles)} scrobbles", style = W.sub)
+        Change(d)
         Text("Tap, or swipe, to start", style = W.small)
     }
     out += Slide(1) {
         Text("YOU LISTENED FOR", style = W.kicker)
         Text(n(d.minutes), style = W.huge)
         Text("minutes", style = W.big)
-        Text("That's ${"%.1f".format(d.minutes / 1440.0)} days of music: ${n(d.songCount)} different songs by ${n(d.artistCount)} artists.", style = W.sub)
+        val hours = d.minutes / 60.0
+        Text(if (hours >= 48) "That's ${"%.1f".format(d.minutes / 1440.0)} days of music." else "That's ${"%.1f".format(hours)} hours of music.",
+            style = W.sub)
+        Stats(listOf(n(d.songCount) to "different songs", n(d.artistCount) to "artists",
+            "${d.days} of ${d.spanDays}" to "days with music", n(Math.round(d.minutes.toDouble() / d.spanDays.coerceAtLeast(1)).toInt()) to "minutes a day"))
     }
     if (d.genres.isNotEmpty()) out += Slide(2) {
         Text("YOUR TOP GENRE", style = W.kicker)
         Text(d.genres[0], style = W.big.copy(color = C.accent))
-        Column(Modifier.padding(top = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Rule()
+        Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             d.genres.drop(1).forEachIndexed { i, g ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("${i + 2}", style = W.rank, modifier = Modifier.widthIn(min = 26.dp)); Text(g, style = W.name, maxLines = 1)
@@ -255,16 +339,19 @@ private fun yearSlides(d: Wrapped.Data): List<Slide> {
         }
     }
     val (name, plays) = d.artists[0]
+    val share = if (d.scrobbles > 0) plays.toFloat() / d.scrobbles else 0f
     out += Slide(3) {
         Text("YOUR TOP ARTIST", style = W.kicker)
         Pic(d.artistImage, 210.dp, round = true)
         Text(name, style = W.big)
-        Text("${n(plays)} plays · #1 of ${n(d.artistCount)} artists", style = W.sub)
+        Text("${n(plays)} plays · ${Math.round(share * 100)}% of everything you played", style = W.sub)
+        Meter(share)
         d.topArtistSong?.let { (title, k) -> Text("Most of all, “$title”: ${n(k)} plays", style = W.small) }
     }
     out += Slide(4) {
         Text("YOUR TOP ARTISTS", style = W.kicker)
-        Ranked(d.artists.take(5).map { Triple(it.first, "", it.second) })
+        Text("#1 of ${n(d.artistCount)}", style = W.mid.copy(color = C.accent))
+        Ranked(d.artists.take(5).map { Triple(it.first, "", it.second) }, meter = true)
     }
     d.songs.firstOrNull()?.let { s ->
         out += Slide(5) {
@@ -277,7 +364,7 @@ private fun yearSlides(d: Wrapped.Data): List<Slide> {
     }
     out += Slide(6) {
         Text("YOUR TOP SONGS", style = W.kicker)
-        Ranked(d.songs.take(5).map { Triple(it.title, it.artist, it.plays) }, d.songs.take(5).map { it.art })
+        Ranked(d.songs.take(5).map { Triple(it.title, it.artist, it.plays) }, d.songs.take(5).map { it.art }, meter = true)
     }
     d.albums.firstOrNull()?.let { a ->
         out += Slide(7) {
@@ -286,8 +373,10 @@ private fun yearSlides(d: Wrapped.Data): List<Slide> {
             Text(a.name, style = W.big)
             Text("${a.artist} · ${n(a.plays)} plays", style = W.sub)
             d.albums.drop(1).take(3).forEachIndexed { i, x ->
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("${i + 2}", style = W.rank, modifier = Modifier.widthIn(min = 26.dp)); Text("${x.name} · ${x.artist}", style = W.small)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("${i + 2}", style = W.rank, modifier = Modifier.widthIn(min = 26.dp))
+                    Pic(x.art, 36.dp)
+                    Text("${x.name} · ${x.artist}", style = W.small)
                 }
             }
         }
@@ -297,31 +386,48 @@ private fun yearSlides(d: Wrapped.Data): List<Slide> {
     val night = listOf(22, 23, 0, 1, 2, 3).sumOf { hours[it] }
     val morning = (5 until 10).sumOf { hours[it] }
     val kind = if (night > 0.25 * d.scrobbles) "Night owl" else if (morning > 0.3 * d.scrobbles) "Early bird" else "Daytime listener"
+    val weekday = (0 until 7).maxBy { d.weekdays[it] }
     out += Slide(0) {
         Text("WHEN YOU LISTEN", style = W.kicker)
         Text(kind, style = W.big.copy(color = C.accent))
         Text("You listened most around ${if (peak % 12 == 0) 12 else peak % 12} ${if (peak < 12) "AM" else "PM"}.", style = W.sub)
         Bars(hours, (0 until 24).map { when (it) { 0 -> "12a"; 6 -> "6a"; 12 -> "12p"; 18 -> "6p"; else -> "" } }, top = peak)
-        Text("And most of all on ${Wrapped.WEEKDAYS[(0 until 7).maxBy { d.weekdays[it] }]}.", style = W.sub)
+        Text("And most of all on ${Wrapped.WEEKDAYS[weekday]}.", style = W.sub)
+        Bars(d.weekdays, WEEK_LETTERS, height = 50.dp, top = weekday)
     }
-    val best = (0 until 12).maxBy { d.months[it] }
-    out += Slide(1) {
-        Text("MONTH BY MONTH", style = W.kicker)
-        Text("${Wrapped.MONTH_NAMES[best]} was your month", style = W.big)
-        Text("${n(d.months[best])} scrobbles in ${Wrapped.MONTHS[best]}.", style = W.sub)
-        Bars(d.months, Wrapped.MONTHS.map { it.take(1) }, height = 150.dp, top = best)
+    if (p is Wrapped.Period.Year) {
+        val best = (0 until 12).maxBy { d.months[it] }
+        out += Slide(1) {
+            Text("MONTH BY MONTH", style = W.kicker)
+            Text("${Wrapped.MONTH_NAMES[best]} was your month", style = W.big)
+            Text("${n(d.months[best])} scrobbles in ${Wrapped.MONTHS[best]}.", style = W.sub)
+            Bars(d.months, Wrapped.MONTHS.map { it.take(1) }, height = 150.dp, top = best)
+        }
+    } else if (d.daily.isNotEmpty()) {
+        val best = d.daily.indices.maxBy { d.daily[it] }
+        val bestDay = p.start().plusDays(best.toLong())
+        out += Slide(1) {
+            Text("DAY BY DAY", style = W.kicker)
+            Text(if (p is Wrapped.Period.Week) "${DateTimeFormatter.ofPattern("EEEE", Locale.ENGLISH).format(bestDay)} was your day"
+                 else "${DateTimeFormatter.ofPattern("MMMM d", Locale.ENGLISH).format(bestDay)} was your day", style = W.big)
+            Text("${n(d.daily[best])} scrobbles that day.", style = W.sub)
+            Bars(d.daily, if (p is Wrapped.Period.Week) WEEK_LETTERS else d.daily.indices.map { if (it % 7 == 0) "${it + 1}" else "" },
+                height = 150.dp, top = best)
+        }
     }
     out += Slide(2) {
         Text("MOMENTS", style = W.kicker)
         val busiest = d.busiest?.let { DateTimeFormatter.ofPattern("MMMM d", Locale.ENGLISH).format(it) } ?: ""
-        listOf("${d.streak} days" to "your longest run of music, day after day",
-            busiest to "your biggest day: ${n(d.busiestN)} scrobbles",
-            (d.first?.title ?: "") to "your first song of $y, by ${d.first?.artist}",
-            "${d.days} days" to "of $y had music in them").forEach { (big, small) ->
+        val moments = ArrayList<Pair<String, String>>()
+        if (p !is Wrapped.Period.Week) moments += "${d.streak} days" to "your longest run of music, day after day"
+        moments += busiest to "your biggest day: ${n(d.busiestN)} scrobbles"
+        moments += (d.first?.title ?: "") to "your first song of ${p.of}, by ${d.first?.artist}"
+        moments += "${d.days} days" to "of ${d.spanDays} had music in them"
+        moments.forEach { (big, small) ->
             Text(big, style = W.big.copy(fontSize = 22.sp, lineHeight = 26.sp)); Text(small, style = W.sub)
         }
     }
-    out += summary(d, "$y")
+    out += summary(d, p.name.uppercase())
     return out
 }
 
@@ -331,6 +437,7 @@ private fun allTime(d: Wrapped.Data): List<Slide> {
         Text("YOUR", style = W.kicker)
         Text("ALL TIME", style = W.huge.copy(color = C.accent))
         Text("since ${d.since}", style = W.big)
+        Rule()
         Text("${d.user} · ${n(d.scrobbles)} scrobbles", style = W.sub)
         Text("Tap, or swipe, to start", style = W.small)
     }
@@ -339,10 +446,14 @@ private fun allTime(d: Wrapped.Data): List<Slide> {
         Text(n(d.minutes), style = W.huge)
         Text("minutes", style = W.big)
         Text("That's around ${n(Math.round(d.minutes / 1440.0).toInt())} days of music.", style = W.sub)
+        val years = (LocalDate.now().year - d.since + 1).coerceAtLeast(1)
+        Stats(listOf(n(d.scrobbles) to "scrobbles", "$years" to "years of history",
+            n(d.scrobbles / years) to "scrobbles a year", n(Math.round(d.minutes / (years * 365.0)).toInt()) to "minutes a day"))
     }
     if (d.genres.isNotEmpty()) out += Slide(2) {
         Text("YOUR GENRES", style = W.kicker)
         Text(d.genres[0], style = W.big.copy(color = C.accent))
+        Rule()
         d.genres.drop(1).forEach { Text(it, style = W.sub) }
     }
     d.artists.firstOrNull()?.let { (name, plays) ->
@@ -351,16 +462,16 @@ private fun allTime(d: Wrapped.Data): List<Slide> {
             Pic(d.artistImage, 200.dp, round = true)
             Text(name, style = W.big)
             Text("${n(plays)} plays", style = W.sub)
-            Ranked(d.artists.drop(1).take(4).map { Triple(it.first, "", it.second) }, start = 2)
+            Ranked(d.artists.drop(1).take(4).map { Triple(it.first, "", it.second) }, start = 2, meter = true)
         }
     }
     out += Slide(5) {
         Text("YOUR SONGS OF ALL TIME", style = W.kicker)
-        Ranked(d.songs.take(6).map { Triple(it.title, it.artist, it.plays) }, d.songs.take(6).map { it.art })
+        Ranked(d.songs.take(6).map { Triple(it.title, it.artist, it.plays) }, d.songs.take(6).map { it.art }, meter = true)
     }
     if (d.albums.isNotEmpty()) out += Slide(7) {
         Text("YOUR ALBUMS OF ALL TIME", style = W.kicker)
-        Ranked(d.albums.take(5).map { Triple(it.name, it.artist, it.plays) }, d.albums.take(5).map { it.art })
+        Ranked(d.albums.take(5).map { Triple(it.name, it.artist, it.plays) }, d.albums.take(5).map { it.art }, meter = true)
     }
     val counts = d.yearsCount
     if (counts.isNotEmpty()) {
@@ -383,9 +494,17 @@ private fun summary(d: Wrapped.Data, title: String) = Slide(3) {
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxWidth()
         .drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }
-        .background(C.bg).border(1.dp, C.line, RoundedCornerShape(4.dp)).padding(horizontal = 18.dp, vertical = 20.dp),
+        .background(C.bg).background(Brush.linearGradient(listOf(C.accent.copy(alpha = 0.20f), Color.Transparent)))
+        .border(1.dp, C.line, RoundedCornerShape(4.dp)).padding(horizontal = 18.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("$title WRAPPED · ${d.user}", style = W.kicker)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Pic(d.artistImage, 56.dp, round = true)
+            Column(Modifier.weight(1f)) {
+                Text("$title WRAPPED", style = W.kicker)
+                Text(d.user, style = W.mid, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Rule()
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             listOf("TOP ARTISTS" to d.artists.take(5).map { it.first }, "TOP SONGS" to d.songs.take(5).map { it.title }).forEach { (head, items) ->
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -395,10 +514,10 @@ private fun summary(d: Wrapped.Data, title: String) = Slide(3) {
             }
         }
         Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            listOf("MINUTES" to n(d.minutes), "TOP GENRE" to (d.genres.firstOrNull() ?: "—")).forEach { (head, value) ->
+            listOf("MINUTES" to n(d.minutes), "SCROBBLES" to n(d.scrobbles), "TOP GENRE" to (d.genres.firstOrNull() ?: "—")).forEach { (head, value) ->
                 Column(Modifier.weight(1f)) {
                     Text(head, style = W.small)
-                    Text(value, style = W.big.copy(color = C.accent, fontSize = 22.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(value, style = W.mid.copy(color = C.accent), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

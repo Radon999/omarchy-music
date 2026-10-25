@@ -82,6 +82,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -326,15 +327,17 @@ dropdown.search-in > button:hover {{ color: {fg}; border-color: {rgba(acc, 0.45)
   border: 1px solid transparent; box-shadow: none; color: {muted}; font-weight: 600; }}
 .tabs button:hover {{ color: {fg}; background-color: {rgba(acc, 0.06)}; }}
 .tabs button:checked {{ color: {acc}; background-color: {rgba(acc, 0.12)}; border-color: {rgba(acc, 0.45)}; }}
-scrolledwindow, list.tracks {{ background: transparent; }}
-list.tracks {{ padding: 0 8px 8px 8px; }}
-list.tracks > row {{ border-radius: {R}px; padding: 5px 6px; margin: 1px 0; background: transparent;
-  border-left: 2px solid transparent; }}
-list.tracks > row:hover {{ background-color: {rgba(acc, 0.06)}; }}
-list.tracks > row:selected, list.tracks > row:focus {{ background-color: {rgba(acc, 0.10)}; }}
-list.tracks > row.playing {{ border-left-color: {acc}; background-color: {rgba(acc, 0.10)}; }}
-list.tracks > row.playing .title {{ color: {acc}; }}
-list.tracks > row.back {{ color: {acc}; font-weight: 700; padding: 8px 8px; }}
+scrolledwindow, listview.tracks {{ background: transparent; }}
+listview.tracks {{ padding: 0 8px 8px 8px; }}
+listview.tracks > row {{ padding: 0; margin: 0; background: none; border: none; box-shadow: none; outline: none; }}
+listview.tracks > row > row, listview.tracks > row > .song {{ border-radius: {R}px; padding: 5px 6px; margin: 1px 0;
+  background: transparent; border-left: 2px solid transparent; }}
+listview.tracks > row:hover > row, listview.tracks > row:hover > .song {{ background-color: {rgba(acc, 0.06)}; }}
+listview.tracks > row:focus-visible > row,
+listview.tracks > row:focus-visible > .song {{ background-color: {rgba(acc, 0.10)}; }}
+listview.tracks > row > .song.playing {{ border-left-color: {acc}; background-color: {rgba(acc, 0.10)}; }}
+listview.tracks > row > .song.playing .title {{ color: {acc}; }}
+listview.tracks > row > row.back {{ color: {acc}; font-weight: 700; padding: 8px 8px; }}
 .section {{ color: {muted}; font-size: 0.74em; font-weight: 700; letter-spacing: 1.5px; padding: 10px 8px 4px 8px; }}
 .group-head {{ font-weight: 800; font-size: 1.02em; padding-top: 6px; }}
 .art {{ border-radius: {R}px; background-color: {light}; }}
@@ -445,7 +448,6 @@ button.w-nav:hover {{ background: {rgba(acc, 0.25)}; }}
 window.wrapped button.pill {{ padding: 8px 18px; font-size: 0.95em; }}
 .w-seg {{ background-color: {rgba(fg, 0.25)}; border-radius: 2px; min-height: 3px; }}
 .w-seg.on {{ background-color: {fg}; }}
-.w-huge {{ text-shadow: 0 3px 18px {rgba(darker, 0.55)}; }}
 .w-mid {{ color: {fg}; font-size: 1.45em; font-weight: 800; }}
 .w-tile {{ background-color: {rgba(fg, 0.07)}; border: 1px solid {rgba(fg, 0.10)}; border-radius: {max(R, 6)}px;
   padding: 12px 14px; }}
@@ -513,7 +515,7 @@ def tint_css(rgb, light):
         return f"#{r:02x}{g:02x}{b:02x}"
     window, bar = (shade(0.9), shade(0.84)) if light else (shade(0.15), shade(0.09))
     return (f"window.main {{ background-color: {rgba(window, OPACITY)}; }}\n"
-            f"window.main .player, window.main .selectbar {{ background-color: {rgba(bar, OPACITY)}; }}\n")
+            f".player, .selectbar {{ background-color: {rgba(bar, OPACITY)}; }}\n")
 
 
 # =============================================================================
@@ -530,17 +532,34 @@ class Library:
             del self.items[vid]
         self.missing = read_json(MISSING, {})
         self.lock = threading.Lock()
+        self._seen = {}   # vid -> (its file is there, when that was looked at, the file)
 
     def save(self):
         with self.lock:
             write_atomic(LIBRARY, json.dumps(self.items, indent=1))
 
+    # Whether a song's file is there is asked for every row drawn and every row again each time
+    # the song changes: thousands of disk lookups at once, which on Windows (antivirus and all)
+    # stalled the window for seconds. The answer is kept for a minute; playing asks the disk.
+    SEEN_FOR = 60
+
     def has(self, vid):
         t = self.items.get(vid)
-        return bool(t) and Path(t["file"]).exists()
+        if not t:
+            return False
+        seen, now = self._seen.get(vid), time.monotonic()
+        if seen and seen[2] == t["file"] and now - seen[1] < self.SEEN_FOR:
+            return seen[0]
+        there = Path(t["file"]).exists()
+        self._seen[vid] = (there, now, t["file"])
+        return there
 
     def file(self, vid):
-        return self.items[vid]["file"] if self.has(vid) else None
+        t = self.items.get(vid)
+        there = bool(t) and Path(t["file"]).exists()
+        if t:
+            self._seen[vid] = (there, time.monotonic(), t["file"])
+        return t["file"] if there else None
 
     def is_flac(self, vid):
         return self.has(vid) and self.items[vid].get("format") == "flac"
@@ -552,6 +571,7 @@ class Library:
         entry.update(file=str(path), art=str(art) if art else "", added=time.time(), format=fmt,
                      plays=old.get("plays", 0), last=old.get("last", 0), **extra)
         self.items[track["id"]] = entry
+        self._seen.pop(track["id"], None)
         self.save()
 
     def by_tidal(self, tidal_id):
@@ -586,6 +606,7 @@ class Library:
 
     def remove(self, vid):
         t = self.items.pop(vid, None)
+        self._seen.pop(vid, None)
         if t:
             # The same recording saved from two services shares one file: keep it for the other.
             shared = {p for o in self.items.values() for p in (o.get("file"), o.get("art"))}
@@ -1610,36 +1631,69 @@ class ArtCache:
         THUMBS.mkdir(parents=True, exist_ok=True)
 
     def apply(self, picture, track, px=226):
+        """picture shows track's cover: at once if it's in memory, else once it's read (off the
+        UI thread: decoding a 1200 px cover takes a few milliseconds, and a row a frame of that
+        made scrolling stutter)."""
         vid = track["id"]
-        if vid in self.textures:
-            picture.set_from_paintable(self.textures[vid])
+        picture.art_vid = vid   # a picture reused for another song meanwhile isn't overwritten
+        tex = self.textures.get(vid)
+        if tex is not None:
+            picture.set_from_paintable(tex)
             return
+        pics = self.waiting.get(vid)
+        if pics is not None:
+            pics.append(picture)
+            return
+        self.waiting[vid] = [picture]
         lib = self.lib.items.get(vid)
         path = Path(lib["art"]) if lib and lib.get("art") else THUMBS / f"{vid}.jpg"
-        if path.exists():
-            self._load(vid, path, picture)
-            return
         if source_of(track) == "file" and not is_phone_song(track):
-            fetch, arg = self._cover_of, track.get("file")
-            if vid in self.none:
-                return
+            fetch, arg = (None, None) if vid in self.none else (self._cover_of, track.get("file"))
         elif track.get("thumb"):
             fetch, arg = fetch_url, sized_thumb(track["thumb"], px)
         else:
-            return
-        self.waiting.setdefault(vid, []).append(picture)
-        if len(self.waiting[vid]) > 1:
-            return
+            fetch, arg = None, None
 
-        def done(_r, err):
-            pics = self.waiting.pop(vid, [])
+        def fetched(_r, err):
             if err:
                 if source_of(track) == "file":
                     self.none.add(vid)
+                self.waiting.pop(vid, None)
                 return
-            for p in pics:
-                self._load(vid, path, p)
-        in_thread(fetch, arg, path, done=done)
+            self._decode(vid, path)
+
+        def read():
+            if path.exists():
+                return decode_picture(path, 128)
+            return "fetch"
+
+        def done(pb):
+            if pb == "fetch":
+                if fetch is None:
+                    self.waiting.pop(vid, None)
+                else:
+                    in_thread(fetch, arg, path, done=fetched)
+                return
+            self._show(vid, path, pb)
+        ART_POOL.submit(lambda: GLib.idle_add(lambda r: (done(r), False)[1], read()))
+
+    def _decode(self, vid, path):
+        ART_POOL.submit(lambda: GLib.idle_add(lambda pb: (self._show(vid, path, pb), False)[1],
+                                              decode_picture(path, 128)))
+
+    def _show(self, vid, path, pb):
+        pics = self.waiting.pop(vid, [])
+        tex = texture_of(pb)
+        if tex is None:
+            return
+        self.textures[vid] = tex
+        for p in pics:
+            if getattr(p, "art_vid", vid) == vid:
+                p.set_from_paintable(tex)
+        if vid not in self.paths:
+            self.paths[vid] = path
+            if self.on_loaded:
+                self.on_loaded(vid, path)
 
     @staticmethod
     def _cover_of(audio, dest):
@@ -1648,17 +1702,26 @@ class ArtCache:
             raise FileNotFoundError("no cover")
         write_file(dest, data)
 
-    def _load(self, vid, path, picture):
-        # At the size it is drawn (twice that for sharp HiDPI), not the cover's
-        # full 1280 px: a full-size texture per row would take gigabytes.
-        tex = load_texture(path, 128)
-        if tex:
-            self.textures[vid] = tex
-            picture.set_from_paintable(tex)
-            if vid not in self.paths:
-                self.paths[vid] = path
-                if self.on_loaded:
-                    self.on_loaded(vid, path)
+
+# Covers are read and scaled on a few threads of their own (GdkPixbuf lets go of Python's lock
+# while it works), so the window keeps drawing while a list's pictures come in.
+ART_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="art")
+
+
+def decode_picture(path, size):
+    """The image at path scaled to fit size x size, as a Pixbuf (any thread); None if unreadable."""
+    try:
+        from gi.repository import GdkPixbuf
+        return GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), size, size, True)
+    except GLib.Error:
+        return None
+
+
+def texture_of(pb):
+    if pb is None:
+        return None
+    fmt = Gdk.MemoryFormat.R8G8B8A8 if pb.get_has_alpha() else Gdk.MemoryFormat.R8G8B8
+    return Gdk.MemoryTexture.new(pb.get_width(), pb.get_height(), fmt, pb.read_pixel_bytes(), pb.get_rowstride())
 
 
 def load_texture(path, size=None):
@@ -4340,19 +4403,117 @@ def artist_link(win, text, css="sub"):
 
 def set_link_text(lab, text):
     lab.set_label(text)
-    link = bool(split_artists(text))
+    link = names_artists(text)
+    if getattr(lab, "is_link", None) is link:   # a recycled row's label: only the words change
+        return
+    lab.is_link = link
     (lab.add_css_class if link else lab.remove_css_class)("link")
-    lab.set_cursor_from_name("pointer" if link else None)
+    lab.set_cursor(pointer_cursor() if link else None)
     lab.set_tooltip_text("Go to the artist" if link else None)
 
 
-class TrackRow(Gtk.ListBoxRow):
+@functools.lru_cache(maxsize=1)
+def pointer_cursor():
+    return Gdk.Cursor.new_from_name("pointer")   # once: looking it up by name per row was slow
+
+
+@functools.lru_cache(maxsize=4096)
+def names_artists(text):
+    return bool(split_artists(text))
+
+
+# Song lists are recycled the way the phone's are: a list of thousands of songs keeps a
+# couple of dozen row widgets and fills them with whichever songs are in view. Making a row
+# widget costs over a millisecond of Python (more on Windows), so lists that made one per
+# song stuttered as you scrolled and stalled whenever a song started (every row updated).
+# A TrackRow is a song's place in a list: cheap, no widget of its own; a TrackCell is the
+# widget that shows whichever TrackRow is in view in its place.
+
+class _Check:
+    """A row's pick box while you select songs (drawn by its TrackCell when in view)."""
+
+    def __init__(self, row):
+        self.row, self.active, self.visible = row, False, False
+
+    def get_active(self):
+        return self.active
+
+    def set_active(self, on):
+        if on == self.active:
+            return
+        self.active = on
+        self.row.win.set_selected(self.row, on)
+        if self.row.cell:
+            self.row.cell.show_check()
+
+    def set_visible(self, on):
+        self.visible = on
+        if self.row.cell:
+            self.row.cell.show_check()
+
+    def get_visible(self):
+        return self.visible
+
+
+class TrackRow:
+    """A song in a list: what it is, where it is, and how its row looks (playing, picked, its mark)."""
+
     def __init__(self, win, track, index, removable=False, in_queue=False, group=None, extra=""):
-        super().__init__()
         self.win, self.track, self.index, self.in_queue = win, track, index, in_queue
         self.group = group   # the list of songs this row is one of: picking it plays on through them
+        self.removable, self.extra = removable, extra
+        self.classes = set()
+        self.check = _Check(self)
+        self.cell = None         # the TrackCell showing it, while it's in view
+        self.list = None         # the SongList it's in
+        self.mark_state = None   # worked out when it comes into view (it asks the disk)
+
+    def get_parent(self):
+        return self.list
+
+    def add_css_class(self, name):
+        self.classes.add(name)
+        if self.cell:
+            self.cell.add_css_class(name)
+
+    def remove_css_class(self, name):
+        self.classes.discard(name)
+        if self.cell:
+            self.cell.remove_css_class(name)
+
+    def has_css_class(self, name):
+        return name in self.classes
+
+    def mark_now(self):
+        win, track, vid = self.win, self.track, self.track["id"]
+        return ("file" if source_of(track) == "file" else "remove" if self.removable else "saved" if win.lib.has(vid)
+                else "busy" if win.dl.busy(vid) else "missing" if win.lib.recently_missing(vid) else "download")
+
+    def update_mark(self):
+        """The mark at the end of the row: saved, saving, not on Tidal, or a download button.
+        Out of view, it's worked out again when the row comes into view."""
+        if not self.cell:
+            self.mark_state = None
+            return
+        state = self.mark_now()
+        if state != self.mark_state:
+            self.mark_state = state
+            self.cell.set_mark(state)
+
+    def show_check(self, on, picked=False):
+        self.check.set_visible(on)
+        self.check.set_active(picked)
+
+
+class TrackCell(Gtk.Box):
+    """The widget a song list shows a song in; it shows one song after another as you scroll."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.row, self.binding, self.shown_classes, self.mark = win, None, False, set(), None
+        Gtk.Box.add_css_class(self, "song")
         menu = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)   # right-click: play next, add to queue…
-        menu.connect("pressed", lambda _g, _n, x, y: win.track_menu(self, x, y))
+        menu.connect("pressed", lambda _g, _n, x, y: self.row and win.track_menu(self.row, x, y))
         self.add_controller(menu)
         ctrl = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)     # Ctrl+click: select it
         ctrl.connect("pressed", self.on_press)
@@ -4360,40 +4521,83 @@ class TrackRow(Gtk.ListBoxRow):
         box = Gtk.Box(spacing=10)
         self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=False)
         self.check.add_css_class("pick")
-        self.check.connect("toggled", lambda c: win.set_selected(self, c.get_active()))
+        self.check.connect("toggled", lambda c: not self.binding and self.row and self.row.check.set_active(c.get_active()))
         box.append(self.check)
-        frame, pic = art_widget(42)
-        win.art.apply(pic, track)
+        frame, self.pic = art_widget(42)
         box.append(frame)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
-        title = Gtk.Label(label=track["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
-        title.add_css_class("title")
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.title.add_css_class("title")
         sub = Gtk.Box()
-        sub.append(artist_link(win, track["artist"]))
-        rest = "".join(f" · {x}" for x in (fmt_time(track["duration"]) if track.get("duration") else "", extra) if x)
-        if rest:
-            more = Gtk.Label(label=rest, xalign=0)
-            more.add_css_class("sub")
-            sub.append(more)
-        text.append(title)
+        self.artist = artist_link(win, "")
+        sub.append(self.artist)
+        self.more = Gtk.Label(xalign=0)
+        self.more.add_css_class("sub")
+        sub.append(self.more)
+        text.append(self.title)
         text.append(sub)
         box.append(text)
-        self.box, self.removable, self.mark, self.mark_state = box, removable, None, None
-        self.update_mark()
-        self.set_child(box)
+        self.box = box
+        self.append(box)
 
-    def update_mark(self):
-        """The mark at the end of the row: saved, saving, not on Tidal, or a download button."""
-        win, track, vid = self.win, self.track, self.track["id"]
-        state = ("file" if source_of(track) == "file" else "remove" if self.removable else "saved" if win.lib.has(vid)
-                 else "busy" if win.dl.busy(vid) else "missing" if win.lib.recently_missing(vid) else "download")
-        if state == self.mark_state:
-            return
-        self.mark_state = state
+    def bind(self, row):
+        if row.cell is not None and row.cell is not self:
+            row.cell.row = None
+        self.row, row.cell = row, self
+        t = row.track
+        self.title.set_label(t["title"])
+        set_link_text(self.artist, t["artist"])
+        rest = "".join(f" · {x}" for x in (fmt_time(t["duration"]) if t.get("duration") else "", row.extra) if x)
+        self.more.set_label(rest)
+        self.more.set_visible(bool(rest))
+        self.pic.clear()
+        self.win.art.apply(self.pic, t)
+        for c in self.shown_classes - row.classes:
+            self.remove_css_class(c)
+        for c in row.classes - self.shown_classes:
+            self.add_css_class(c)
+        self.shown_classes = set(row.classes)
+        self.show_check()
+        row.mark_state = None
+        row.update_mark()
+
+    def unbind(self):
+        if self.row is not None and self.row.cell is self:
+            self.row.cell = None
+        self.row = None
+
+    def add_css_class(self, name):
+        self.shown_classes.add(name)
+        super().add_css_class(name)
+
+    def remove_css_class(self, name):
+        self.shown_classes.discard(name)
+        super().remove_css_class(name)
+
+    def show_check(self):
+        self.binding = True
+        self.check.set_visible(self.row.check.visible if self.row else False)
+        self.check.set_active(self.row.check.active if self.row else False)
+        self.binding = False
+
+    def set_mark(self, state):
+        """The mark for state, made once per cell and reused (its buttons act on the song shown)."""
         if self.mark is not None:
             self.box.remove(self.mark)
+        if not hasattr(self, "marks"):
+            self.marks = {}
+        mark = self.marks.get(state, False)
+        if mark is False:
+            mark = self.marks[state] = self.make_mark(state)
+        self.mark = mark
+        if mark is not None:
+            self.box.append(mark)
+
+    def make_mark(self, state):
+        win = self.win
         if state == "remove":
-            mark = icon_button("user-trash-symbolic", "row-action", "Remove download", lambda: win.remove_download(vid))
+            mark = icon_button("user-trash-symbolic", "row-action", "Remove download",
+                               lambda: self.row and win.remove_download(self.row.track["id"]))
         elif state == "saved":
             mark = Gtk.Label(label="✓", tooltip_text="Downloaded: plays without data")
             mark.add_css_class("saved")
@@ -4403,23 +4607,130 @@ class TrackRow(Gtk.ListBoxRow):
             mark = Gtk.Label(label="–", tooltip_text="No lossless copy on Tidal: skipped")
             mark.add_css_class("pending")
         elif state == "download":
-            mark = icon_button("folder-download-symbolic", "row-action", "Download in FLAC", lambda: win.download_only(track))
+            mark = icon_button("folder-download-symbolic", "row-action", "Download in FLAC",
+                               lambda: self.row and win.download_only(self.row.track))
         else:
             mark = None
-        self.mark = mark
-        if mark is not None:
-            self.box.append(mark)
+        return mark
 
     def on_press(self, gesture, _n, _x, _y):
+        row = self.row
         state = gesture.get_current_event_state()
-        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK) and self.group is not None:
+        if row and state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK) and row.group is not None:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self.win.start_selecting(self, extend=bool(state & Gdk.ModifierType.SHIFT_MASK))
+            self.win.start_selecting(row, extend=bool(state & Gdk.ModifierType.SHIFT_MASK))
 
-    def show_check(self, on, picked=False):
-        self.check.set_visible(on)
-        if self.check.get_active() != picked:
-            self.check.set_active(picked)
+
+class _Entry:
+    """One place in a SongList: a song (TrackRow), a widget, or what makes a widget when it's first seen."""
+    __slots__ = ("thing", "build")
+
+    def __init__(self, thing, build=None):
+        self.thing, self.build = thing, build
+
+
+class SongList(Gtk.ListView):
+    """A list of songs (and the headings, buttons and playlists among them) that makes only the
+    rows in view. It takes what a Gtk.ListBox was given: append(row), remove_all()."""
+
+    def __init__(self, win, on_activate):
+        # The model is only the places' numbers, as strings (made in C, a GObject only for the
+        # few places in view); what's in each place is self.entries[n].
+        self.store = Gtk.StringList()
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("bind", self._bind)
+        factory.connect("unbind", self._unbind)
+        super().__init__(model=Gtk.NoSelection(model=self.store), factory=factory, single_click_activate=True)
+        self.win, self.entries, self.waiting, self.flushing = win, [], [], 0
+        self.connect("activate", lambda _v, pos: self._activate(pos, on_activate))
+
+    # ---- what's in it ----
+    def append(self, thing):
+        """A TrackRow, or any widget (it's shown as it is)."""
+        self._add(_Entry(thing))
+
+    def append_lazy(self, build):
+        """A widget made by build() when it first comes into view (headings in a long list)."""
+        self._add(_Entry(None, build))
+
+    def _add(self, entry):
+        if isinstance(entry.thing, TrackRow):
+            entry.thing.list = self
+        self.entries.append(entry)
+        self.waiting.append(entry)
+        if not self.flushing:   # into the list in one go, before the next frame
+            self.flushing = GLib.idle_add(self._flush_soon, priority=GLib.PRIORITY_HIGH_IDLE)
+
+    def _flush_soon(self):
+        self.flushing = 0
+        self.flush()
+        return False
+
+    def flush(self):
+        """What was appended, into the list now."""
+        if self.flushing:
+            GLib.source_remove(self.flushing)
+            self.flushing = 0
+        if self.waiting:
+            n = self.store.get_n_items()
+            count, self.waiting = len(self.waiting), []
+            self.store.splice(n, 0, [str(i) for i in range(n, n + count)])
+
+    def remove_all(self):
+        for e in self.entries:
+            if isinstance(e.thing, TrackRow):
+                e.thing.list = None
+        self.entries, self.waiting = [], []
+        if self.flushing:
+            GLib.source_remove(self.flushing)
+            self.flushing = 0
+        self.store.splice(0, self.store.get_n_items(), [])
+
+    def is_empty(self):
+        return not self.entries
+
+    def track_rows(self):
+        return [e.thing for e in self.entries if isinstance(e.thing, TrackRow)]
+
+    # ---- showing it ----
+    def _bind(self, _f, item):
+        entry = self.entries[int(item.get_item().get_string())]
+        if isinstance(entry.thing, TrackRow):
+            cell = item.get_child()
+            if not isinstance(cell, TrackCell):   # this place showed a heading before: a row widget for it
+                cell = TrackCell(self.win)
+                item.set_child(cell)
+            cell.bind(entry.thing)
+            item.set_activatable(True)
+            return
+        if entry.thing is None and entry.build:
+            entry.thing, entry.build = entry.build(), None
+        widget = entry.thing
+        holder = getattr(widget, "holder", None)
+        if holder is not None and holder is not item and holder.get_child() is widget:
+            holder.set_child(None)   # still in the place it was shown in before: out of it first
+        widget.holder = item
+        if isinstance(widget, Gtk.ListBoxRow):
+            widget.set_focusable(False)   # the list's place takes the focus, not a ListBoxRow outside a ListBox
+        item.set_child(widget)
+        item.set_activatable(widget.get_activatable() if isinstance(widget, Gtk.ListBoxRow) else False)
+
+    def _unbind(self, _f, item):
+        child = item.get_child()
+        if isinstance(child, TrackCell):
+            child.unbind()
+            return
+        if child is not None and getattr(child, "holder", None) is item:
+            child.holder = None
+            item.set_child(None)
+
+    def _activate(self, pos, on_activate):
+        self.flush()
+        if pos >= self.store.get_n_items():
+            return
+        thing = self.entries[pos].thing
+        if thing is not None:
+            on_activate(thing)
 
 
 class PlaylistRow(Gtk.ListBoxRow):
@@ -4729,6 +5040,7 @@ class MusicWindow(Adw.ApplicationWindow):
         # ---- now playing ----
         player = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         player.add_css_class("player")
+        self.player_bar = player   # the cover's colour goes on it (App.apply_tint)
         row = Gtk.Box(spacing=12)
         frame, self.np_art = art_widget(56)
         row.append(frame)
@@ -5198,9 +5510,8 @@ class MusicWindow(Adw.ApplicationWindow):
 
     # ---- tabs & lists ----
     def track_list(self, key):
-        lst = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True)
+        lst = SongList(self, lambda row: self.on_row(key, row))
         lst.add_css_class("tracks")
-        lst.connect("row-activated", lambda _l, row: self.on_row(key, row))
         setattr(self, f"{key}_list", lst)
         return lst
 
@@ -5280,9 +5591,11 @@ class MusicWindow(Adw.ApplicationWindow):
         return row
 
     def section(self, lst, label):
-        lab = Gtk.Label(label=label, xalign=0, ellipsize=Pango.EllipsizeMode.END)
-        lab.add_css_class("section")
-        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=lab))
+        def build():
+            lab = Gtk.Label(label=label, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            lab.add_css_class("section")
+            return Gtk.ListBoxRow(activatable=False, selectable=False, child=lab)
+        lst.append_lazy(build)
 
     def head_row(self, lst, title, sub, thumb_track=None, round_=False, icon="avatar-default-symbolic"):
         """The top of an artist's or album's page: the picture, the name, a line under it."""
@@ -5329,11 +5642,9 @@ class MusicWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def rows(lst):
-        child = lst.get_first_child() if lst else None
-        while child:
-            if isinstance(child, TrackRow):
-                yield child
-            child = child.get_next_sibling()
+        """The songs in lst (TrackRows), whether in view or not."""
+        if isinstance(lst, SongList):
+            yield from lst.track_rows()
 
     # Long lists (a big music folder has thousands of songs) get their rows as you scroll: each
     # row costs a few tenths of a millisecond to make and lay out, so all of them at once froze
@@ -5345,6 +5656,10 @@ class MusicWindow(Adw.ApplicationWindow):
     def lazy(self, lst, n, add, first=0):
         """Rows 0..n-1 at the end of lst, each made by add(i): the first LAZY_FIRST (or first) now,
         more as you scroll near the bottom. A rebuild of lst drops what was still to come."""
+        if isinstance(lst, SongList):   # it makes rows as they come into view itself
+            for i in range(n):
+                add(i)
+            return
         if not hasattr(self, "_lazy"):
             self._lazy = {}
         st = {"made": 0, "want": 0, "pump": False}
@@ -5500,7 +5815,7 @@ class MusicWindow(Adw.ApplicationWindow):
             tracks = a.most_played()
         # The same songs in the same order as shown: only the marks may have changed.
         sig = (view, sort, tuple(t["id"] for t in tracks), a.lastfm.connected and bool(a.fm_top[1]))
-        if sig == getattr(self, "_music_sig", None) and lst.get_first_child() is not None:
+        if sig == getattr(self, "_music_sig", None) and not lst.is_empty():
             self.refresh_count()
             self.mark_rows()
             return
@@ -5543,6 +5858,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.add_track(lst, t, i, tracks, removable=view == "all" and self.lib.has(t["id"]), extra=extra)
         self.lazy(lst, len(tracks), add, first=made)
         if keep:   # the same list with a song more or less: stay where you were in it
+            lst.flush()
             GLib.idle_add(lambda: (sw.get_vadjustment().set_value(keep), False)[1])
 
     def refresh_dj(self):
@@ -5681,7 +5997,11 @@ class MusicWindow(Adw.ApplicationWindow):
         return box
 
     def group_head(self, lst, title, sub=None):
-        """A heading in All sorted by artist (click it for the artist's page) or by album."""
+        """A heading in All sorted by artist (click it for the artist's page) or by album;
+        made when it comes into view (All sorted by artist has hundreds)."""
+        lst.append_lazy(lambda: self._group_head(title, sub))
+
+    def _group_head(self, title, sub):
         label = Gtk.Label(label=title, xalign=0, ellipsize=Pango.EllipsizeMode.END)
         label.add_css_class("group-head")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -5695,7 +6015,7 @@ class MusicWindow(Adw.ApplicationWindow):
             btn.add_css_class("flat")
             btn.connect("clicked", lambda _b: self.open_artist(title))
             box = btn
-        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
+        return Gtk.ListBoxRow(activatable=False, selectable=False, child=box)
 
     def refresh_playlists(self):
         lst = self.music_list
@@ -5942,6 +6262,7 @@ class MusicWindow(Adw.ApplicationWindow):
     def select_bar(self):
         bar = Gtk.Box(spacing=4)
         bar.add_css_class("selectbar")
+        self.select_box = bar
         self.picked_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
         self.picked_label.add_css_class("picked")
         bar.append(self.picked_label)
@@ -6202,7 +6523,10 @@ class MusicWindow(Adw.ApplicationWindow):
         """Right-click on a song: play it next, queue it, or take it out of the queue."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         pop = Gtk.Popover(child=box, has_arrow=False, position=Gtk.PositionType.BOTTOM)
-        pop.set_parent(row)
+        anchor = row.cell or row.list if isinstance(row, TrackRow) else row
+        if anchor is None:
+            return
+        pop.set_parent(anchor)
         spot = Gdk.Rectangle()
         spot.x, spot.y, spot.width, spot.height = int(x), int(y), 1, 1
         pop.set_pointing_to(spot)
@@ -6218,7 +6542,7 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         item("Play next", lambda: self.app.enqueue([t], "next"))
         item("Add to queue", lambda: self.app.enqueue([t], "queue"))
-        item("Add to playlist…", lambda: self.playlist_menu(row, [t], x, y))
+        item("Add to playlist…", lambda: self.playlist_menu(anchor, [t], x, y))
         for name in split_artists(t["artist"])[:3]:
             item(f"Go to {name}", lambda name=name: self.open_artist(name, prefer=source_of(t)))
         if row.in_queue and row.index != self.app.index:
@@ -6233,10 +6557,13 @@ class MusicWindow(Adw.ApplicationWindow):
         pop.popup()
 
     def focused_track_row(self):
+        """The song with the keyboard focus (its TrackRow), if a song has it."""
         focus = self.get_focus()
-        while focus and not isinstance(focus, TrackRow):
+        if focus is not None and isinstance(focus.get_first_child(), TrackCell):   # a song list's place
+            return focus.get_first_child().row
+        while focus and not isinstance(focus, TrackCell):
             focus = focus.get_parent()
-        return focus
+        return focus.row if focus else None
 
     def refresh_results(self):
         if self.results or self.result_artists or self.result_albums:
@@ -6926,7 +7253,16 @@ def wrapped_data(app, period, progress):
                     path = ""
             out.append((*item[:3], path, *item[4:]))
         data[key] = out
+    progress("Getting the pictures ready…")
+    for path in [data.get("artist_image")] + [item[3] for key in ("songs", "albums") for item in data[key]]:
+        if path and path not in WRAPPED_PICS:
+            WRAPPED_PICS[path] = decode_picture(path, 720)   # big enough for full screen
     return data
+
+
+# Wrapped's pictures, read on the loading thread (reading them while the slides were made
+# froze the window each time you switched between Week, Month, Year and All time).
+WRAPPED_PICS = {}
 
 
 def bars(values, labels=None, height=110, top=None):
@@ -7008,9 +7344,11 @@ def w_picture(path, px, round_=False):
     if round_:
         frame.add_css_class("w-round")
     frame.set_halign(Gtk.Align.START)
-    tex = load_texture(path, px * 2) if path else None
-    if tex:
-        pic.set_from_paintable(tex)
+    if path:
+        pb = WRAPPED_PICS.get(path)
+        tex = texture_of(pb) if pb is not None else load_texture(path, px * 2)
+        if tex:
+            pic.set_from_paintable(tex)
     return frame
 
 
@@ -7116,7 +7454,7 @@ class WrappedWindow(Adw.Window):
             self.k = k
             if self.data:   # draw the slides again at the new size, staying on the same one
                 at = round(self.carousel.get_position())
-                self.show(self.data, None)
+                self.show(self.data, None, now=True)
                 n = self.carousel.get_n_pages()
                 if n:
                     GLib.idle_add(lambda: (self.carousel.scroll_to(self.carousel.get_nth_page(min(at, n - 1)), False),
@@ -7179,7 +7517,8 @@ class WrappedWindow(Adw.Window):
     def px(self, n):
         return round(n * self.k)
 
-    def show(self, d, err):
+    def show(self, d, err, now=False):
+        self.seq += 1 if now else 0
         self.clear()
         if err:
             s = self.slide(4)
@@ -7198,10 +7537,23 @@ class WrappedWindow(Adw.Window):
             s.append(w_label("No scrobbles here yet", "w-big"))
             s.append(w_label("Play some music and come back: everything you play is scrobbled to Last.fm.", "w-sub"))
             return
-        if d["period"] == "all":
-            self.all_time(d)
+        slides = self.all_time(d) if d["period"] == "all" else self.period_slides(d)
+        seq = self.seq
+
+        def step():
+            if seq != self.seq:
+                return False   # another period was picked meanwhile
+            try:
+                next(slides)
+                return True
+            except StopIteration:
+                return False
+        step()   # the first slide now, the others one a frame: no freeze while they're made
+        if now:
+            while step():
+                pass
         else:
-            self.period_slides(d)
+            GLib.idle_add(step)
 
     def set_tabs(self, period):
         self.picking = True
@@ -7265,6 +7617,7 @@ class WrappedWindow(Adw.Window):
             s.append(chip)
         s.append(w_label("Click, or press →, to start · F11 for full screen", "w-small"))
 
+        yield
         s = self.slide(1)
         s.append(w_label("YOU LISTENED FOR", "w-kicker"))
         s.append(w_label(f"{d['minutes']:,}", "w-huge"))
@@ -7277,6 +7630,7 @@ class WrappedWindow(Adw.Window):
                          (f"{round(d['minutes'] / d['span_days']):,}", "minutes a day")))
 
         if d["genres"]:
+            yield
             s = self.slide(2)
             s.append(w_label("YOUR TOP GENRE", "w-kicker"))
             s.append(w_label(d["genres"][0], "w-big w-accent"))
@@ -7290,6 +7644,7 @@ class WrappedWindow(Adw.Window):
             s.append(more)
 
         name, plays = d["artists"][0]
+        yield
         s = self.slide(3)
         s.append(w_label("YOUR TOP ARTIST", "w-kicker"))
         s.append(w_picture(d.get("artist_image"), self.px(230), round_=True))
@@ -7301,6 +7656,7 @@ class WrappedWindow(Adw.Window):
             title, n = d["top_artist_song"]
             s.append(w_label(f"Most of all, “{title}”: {n:,} plays", "w-small"))
 
+        yield
         s = self.slide(4)
         s.append(w_label("YOUR TOP ARTISTS", "w-kicker"))
         s.append(w_label(f"#1 of {d['artist_count']:,}", "w-mid w-accent"))
@@ -7309,6 +7665,7 @@ class WrappedWindow(Adw.Window):
         s.append(lst)
 
         title, artist, plays, art, first = d["songs"][0]
+        yield
         s = self.slide(5)
         s.append(w_label("YOUR TOP SONG", "w-kicker"))
         s.append(w_picture(art, self.px(240)))
@@ -7316,6 +7673,7 @@ class WrappedWindow(Adw.Window):
         s.append(w_label(artist, "w-sub"))
         s.append(w_label(f"{plays:,} plays · first played on {day_label(datetime.fromtimestamp(first))}", "w-small"))
 
+        yield
         s = self.slide(6)
         s.append(w_label("YOUR TOP SONGS", "w-kicker"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
@@ -7324,6 +7682,7 @@ class WrappedWindow(Adw.Window):
 
         if d["albums"]:
             album, artist, plays, art = d["albums"][0]
+            yield
             s = self.slide(7)
             s.append(w_label("YOUR TOP ALBUM", "w-kicker"))
             s.append(w_picture(art, self.px(220)))
@@ -7347,6 +7706,7 @@ class WrappedWindow(Adw.Window):
         morning = sum(hours[h] for h in range(5, 10))
         kind_of = ("Night owl" if night > 0.25 * d["scrobbles"] else "Early bird" if morning > 0.3 * d["scrobbles"]
                    else "Daytime listener")
+        yield
         s = self.slide(0)
         s.append(w_label("WHEN YOU LISTEN", "w-kicker"))
         s.append(w_label(kind_of, "w-big w-accent"))
@@ -7357,6 +7717,7 @@ class WrappedWindow(Adw.Window):
         s.append(w_label(f"And most of all on {WEEKDAYS[day]}.", "w-sub"))
         s.append(bars(d["weekdays"], WEEK_LETTERS, height=self.px(50), top=day))
 
+        yield
         s = self.slide(1)
         if kind == "year":
             months = d["months"]
@@ -7377,6 +7738,7 @@ class WrappedWindow(Adw.Window):
                       else [str(i + 1) if i % 7 == 0 else "" for i in range(len(daily))])
             s.append(bars(daily, labels, height=self.px(150), top=best))
 
+        yield
         s = self.slide(2)
         s.append(w_label("MOMENTS", "w-kicker"))
         busiest = datetime.fromisoformat(d["busiest"])
@@ -7388,6 +7750,7 @@ class WrappedWindow(Adw.Window):
         for big, small in moments:
             s.append(w_label(big, "w-big"))
             s.append(w_label(small, "w-sub"))
+        yield
         self.summary(d, period_name(period).upper())
 
     def all_time(self, d):
@@ -7400,6 +7763,7 @@ class WrappedWindow(Adw.Window):
         s.append(w_label(f"{user} · {d['scrobbles']:,} scrobbles", "w-sub"))
         s.append(w_label("Click, or press →, to start · F11 for full screen", "w-small"))
 
+        yield
         s = self.slide(1)
         s.append(w_label("YOU'VE LISTENED FOR ABOUT", "w-kicker"))
         s.append(w_label(f"{d['minutes']:,}", "w-huge"))
@@ -7411,6 +7775,7 @@ class WrappedWindow(Adw.Window):
                          (f"{round(d['minutes'] / (years * 365)):,}", "minutes a day")))
 
         if d["genres"]:
+            yield
             s = self.slide(2)
             s.append(w_label("YOUR GENRES", "w-kicker"))
             s.append(w_label(d["genres"][0], "w-big w-accent"))
@@ -7419,6 +7784,7 @@ class WrappedWindow(Adw.Window):
                 s.append(w_label(g, "w-sub"))
 
         name, plays = d["artists"][0]
+        yield
         s = self.slide(3)
         s.append(w_label("YOUR ARTIST OF ALL TIME", "w-kicker"))
         s.append(w_picture(d.get("artist_image"), self.px(230), round_=True))
@@ -7428,6 +7794,7 @@ class WrappedWindow(Adw.Window):
         self.ranked(lst, [(n, "", p) for n, p in d["artists"][1:5]], meter=True)
         s.append(lst)
 
+        yield
         s = self.slide(5)
         s.append(w_label("YOUR SONGS OF ALL TIME", "w-kicker"))
         lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
@@ -7435,6 +7802,7 @@ class WrappedWindow(Adw.Window):
         s.append(lst)
 
         if d["albums"]:
+            yield
             s = self.slide(7)
             s.append(w_label("YOUR ALBUMS OF ALL TIME", "w-kicker"))
             lst = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12)
@@ -7443,12 +7811,14 @@ class WrappedWindow(Adw.Window):
 
         counts = d["years_count"]
         best = max(range(len(counts)), key=lambda i: counts[i][1])
+        yield
         s = self.slide(1)
         s.append(w_label("YEAR BY YEAR", "w-kicker"))
         s.append(w_label(f"{counts[best][0]} was your year", "w-big"))
         s.append(w_label(f"{counts[best][1]:,} scrobbles.", "w-sub"))
         s.append(bars([n for _y, n in counts], [f"’{str(y)[2:]}" if len(counts) <= 14 or i % 2 == 0 else ""
                                                 for i, (y, _n) in enumerate(counts)], height=self.px(150), top=best))
+        yield
         self.summary(d, "ALL TIME")
 
     def summary(self, d, title):
@@ -8023,16 +8393,23 @@ class MusicApp(Adw.Application):
         in_thread(art_color, path, done=lambda rgb, _e: path == self.tint_path and self.apply_tint(rgb))
 
     def apply_tint(self, rgb):
-        display = Gdk.Display.get_default()
-        if not display:
-            return
-        if self.tint_provider:
-            Gtk.StyleContext.remove_provider_for_display(display, self.tint_provider)
-            self.tint_provider = None
-        if rgb:
-            self.tint_provider = Gtk.CssProvider()
-            self.tint_provider.load_from_string(tint_css(rgb, self.theme["c"].get("mode") == "light"))
-            Gtk.StyleContext.add_provider_for_display(display, self.tint_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+        """The colours go on the window, the player bar and the select bar only. A stylesheet for
+        the whole display made GTK work out the style of every widget again, every row of every
+        list, a long stall a moment after each song started."""
+        import warnings
+        widgets = [w for w in ((self.win, getattr(self.win, "player_bar", None), getattr(self.win, "select_box", None))
+                               if self.win else ()) if w is not None]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # a widget's own style provider: deprecated, and the cheap way
+            if self.tint_provider:
+                for w in widgets:
+                    w.get_style_context().remove_provider(self.tint_provider)
+                self.tint_provider = None
+            if rgb:
+                self.tint_provider = Gtk.CssProvider()
+                self.tint_provider.load_from_string(tint_css(rgb, self.theme["c"].get("mode") == "light"))
+                for w in widgets:
+                    w.get_style_context().add_provider(self.tint_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
 
     def set_art_colors(self, on):
         self.art_colors = on
@@ -9399,6 +9776,10 @@ def spotify_login():
 
 def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # Threads (yt-dlp looking up a stream, a download, Wrapped adding up a year) take turns with
+    # the UI thread for Python's lock; by default each turn is 5 ms, long enough that a frame
+    # waiting for a few of them stutters. A shorter turn keeps the window smooth.
+    sys.setswitchinterval(0.001)
     args = sys.argv[1:]
     if args[:1] and args[0] in ("help", "--help", "-h"):
         print(__doc__.strip())

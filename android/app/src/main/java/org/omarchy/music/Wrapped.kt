@@ -7,12 +7,15 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.PairSerializer
 import java.io.File
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.YearMonth
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
-/** Wrapped: your year in music (or all of it) from your Last.fm history, the desktop's
+/** Wrapped: your week, month or year in music (or all of it) from your Last.fm history, the desktop's
  *  numbers worked out the same way, with the Spotify plays you imported (SpotifyHistory)
  *  that Last.fm hasn't got. A big year takes a minute the first time (Last.fm hands out
  *  200 scrobbles a request); then it's kept and only the new ones are read. */
@@ -36,16 +39,77 @@ object Wrapped {
         return if (now.monthValue >= 3) now.year else now.year - 1
     }
 
+    /** What a Wrapped is of: a year, a month, a week (from its Monday) or all time. */
+    sealed class Period {
+        data class Year(val year: Int) : Period()
+        data class Month(val month: YearMonth) : Period()
+        data class Week(val monday: LocalDate) : Period()
+        data object All : Period()
+
+        val kind: String get() = when (this) { is Year -> "year"; is Month -> "month"; is Week -> "week"; All -> "all" }
+        fun start(): LocalDate = when (this) {
+            is Year -> LocalDate.of(year, 1, 1); is Month -> month.atDay(1); is Week -> monday; All -> LocalDate.of(1970, 1, 1)
+        }
+        fun end(): LocalDate = when (this) {
+            is Year -> LocalDate.of(year + 1, 1, 1); is Month -> month.plusMonths(1).atDay(1)
+            is Week -> monday.plusDays(7); All -> LocalDate.now().plusDays(1)
+        }
+        /** "2026", "October 2026", "Week of Oct 19–25", "All time". */
+        val name: String get() = when (this) {
+            is Year -> "$year"; is Month -> "${Wrapped.MONTH_NAMES[month.monthValue - 1]} ${month.year}"
+            is Week -> "Week of ${Wrapped.weekSpan(monday)}"; All -> "All time"
+        }
+        /** The big word on the first slide: "2026", "October", "Oct 19–25". */
+        val title: String get() = when (this) {
+            is Year -> "$year"; is Month -> Wrapped.MONTH_NAMES[month.monthValue - 1]; is Week -> Wrapped.weekSpan(monday); All -> "ALL TIME"
+        }
+        /** For "your first song of …": "2026", "October", "the week". */
+        val of: String get() = when (this) {
+            is Year -> "$year"; is Month -> Wrapped.MONTH_NAMES[month.monthValue - 1]; is Week -> "the week"; All -> "all time"
+        }
+        /** Its kept scrobbles' file name (a year's is the same as before weeks and months). */
+        val key: String get() = when (this) { is Year -> "$year"; is Month -> "m$month"; is Week -> "w$monday"; All -> "all" }
+
+        companion object {
+            fun current(kind: String): Period = when (kind) {
+                "week" -> Week(LocalDate.now().with(DayOfWeek.MONDAY)); "month" -> Month(YearMonth.now())
+                "year" -> Year(Wrapped.year()); else -> All
+            }
+
+            /** What the picker offers for a kind, the newest first: the last 12 weeks or months, or the years. */
+            fun choices(kind: String, years: List<Int>): List<Pair<Period, String>> = when (kind) {
+                "year" -> years.map { Year(it) to "$it" }
+                "month" -> (0L until 12L).map { YearMonth.now().minusMonths(it) }
+                    .map { Month(it) to "${Wrapped.MONTH_NAMES[it.monthValue - 1]} ${it.year}" }
+                "week" -> (0L until 12L).map { i ->
+                    val m = LocalDate.now().with(DayOfWeek.MONDAY).minusWeeks(i)
+                    Week(m) to when (i) { 0L -> "This week"; 1L -> "Last week"; else -> Wrapped.weekSpan(m) }
+                }
+                else -> emptyList()
+            }
+        }
+    }
+
+    /** "Oct 19–25", or "Dec 28–Jan 3" across two months. */
+    fun weekSpan(monday: LocalDate): String {
+        val sunday = monday.plusDays(6)
+        return if (monday.month == sunday.month) "${MONTHS[monday.monthValue - 1]} ${monday.dayOfMonth}–${sunday.dayOfMonth}"
+        else "${MONTHS[monday.monthValue - 1]} ${monday.dayOfMonth}–${MONTHS[sunday.monthValue - 1]} ${sunday.dayOfMonth}"
+    }
+
     data class Song(val title: String, val artist: String, val plays: Int, val art: String, val first: Long? = null)
     data class AlbumPlays(val name: String, val artist: String, val plays: Int, val art: String)
     data class Data(
-        val period: Int?, val user: String, val years: List<Int>, val since: Int, val empty: Boolean = false,
+        val period: Period, val user: String, val years: List<Int>, val since: Int, val empty: Boolean = false,
         val scrobbles: Int = 0, val artistCount: Int = 0, val songCount: Int = 0,
         val artists: List<Pair<String, Int>> = emptyList(), val songs: List<Song> = emptyList(), val albums: List<AlbumPlays> = emptyList(),
         val topArtistSong: Pair<String, Int>? = null, val months: List<Int> = List(12) { 0 }, val hours: List<Int> = List(24) { 0 },
         val weekdays: List<Int> = List(7) { 0 }, val streak: Int = 0, val days: Int = 0, val busiest: LocalDate? = null,
         val busiestN: Int = 0, val first: LastFm.Played? = null, val minutes: Int = 0, val genres: List<String> = emptyList(),
         val artistImage: String = "", val yearsCount: List<Pair<Int, Int>> = emptyList(),
+        // weeks and months: plays a day; every period: how many days it has had so far, whether it's
+        // still going, and how many scrobbles the same stretch before it had (to compare with)
+        val daily: List<Int> = emptyList(), val spanDays: Int = 0, val partial: Boolean = false, val prevCount: Int? = null,
     )
 
     @Serializable
@@ -80,6 +144,7 @@ object Wrapped {
 
     private fun local(t: Long) = LocalDateTime.ofInstant(Instant.ofEpochSecond(t), ZoneId.systemDefault())
     private fun startOf(y: Int) = LocalDate.of(y, 1, 1).atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
+    private fun epoch(d: LocalDate) = d.atStartOfDay(ZoneId.systemDefault()).toEpochSecond()
 
     private fun yearStats(base: Data, rows: List<Row>): Data {
         val artists = LinkedHashMap<String, Int>(); val songs = LinkedHashMap<Pair<String, String>, Int>()
@@ -173,17 +238,17 @@ object Wrapped {
         return score.entries.sortedByDescending { it.value }.take(5).map { genreName(it.key) }
     }
 
-    /** A year's scrobbles: kept, and only the new ones read from Last.fm. */
-    private fun scrobbles(dir: File, year: Int, progress: (String) -> Unit): List<Row> {
-        val start = startOf(year)
-        val end = minOf(startOf(year + 1), now().toLong())
+    /** A period's scrobbles: kept, and only the new ones read from Last.fm. */
+    private fun scrobbles(dir: File, period: Period, progress: (String) -> Unit): List<Row> {
+        val start = epoch(period.start())
+        val end = minOf(epoch(period.end()), now().toLong())
         if (end <= start) return emptyList()
-        val file = File(dir, "${safeName(LastFm.user.lowercase())}-$year.json")
+        val file = File(dir, "${safeName(LastFm.user.lowercase())}-${period.key}.json")
         val saved = readText(file)?.let { runCatching { JSON.decodeFromString(Saved.serializer(), it) }.getOrNull() } ?: Saved()
         var rows = saved.rows
         val since = if (saved.until > 0) saved.until else start
         if (since < end - 60) {
-            val new = LastFm.recent(since, end) { p, n -> progress("Reading your $year scrobbles · page $p of $n") }
+            val new = LastFm.recent(since, end) { p, n -> progress("Reading your scrobbles · ${period.name} · page $p of $n") }
             val have = rows.map { it.t to it.title }.toHashSet()
             rows = (rows + new.filter { (it.time to it.title) !in have }.map { Row(it.time, it.artist, it.title, it.album, it.image) })
                 .sortedBy { it.t }
@@ -208,8 +273,8 @@ object Wrapped {
         return (rows + extra).sortedBy { it.t }
     }
 
-    /** Everything Wrapped shows for a year (or null: all time). It blocks. */
-    fun load(ctx: Context, period: Int?, progress: (String) -> Unit): Data {
+    /** Everything Wrapped shows for a period. It blocks. */
+    fun load(ctx: Context, period: Period, progress: (String) -> Unit): Data {
         val dir = File(ctx.filesDir, "wrapped").apply { mkdirs() }
         val fm = LastFm.connected
         val spotify = SpotifyHistory.plays
@@ -222,7 +287,7 @@ object Wrapped {
         val user = me?.name ?: (Music.sources["spotify"] as? Spotify)?.user?.ifEmpty { null } ?: "You"
         val base = Data(period, user, years, firstYear)
         var data: Data
-        if (period == null && spotify.isEmpty()) {   // Last.fm adds it all up: no need to read every scrobble
+        if (period == Period.All && spotify.isEmpty()) {   // Last.fm adds it all up: no need to read every scrobble
             val counts = years.reversed().map { y ->
                 progress("Counting your scrobbles · $y")
                 y to LastFm.count(startOf(y), startOf(y + 1))
@@ -235,12 +300,30 @@ object Wrapped {
                 albums = LastFm.top("album", 5).map { AlbumPlays(it.name, it.artist, it.plays, it.image) },
                 minutes = Math.round(me.playcount * 3.5).toInt())   // about three and a half minutes a song
         } else {
-            val rows = if (period == null)
-                withSpotify(if (fm) years.reversed().flatMap { scrobbles(dir, it, progress) } else emptyList(), Long.MIN_VALUE, Long.MAX_VALUE)
-            else withSpotify(if (fm) scrobbles(dir, period, progress) else emptyList(), startOf(period), startOf(period + 1))
+            val rows = if (period == Period.All)
+                withSpotify(if (fm) years.reversed().flatMap { scrobbles(dir, Period.Year(it), progress) } else emptyList(), Long.MIN_VALUE, Long.MAX_VALUE)
+            else withSpotify(if (fm) scrobbles(dir, period, progress) else emptyList(), epoch(period.start()), epoch(period.end()))
             if (rows.isEmpty()) return base.copy(empty = true)
             data = yearStats(base, rows)
-            if (period == null) {
+            if (period != Period.All) {
+                val start = epoch(period.start()); val naturalEnd = epoch(period.end())
+                val end = minOf(naturalEnd, now().toLong())
+                val first = period.start()
+                val daily = if (period is Period.Year) emptyList() else {   // day by day, for a week or a month
+                    val counts = IntArray(ChronoUnit.DAYS.between(first, period.end()).toInt())
+                    for (r in rows) {
+                        val i = ChronoUnit.DAYS.between(first, local(r.t).toLocalDate()).toInt()
+                        if (i in counts.indices) counts[i]++
+                    }
+                    counts.toList()
+                }
+                progress("Comparing with before…")
+                val length = naturalEnd - start   // as far into the period before as this one has gone
+                val prev = if (fm) runCatching { LastFm.count(start - length, start - length + (end - start)) }.getOrNull() else null
+                data = data.copy(daily = daily, spanDays = maxOf(1, ((end - start + 86399) / 86400).toInt()),
+                    partial = end < naturalEnd - 60, prevCount = prev)
+            }
+            if (period == Period.All) {
                 val perYear = rows.groupingBy { local(it.t).year }.eachCount()
                 data = data.copy(yearsCount = years.reversed().map { it to (perYear[it] ?: 0) })
             }
