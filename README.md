@@ -2,7 +2,7 @@
 
 A small music popup for [Omarchy](https://omarchy.org/) (Hyprland), themed live from the
 Omarchy theme. You browse YouTube Music, Tidal, Apple Music or Spotify, plus the music
-in your own folders. Everything plays in lossless FLAC from Tidal.
+in your own folders. Everything plays in lossless FLAC from Tidal where Tidal has it.
 
 It is a single Python/GTK 4 file: `omarchy-music`. It also runs on **Windows**, and there is
 an **Android** app.
@@ -16,6 +16,10 @@ an **Android** app.
 - **Four services, one player.** Switch between them at the top. Each song is matched on
   Tidal (by ISRC when the service has one, otherwise by title, artist and length) and
   **streamed in FLAC**, hi-res (up to 24-bit/192 kHz) where Tidal has it.
+- **Lossy only as a fallback.** A song Tidal has no FLAC of streams in what there is: Tidal's
+  AAC (320 kbps), else YouTube Music's own audio (Opus, about 130–160 kbps). The mark by the
+  controls then shows **AAC** or **Opus** instead of **⤓ FLAC**. Without Tidal, everything
+  streams from YouTube Music. Downloads are always FLAC.
 - **Download when you choose.** Click the **⤓ FLAC** mark next to the controls, or pick
   **Download** in a song's menu (or for a selection), to save the FLAC and play it from disk.
 - **Nothing downloads on its own.** **Keep** (in the accounts menu) saves every song you
@@ -26,10 +30,10 @@ an **Android** app.
 - **Local files.** Songs in your folders (`~/Music` to start; add more in the accounts menu)
   appear in the Music tab beside your downloads, with the covers they carry.
 - **Music tab:**
-  - **All:** every song in one list.
+  - **All:** every song in one list, sorted by **title**, **artist** or **album** (grouped
+    under headings; click an artist's for their page), or newest first (**Added**).
   - **Playlists:** your playlists.
   - **Recent:** recently played.
-  - **Added:** recently added.
   - **Most played:** a song counts after 30 seconds, or half of a shorter song.
 - **Playlists.** Create, rename and delete them, and add or remove songs. They are stored in
   `playlists.json`.
@@ -50,12 +54,19 @@ an **Android** app.
   Windows. The `omarchy-music`
   command has a CLI (`omarchy-music help`).
 - **Phone remote.** The Android app can play on the desktop instead of the phone (see below).
+- **Updates.** Each app checks GitHub for a new release at start and every 12 hours. When there
+  is one, **Update** appears at the top of the accounts menu; nothing installs until you pick
+  it. On Linux it moves your git clone to the release (if you haven't changed it) and runs
+  `install.sh` again; on Windows it runs the new installer, which reopens the app; on Android
+  the system installer asks you to confirm.
 
 ## Android app
 
 `android/` holds the Android version (Kotlin, Jetpack Compose, Media3). It has the same
 services, Tidal FLAC streaming and downloads, Music tab, playlists, EQ with the headphone
 curves, lyrics, Last.fm and Wrapped. It is a separate app, package `org.omarchy.music`.
+What's playing shows in the notification shade and on the lock screen, the desktop's song
+too while the phone is its remote.
 
 Build it with JDK 17+ and the Android SDK (platform 35):
 
@@ -151,7 +162,7 @@ Open the accounts menu with the ☰ button, or run `omarchy-music accounts`.
 
 - **YouTube Music / Apple Music.** Sign in at music.youtube.com and music.apple.com in
   Chromium (Firefox on Windows). The app reads those sign-ins from the browser's cookies.
-- **Tidal** (required for playback). Click **Connect**, or run `omarchy-music --tidal-login`.
+- **Tidal** (for FLAC; without it songs stream from YouTube Music). Click **Connect**, or run `omarchy-music --tidal-login`.
   Then sign in on Tidal's page and paste back the address it ends on. Lossless needs a Tidal
   subscription.
 - **Spotify** (optional). Spotify only lets each person use their own developer app:

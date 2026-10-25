@@ -25,6 +25,9 @@ done
 cp -r "$PREFIX/lib/$PY" "$OUT/lib/"
 rm -rf "$OUT/lib/$PY"/{test,idlelib,tkinter,turtledemo,ensurepip,lib2to3} "$OUT/lib/$PY"/site-packages/pip
 find "$OUT/lib/$PY" -name __pycache__ -type d -prune -exec rm -rf {} +
+# Python modules other MSYS2 packages brought along that the app never imports.
+rm -rf "$OUT/lib/$PY"/site-packages/{imath*,Imath*,OpenEXR*,numpy*,setuptools*,_distutils_hack,wheel*}
+echo "Python packages: $(ls "$OUT/lib/$PY/site-packages" | sed 's/-[0-9].*//' | sort -u | tr '\n' ' ')"
 
 # GObject introspection, image loaders, settings schemas, icons, fonts and TLS roots.
 cp -r "$PREFIX/lib/girepository-1.0" "$OUT/lib/"
@@ -72,4 +75,4 @@ cp docs/icon.png "$OUT/share/icons/hicolor/256x256/apps/org.omarchy.music.png"
 
 du -sh "$OUT"
 echo "$(ls "$OUT"/bin/*.dll | wc -l) DLLs. The biggest files:"
-find "$OUT" -type f -printf '%s\t%P\n' | sort -rn | head -25 | awk -F'\t' '{ printf "%8.1f MB  %s\n", $1 / 1048576, $2 }'
+find "$OUT" -type f -printf '%s\t%P\n' | sort -rn | awk -F'\t' 'NR <= 25 { printf "%8.1f MB  %s\n", $1 / 1048576, $2 }'
