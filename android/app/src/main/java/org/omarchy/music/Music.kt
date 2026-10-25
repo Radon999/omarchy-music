@@ -66,6 +66,8 @@ object Music {
     var eq by mutableStateOf(EqSettings())
     var lyricsMode by mutableStateOf("genius")
     var musicSort by mutableStateOf("title")   // how the Music tab's All is sorted: title, artist, album, added
+    var searchIn by mutableStateOf("tidal")    // where the search bar searches: tidal, ytm, local
+    var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
     var syncing by mutableStateOf(false)
@@ -135,7 +137,7 @@ object Music {
         val repeat: String = "off", val eq: EqSettings = EqSettings(), val source: String = "ytm",
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
-        val music_sort: String = "title",
+        val music_sort: String = "title", val search_in: String = "tidal",
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -154,6 +156,7 @@ object Music {
         artColors = st.art_colors
         keepPlayed = st.keep_played
         musicSort = st.music_sort
+        searchIn = st.search_in.takeIf { it in SEARCH_IN } ?: "tidal"
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -162,7 +165,7 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -211,6 +214,123 @@ object Music {
         }
         if (info == null && last != null) throw last!!
         return info
+    }
+
+    // ---- most played ----
+    private var fmTop: Pair<Double, List<Track>?> = 0.0 to null
+    private var fmTopBusy = false
+
+    /** The Music tab's Most played: your Last.fm top songs when Last.fm is connected (every
+     *  scrobble, from anywhere), else what you've played here. Until Last.fm's list comes,
+     *  the songs played here stand in. */
+    fun mostPlayed(): List<Track> = if (LastFm.connected) fmTop.second ?: plays.top() else plays.top()
+    val mostPlayedFromLastFm get() = LastFm.connected && fmTop.second != null
+
+    /** Ask Last.fm for your top songs, when the list is over ten minutes old. */
+    fun freshenMostPlayed() {
+        if (!LastFm.connected || fmTopBusy) return
+        val (at, songs) = fmTop
+        if (songs != null && now() - at < 600) return
+        fmTopBusy = true
+        bg({ lastFmTopSongs() }) { res, _ ->
+            fmTopBusy = false
+            if (res != null) fmTop = now() to res
+            else if (songs == null) fmTop = now() - 480 to null   // try again in two minutes
+            musicVersion++
+        }
+    }
+
+    /** (blocking) Your n most scrobbled songs: as you have them here when you do (saved, in your
+     *  folders, played), else to be found on Tidal when you play them. */
+    private fun lastFmTopSongs(n: Int = 200): List<Track> {
+        val mine = HashMap<Pair<String, String>, Track>()
+        for (t in plays.items.values.map { it.track } + mySongs()) mine[songKey(t)] = t   // yours on disk win over ones only played
+        return LastFm.top("track", n).map { x ->
+            val t = mine[songKey(Track("", title = x.name, artist = x.artist))] ?: run {
+                val sha = java.security.MessageDigest.getInstance("SHA-1").digest("${norm(x.artist)}|${norm(x.name)}".toByteArray())
+                Track("lfm-" + sha.joinToString("") { "%02x".format(it) }.take(16), "lastfm", x.name, x.artist,
+                    thumb = x.image.takeIf { LASTFM_BLANK !in it } ?: "")
+            }
+            t.copy(plays = x.plays)
+        }
+    }
+
+    // ---- importing an .m3u8 playlist ----
+    /** (blocking) The songs of the .m3u/.m3u8 playlist at uri: (name, songs, names not found).
+     *  Each is a file on the phone (where the playlist says, else one by the same name in the
+     *  same folder), else the same song in your music, else the best match on Tidal (YouTube
+     *  Music without it). */
+    fun importM3u(uri: android.net.Uri): Triple<String, List<Track>, List<String>> {
+        val cr = ctx.contentResolver
+        val fileName = runCatching {
+            cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Playlist"
+        val entries = readM3u(cr.openInputStream(uri)?.use { it.readBytes() } ?: error("couldn't open that file"))
+        if (entries.isEmpty()) error("no songs in $fileName")
+        // The playlist's own folder, for the paths in it that start from there ("../Album/01.flac").
+        val docId = runCatching { android.provider.DocumentsContract.getDocumentId(uri) }.getOrNull() ?: ""
+        val here = if (uri.authority == "com.android.externalstorage.documents") docId.substringAfter(':').substringBeforeLast('/', "") else ""
+        val phone = runCatching { local.everywhere() }.getOrDefault(emptyMap())
+        val byPath = phone.mapKeys { it.key.lowercase() }
+        val tails = HashMap<String, Track>()
+        for ((p, t) in phone) {
+            val parts = p.lowercase().split('/').filter { it.isNotEmpty() }
+            tails.putIfAbsent(parts.takeLast(2).joinToString("/"), t)
+            tails.putIfAbsent(parts.last(), t)
+        }
+        val mine = mySongs()
+        val byKey = HashMap<Pair<String, String>, Track>()
+        for (t in phone.values + mine) byKey.putIfAbsent(songKey(t), t)
+        val src = sources["tidal"]?.takeIf { it.signedIn } ?: sources["ytm"]
+        val out = ArrayList<Track>()
+        val missed = ArrayList<String>()
+        for ((i, e) in entries.withIndex()) {
+            importing = "Finding the songs of $fileName… ${i + 1} of ${entries.size}"
+            var t: Track? = null
+            var artist = e.artist
+            var title = e.title
+            if (Regex("^https?://").containsMatchIn(e.loc)) {
+                val from = linkSource(e.loc)?.let { sources[it] }
+                if (from != null) t = runCatching { from.search(e.loc).firstOrNull() }.getOrNull()
+            } else {
+                var where = (if (e.loc.startsWith("file://")) android.net.Uri.decode(e.loc.substring(7)) else e.loc).replace('\\', '/')
+                where = where.replace(Regex("^(/storage/emulated/\\d+|/sdcard|/storage/self/primary)/"), "")
+                val full = if (where.startsWith("/") || Regex("^[A-Za-z]:/").containsMatchIn(where)) where
+                    else java.io.File("/$here", where).normalize().path.removePrefix("/")
+                t = byPath[full.lowercase()]
+                if (t == null) {
+                    val parts = where.lowercase().split('/').filter { it.isNotEmpty() }
+                    t = tails[parts.takeLast(2).joinToString("/")] ?: tails[parts.lastOrNull() ?: ""]
+                }
+                if (title.isEmpty()) { val (a, b) = namesFromFile(where); artist = a; title = b }   // no #EXTINF
+            }
+            if (t == null && title.isNotEmpty()) t = byKey[songKey(Track("", title = title, artist = artist))]
+            if (t == null && title.isNotEmpty() && src != null) {
+                val hits = runCatching { src.search("$artist ${bareTitle(title)}".trim()).take(8) }.getOrDefault(emptyList())
+                t = bestMatch(hits, artist, title, e.seconds)
+            }
+            if (t != null) out += t.slim() else missed += if (artist.isNotEmpty()) "$artist - $title" else title.ifEmpty { e.loc }
+        }
+        return Triple(fileName.substringBeforeLast('.'), out, missed)
+    }
+
+    /** Make a playlist of yours from the .m3u8 at uri, named after the file. */
+    fun importPlaylist(uri: android.net.Uri) {
+        if (importing != null) { toast("Still importing the last one…"); return }
+        importing = "Reading the playlist…"
+        bg({ importM3u(uri) }) { res, err ->
+            importing = null
+            if (res == null) { toast("Couldn't import it: ${err?.message?.take(100)}"); return@bg }
+            val (name, tracks, missed) = res
+            if (tracks.isEmpty()) { toast("None of the ${missed.size} songs in “$name” were found"); return@bg }
+            val id = lists.create(name).id
+            lists.add(id, tracks)
+            musicVersion++
+            missed.forEach { android.util.Log.i("omarchy-music", "import $name: not found: $it") }
+            toast("Imported “$name”: ${tracks.size} songs" + if (missed.isNotEmpty()) " (${missed.size} not found)" else "")
+        }
     }
 
     private var rescanAgain = false
@@ -310,6 +430,9 @@ object Music {
     // ---- services ----
     @JvmName("chooseSource")
     fun setSource(key: String) { source = key; saveState() }
+
+    @JvmName("chooseSearchIn")
+    fun setSearchIn(key: String) { searchIn = key; saveState() }
 
     fun setSyncSource(key: String, on: Boolean) {
         syncSources[key] = on

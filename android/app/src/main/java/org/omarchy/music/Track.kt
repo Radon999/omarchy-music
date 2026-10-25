@@ -31,6 +31,13 @@ data class Track(
 @Serializable
 data class Album(val id: String, val title: String, val sub: String = "", val thumb: String = "", val count: String = "")
 
+/** What a search found: songs, and the artists and albums whose names you typed. Albums of
+ *  your own songs carry their songs in albumTracks (by the album's id). */
+data class Found(val songs: List<Track>, val artists: List<Album> = emptyList(), val albums: List<Album> = emptyList(),
+                 val albumTracks: Map<String, List<Track>> = emptyMap()) {
+    val isEmpty get() = songs.isEmpty() && artists.isEmpty() && albums.isEmpty()
+}
+
 /** An artist's page: their top songs and their albums, from whichever service knew them. */
 data class ArtistInfo(val name: String, val thumb: String, val top: List<Track>, val albums: List<Album>,
                       val source: String = "", val topSource: String = "")

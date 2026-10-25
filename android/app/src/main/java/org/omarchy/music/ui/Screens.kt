@@ -1,5 +1,7 @@
 package org.omarchy.music.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
@@ -23,40 +25,81 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
+import org.omarchy.music.Found
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
 import org.omarchy.music.SOURCES
 import org.omarchy.music.Track
 import org.omarchy.music.fmtTotal
+import org.omarchy.music.linkSource
+import org.omarchy.music.localMatches
 import org.omarchy.music.norm
+
+private fun searchName(key: String) = if (key == "local") "your music" else SOURCES[key] ?: ""
 
 @Composable
 fun SearchTab(ui: Ui) {
-    val res = ui.results
+    val res = ui.found
+    val where = searchName(ui.foundIn.ifEmpty { Music.searchIn })
     LazyColumn(Modifier.fillMaxSize()) {
         when {
-            ui.searching -> item { Empty("Searching ${SOURCES[Music.source]}…") }
-            res == null -> item { Empty("Search ${SOURCES[Music.source]}", "Type above, or paste a link to a song, an album or a playlist.") }
-            res.isEmpty() -> item { Empty("No songs found", ui.query) }
-            else -> tracks(res, ui, "search", radio = res.size > 1 && !ui.resultsAreList)
+            ui.searching -> item { Empty("Searching $where…") }
+            res == null -> item { Empty("Search ${searchName(Music.searchIn)}", "Songs, artists or albums: pick where with the menu by the search bar. Or paste a link to a song, an album or a playlist.") }
+            res.isEmpty -> item { Empty("Nothing found", "${ui.query}\nin $where") }
+            else -> {
+                if (res.artists.isNotEmpty()) {
+                    item { Section("ARTISTS") }
+                    items(res.artists.size) { i ->
+                        val a = res.artists[i]
+                        PlaylistRow(a) { ui.pages += Ui.Page.Artist(a.title, ui.foundIn.takeIf { it in SOURCES }) }
+                    }
+                }
+                if (res.albums.isNotEmpty()) {
+                    item { Section("ALBUMS") }
+                    items(res.albums.size) { i ->
+                        val al = res.albums[i]
+                        val mine = res.albumTracks[al.id]
+                        PlaylistRow(al, mine?.firstOrNull()?.let { artModel(it) }) { ui.pages += Ui.Page.AlbumPage(al, ui.foundIn, mine) }
+                    }
+                }
+                if (res.songs.isNotEmpty()) {
+                    if (res.artists.isNotEmpty() || res.albums.isNotEmpty()) item { Section("SONGS") }
+                    tracks(res.songs, ui, "search", radio = res.songs.size > 1 && !ui.resultsAreList)
+                }
+            }
         }
     }
 }
 
+/** Search where the search bar's menu says (a pasted link: on its own service), for songs, artists and albums. */
 fun runSearch(ui: Ui) {
     val q = ui.query.trim()
     if (q.isEmpty()) return
-    val key = Music.source
+    val link = linkSource(q)
+    var key = link ?: Music.searchIn
+    if (key == "tidal" && link == null && Music.sources["tidal"]?.signedIn != true) {
+        Music.toast("Tidal isn't connected: searching YouTube Music")
+        key = "ytm"
+    }
+    val seq = ++ui.searchSeq
+    ui.tab = "search"
+    ui.resultsAreList = Regex("/(playlist|album|mix)/|list=").containsMatchIn(q)
+    if (key == "local") {
+        ui.searching = false
+        ui.foundIn = key
+        ui.found = localMatches(Music.mySongs(), q)
+        return
+    }
     val src = Music.sources[key]
     if (src == null) { Music.toast("Still connecting to ${SOURCES[key]}…"); return }
     if (!src.signedIn && key in setOf("tidal", "spotify", "apple")) { Music.toast("Connect ${SOURCES[key]} in the accounts menu first"); return }
-    ui.tab = "search"
     ui.searching = true
-    ui.resultsAreList = Regex("/(playlist|album|mix)/|list=").containsMatchIn(q)
-    Music.bg({ src.search(q) }) { res, err ->
+    ui.foundIn = key
+    Music.bg({ if (link != null) Found(src.search(q)) else src.find(q) }) { res, err ->
+        if (seq != ui.searchSeq) return@bg   // a newer search is on its way
         ui.searching = false
-        if (err != null) { ui.results = emptyList(); Music.toast("Search failed: ${err.message?.take(100)}") }
-        else ui.results = res
+        if (err != null) { ui.found = Found(emptyList()); Music.toast("Search failed: ${err.message?.take(100)}") }
+        else ui.found = res
     }
 }
 
@@ -158,6 +201,8 @@ fun MusicTab(ui: Ui) {
     var choosing by remember { mutableStateOf(false) }
     if (choosing) FolderBrowser { choosing = false }
     LaunchedEffect(Unit) { if (granted) Music.rescanSoon() }
+    LaunchedEffect(ui.musicView, Music.accountsVersion) { if (ui.musicView == "top") Music.freshenMostPlayed() }
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) Music.importPlaylist(uri) }
     Music.musicVersion
     Music.savedVersion
     Column(Modifier.fillMaxSize()) {
@@ -178,12 +223,12 @@ fun MusicTab(ui: Ui) {
                 ActionRow("From $from  ·  Choose folders  ›") { choosing = true }
             }
             when (ui.musicView) {
-                "playlists" -> myPlaylists(ui)
+                "playlists" -> myPlaylists(ui) { importer.launch(arrayOf("*/*")) }
                 else -> {
                     val tracks = when (ui.musicView) {
                         "all" -> sorted(Music.mySongs(), Music.musicSort)
                         "recent" -> Music.plays.recent()
-                        else -> Music.plays.top()
+                        else -> Music.mostPlayed()
                     }
                     if (tracks.isEmpty()) item {
                         val (t, b) = when (ui.musicView) {
@@ -204,7 +249,8 @@ fun MusicTab(ui: Ui) {
                                         Chip(l, Music.musicSort == k) { Music.setMusicSort(k) }
                                     }
                                 }
-                            } else Section(mapOf("recent" to "RECENTLY PLAYED", "top" to "MOST PLAYED")[ui.musicView]!!)
+                            } else Section(if (ui.musicView == "recent") "RECENTLY PLAYED"
+                                           else if (Music.mostPlayedFromLastFm) "MOST PLAYED · LAST.FM" else "MOST PLAYED")
                         }
                         if (ui.musicView == "all" && Music.musicSort in setOf("artist", "album")) grouped(tracks, ui, Music.musicSort == "artist")
                         else tracks(tracks, ui, ui.musicView) { t -> if (ui.musicView == "top") "${t.plays} play${if (t.plays != 1) "s" else ""}" else "" }
@@ -250,10 +296,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.grouped(list: List<Tr
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui) {
+private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, import: () -> Unit) {
     val open = ui.openMine?.let { Music.lists.get(it) }
     if (open == null) {
         item { ActionRow("＋  New playlist") { ui.askName = Triple("New playlist", "") { n -> Music.newPlaylist(n) } } }
+        item {
+            val busy = Music.importing
+            if (busy != null) Text(busy, style = T.sub.copy(color = C.accent), modifier = Modifier.padding(12.dp))
+            else ActionRow("⤓  Import a playlist (.m3u8)") { import() }
+        }
         val lists = Music.lists.all()
         if (lists.isEmpty()) item {
             Section("NO PLAYLISTS YET")
@@ -264,9 +315,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui) {
             val pl = lists[i]
             val cover = pl.tracks.firstOrNull { it.thumb.isNotEmpty() || it.isFile }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PlaylistRow(Album(pl.id, pl.name, "", "", pl.tracks.size.toString()).let { a ->
-                    if (cover != null) a.copy(thumb = (artModel(cover) as? String) ?: "") else a
-                }) { ui.openMine = pl.id }
+                PlaylistRow(Album(pl.id, pl.name, "", "", pl.tracks.size.toString()), cover?.let { artModel(it) }) { ui.openMine = pl.id }
             }
         }
         return
@@ -369,6 +418,7 @@ private fun ArtistPage(ui: Ui, page: Ui.Page.Artist) {
 private fun AlbumPage(ui: Ui, page: Ui.Page.AlbumPage) {
     var tracks by remember(page) { mutableStateOf<List<Track>?>(null) }
     LaunchedEffect(page) {
+        if (page.tracks != null) { tracks = page.tracks; return@LaunchedEffect }
         val src = Music.sources[page.source]
         Music.bg({ src?.album(page.album.id) ?: emptyList() }) { res, err ->
             tracks = res ?: emptyList()
@@ -379,7 +429,7 @@ private fun AlbumPage(ui: Ui, page: Ui.Page.AlbumPage) {
         item { BackRow(page.album.title) { ui.pages.removeAt(ui.pages.lastIndex) } }
         item {
             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                ArtImage(page.album.thumb.ifEmpty { null }, 96.dp)
+                ArtImage(page.album.thumb.ifEmpty { null } ?: page.tracks?.firstOrNull()?.let { artModel(it) }, 96.dp)
                 Column(Modifier.padding(start = 12.dp)) {
                     Text(page.album.title, style = T.title.copy(fontSize = T.title.fontSize * 1.2f))
                     if (page.album.sub.isNotEmpty()) Text(page.album.sub, style = T.sub)

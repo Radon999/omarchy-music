@@ -20,6 +20,9 @@ an **Android** app.
   AAC (320 kbps), else YouTube Music's own audio (Opus, about 130–160 kbps). The mark by the
   controls then shows **AAC** or **Opus** instead of **⤓ FLAC**. Without Tidal, everything
   streams from YouTube Music. Downloads are always FLAC.
+- **Search Tidal, YouTube Music or your own songs.** Pick where with the menu next to the
+  search bar. Results show matching artists and albums above the songs. A pasted link always
+  opens on its own service. Without Tidal connected, a Tidal search goes to YouTube Music.
 - **Download when you choose.** Click the **⤓ FLAC** mark next to the controls, or pick
   **Download** in a song's menu (or for a selection), to save the FLAC and play it from disk.
 - **Nothing downloads on its own.** **Keep** (in the accounts menu) saves every song you
@@ -34,9 +37,14 @@ an **Android** app.
     under headings; click an artist's for their page), or newest first (**Added**).
   - **Playlists:** your playlists.
   - **Recent:** recently played.
-  - **Most played:** a song counts after 30 seconds, or half of a shorter song.
+  - **Most played:** with Last.fm connected, your most scrobbled songs from anywhere. Without
+    it, the songs played here (a song counts after 30 seconds, or half of a shorter song).
 - **Playlists.** Create, rename and delete them, and add or remove songs. They are stored in
   `playlists.json`.
+- **Import .m3u8 playlists.** Pick **Import a playlist (.m3u8)** under Playlists, for example
+  a playlist exported from Poweramp or foobar2000. Each song is found as the file the playlist
+  names (or a file of the same name), else among your songs, else on Tidal (YouTube Music
+  without Tidal). The playlist is named after the file. Songs not found are counted in a message.
 - **Multi-select.** Ctrl/Shift+click, or right-click and pick **Select…**, then queue, add to a
   playlist, remove or download many songs at once. Ctrl+A selects all and Esc stops selecting.
 - **Artist pages.** Click any artist name to see their songs and albums.
@@ -64,7 +72,7 @@ an **Android** app.
 
 `android/` holds the Android version (Kotlin, Jetpack Compose, Media3). It has the same
 services, Tidal FLAC streaming and downloads, Music tab, playlists, EQ with the headphone
-curves, lyrics, Last.fm and Wrapped. It is a separate app, package `org.omarchy.music`.
+curves, lyrics, Last.fm and Wrapped, the search menu and .m3u8 import. It is a separate app, package `org.omarchy.music`.
 What's playing shows in the notification shade and on the lock screen, the desktop's song
 too while the phone is its remote.
 

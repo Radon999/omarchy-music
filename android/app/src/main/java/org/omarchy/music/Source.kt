@@ -11,6 +11,8 @@ interface Source {
     val signedIn: Boolean
 
     fun search(q: String): List<Track>
+    /** Songs, artists and albums called q, or with q in their names. */
+    fun find(q: String): Found = Found(search(q))
     fun myPlaylists(): List<Album>
     fun playlist(id: String): List<Track>
     fun likedIds(): Set<String>

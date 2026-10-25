@@ -24,6 +24,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
@@ -48,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import coil.imageLoader
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
+import org.omarchy.music.SEARCH_IN
 import org.omarchy.music.SOURCES
 import org.omarchy.music.fmtTime
 
@@ -128,7 +131,6 @@ private fun TopBar(ui: Ui) {
                     if (Music.source != k) {
                         Music.setSource(k)
                         ui.openList = null
-                        if (ui.query.isNotBlank() && ui.tab == "search") runSearch(ui)
                     }
                 }
             }
@@ -140,14 +142,34 @@ private fun TopBar(ui: Ui) {
 @Composable
 private fun SearchField(ui: Ui) {
     val focus = LocalFocusManager.current
-    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
-        .border(1.dp, C.line).background(C.fg.copy(alpha = 0.04f)).padding(horizontal = 12.dp, vertical = 10.dp)) {
-        if (ui.query.isEmpty()) Text("Search ${SOURCES[Music.source]}, or paste a link", style = T.body.copy(color = C.muted))
-        BasicTextField(ui.query, { ui.query = it; if (it.isNotBlank()) ui.tab = "search" }, singleLine = true,
-            textStyle = T.body, cursorBrush = SolidColor(C.accent),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); ui.pages.clear(); runSearch(ui) }),
-            modifier = Modifier.fillMaxWidth())
+    var menu by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
+        .border(1.dp, C.line).background(C.fg.copy(alpha = 0.04f)), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).padding(start = 12.dp, top = 10.dp, bottom = 10.dp)) {
+            if (ui.query.isEmpty()) Text("Songs, artists, albums or a link", style = T.body.copy(color = C.muted), maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+            BasicTextField(ui.query, { ui.query = it; if (it.isNotBlank()) ui.tab = "search" }, singleLine = true,
+                textStyle = T.body, cursorBrush = SolidColor(C.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus(); ui.pages.clear(); runSearch(ui) }),
+                modifier = Modifier.fillMaxWidth())
+        }
+        // Where to search: Tidal, YouTube Music or your own songs.
+        Box {
+            Text("${if (Music.searchIn == "ytm") "YouTube" else SEARCH_IN[Music.searchIn]}  ▾", style = T.tab.copy(color = C.accent),
+                modifier = Modifier.clickable { menu = true }.padding(horizontal = 12.dp, vertical = 10.dp))
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                SEARCH_IN.forEach { (k, name) ->
+                    DropdownMenuItem(text = { Text(name, style = T.body.copy(color = if (k == Music.searchIn) C.accent else C.fg)) }, onClick = {
+                        menu = false
+                        if (k != Music.searchIn) {
+                            Music.setSearchIn(k)
+                            if (ui.query.isNotBlank() && ui.tab == "search") { ui.pages.clear(); runSearch(ui) }
+                        }
+                    })
+                }
+            }
+        }
     }
 }
 

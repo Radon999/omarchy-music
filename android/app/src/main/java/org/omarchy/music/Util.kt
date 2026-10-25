@@ -10,6 +10,20 @@ import kotlin.math.roundToInt
 
 val SOURCES = linkedMapOf("ytm" to "YouTube Music", "tidal" to "Tidal", "apple" to "Apple Music", "spotify" to "Spotify")
 
+const val LASTFM_BLANK = "2a96cbd8b46e442fc41c2b86b821562f"   // Last.fm's grey star, for "no picture"
+
+/** Where the search bar's dropdown can search. */
+val SEARCH_IN = linkedMapOf("tidal" to "Tidal", "ytm" to "YouTube Music", "local" to "Your music")
+
+/** The service a pasted link is from, or null for words to search. */
+fun linkSource(q: String): String? = when {
+    "music.apple.com" in q -> "apple"
+    "tidal.com" in q -> "tidal"
+    Regex("open\\.spotify\\.com/|^spotify:").containsMatchIn(q) -> "spotify"
+    Regex("youtube\\.com/|youtu\\.be/").containsMatchIn(q) -> "ytm"
+    else -> null
+}
+
 fun fmtTime(s: Double): String {
     val n = max(0, s.toInt())
     return "${n / 60}:${"%02d".format(n % 60)}"
@@ -149,3 +163,73 @@ fun sizedThumb(url: String, px: Int): String = when {
 }
 
 fun now() = System.currentTimeMillis() / 1000.0
+
+/** A song in an .m3u or .m3u8 playlist: where it says the file is, as written, and the names
+ *  and length from its #EXTINF line (empty and 0 where it has none). */
+data class M3uEntry(val loc: String, val artist: String, val title: String, val seconds: Int)
+
+fun readM3u(raw: ByteArray): List<M3uEntry> {
+    val text = runCatching { Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(raw)).toString() }
+        .getOrElse { String(raw, Charsets.ISO_8859_1) }.removePrefix("\uFEFF")   // an old .m3u
+    val out = ArrayList<M3uEntry>()
+    var info: Triple<String, String, Int>? = null
+    for (line0 in text.lines()) {
+        val line = line0.trim()
+        if (line.startsWith("#EXTINF:")) {
+            val head = line.substring(8).substringBefore(',')
+            val name = line.substring(8).substringAfter(',', "").trim()
+            val secs = Regex("^-?\\d+(\\.\\d+)?").find(head.trim())?.value?.toDouble()?.toInt()?.coerceAtLeast(0) ?: 0
+            info = if (" - " in name) Triple(name.substringBefore(" - ").trim(), name.substringAfter(" - ").trim(), secs) else Triple("", name, secs)
+        } else if (line.isNotEmpty() && !line.startsWith("#")) {
+            out += M3uEntry(line, info?.first ?: "", info?.second ?: "", info?.third ?: 0)
+            info = null
+        }
+    }
+    return out
+}
+
+/** (artist, title) from a song file's name: "Artist - Title.flac", "01 Title.flac". */
+fun namesFromFile(path: String): Pair<String, String> {
+    val stem = Regex("^\\d{1,3}[\\s.\\-_]+").replace(path.substringAfterLast('/').substringBeforeLast('.'), "")
+    return if (" - " in stem) stem.substringBefore(" - ") to stem.substringAfter(" - ") else "" to stem
+}
+
+/** The search hit that is the song called title by artist, about seconds long (0: unknown), or null. */
+fun bestMatch(hits: List<Track>, artist: String, title: String, seconds: Int): Track? {
+    var best: Track? = null
+    var bestScore = 0.0
+    for (h in hits) {
+        if (seconds > 0 && h.duration > 0 && Math.abs(h.duration - seconds) > 8) continue
+        var score = similar(cleanTitle(title), cleanTitle(h.title))
+        if (artist.isNotEmpty()) {
+            val lead = artistNames(listOf(artist)).maxOfOrNull { x -> artistNames(h.artist.split(",")).maxOfOrNull { y -> similar(x, y) } ?: 0.0 } ?: 0.0
+            if (lead < 0.6) continue
+            score = 0.6 * score + 0.4 * lead
+        }
+        if (score >= 0.7 && score > bestScore) { best = h; bestScore = score }
+    }
+    return best
+}
+
+/** Your songs, artists and albums whose names have every word of q in them. */
+fun localMatches(songs: List<Track>, q: String): Found {
+    val words = norm(q).split(" ").filter { it.isNotEmpty() }
+    if (words.isEmpty()) return Found(emptyList())
+    fun has(text: String) = norm(text).let { t -> words.all { it in t } }
+    val hits = songs.filter { has("${it.title} ${it.artist} ${it.album}") }
+    val artists = sortedMapOf<String, String>()
+    val albums = LinkedHashMap<String, Pair<Album, MutableList<Track>>>()
+    for (t in songs) {
+        for (name in splitArtists(t.artist)) if (has(name)) artists.putIfAbsent(norm(name), name)
+        if (t.album.isNotEmpty() && has("${t.album} ${t.artist}")) {
+            val lead = t.artist.split(",")[0].trim()
+            val id = "local-" + norm("${t.album} $lead")
+            albums.getOrPut(id) { Album(id, t.album, lead) to ArrayList() }.second += t
+        }
+    }
+    val shown = albums.values.take(12).map { (al, tr) ->
+        al.copy(sub = listOf(al.sub, "${tr.size} song${if (tr.size != 1) "s" else ""}").filter { it.isNotEmpty() }.joinToString(" · ")) to tr
+    }
+    return Found(hits, artists.values.take(8).map { Album("ar-" + norm(it), it, "Artist") }, shown.map { it.first },
+        shown.associate { it.first.id to it.second })
+}

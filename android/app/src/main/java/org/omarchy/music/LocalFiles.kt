@@ -46,13 +46,7 @@ class LocalFiles(private val ctx: Context) {
             val old = seen[uri]
             val added = old?.added ?: if (first) modified.toDouble() else now()
             keep[uri] = Seen(modified, added)
-            val title = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)) ?: "Unknown"
-            val artist = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST))
-                ?.takeIf { it != MediaStore.UNKNOWN_STRING } ?: "Unknown artist"
-            val album = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)) ?: ""
-            val dur = c.getLong(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)) / 1000.0
-            out += Track(id = "f" + uri.hashCode().toUInt().toString(16), source = "file", title = title, artist = artist,
-                album = album, duration = dur, file = uri, added = added)
+            out += track(c, uri, added)
         }
         val changed = out.map { it.file } != files.map { it.file }
         files = out
@@ -61,10 +55,32 @@ class LocalFiles(private val ctx: Context) {
         return changed
     }
 
+    private fun track(c: android.database.Cursor, uri: String, added: Double): Track {
+        val title = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)) ?: "Unknown"
+        val artist = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST))
+            ?.takeIf { it != MediaStore.UNKNOWN_STRING } ?: "Unknown artist"
+        val album = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)) ?: ""
+        val dur = c.getLong(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)) / 1000.0
+        return Track(id = "f" + uri.hashCode().toUInt().toString(16), source = "file", title = title, artist = artist,
+            album = album, duration = dur, file = uri, added = added)
+    }
+
+    /** Every song on the phone, in your folders or not, by where it is ("Music/Album/01 Song.flac"), for
+     *  finding the files a playlist names (blocking). */
+    fun everywhere(): Map<String, Track> {
+        val out = LinkedHashMap<String, Track>()
+        val mine = files.associateBy { it.file }
+        query { c, uri, path, modified ->
+            val name = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)) ?: return@query
+            out[path.trimEnd('/') + "/" + name] = mine[uri] ?: track(c, uri, modified.toDouble())
+        }
+        return out
+    }
+
     private fun query(each: (android.database.Cursor, String, String, Long) -> Unit) {
         val cols = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.RELATIVE_PATH,
-            MediaStore.Audio.Media.DATE_MODIFIED)
+            MediaStore.Audio.Media.DATE_MODIFIED, MediaStore.Audio.Media.DISPLAY_NAME)
         ctx.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cols,
             "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE")?.use { c ->
             val idCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)

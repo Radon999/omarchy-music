@@ -239,6 +239,20 @@ class Tidal(ctx: Context) : Source {
         }
     }
 
+    override fun find(q: String): Found {
+        if (linkSource(q) != null) return Found(search(q))
+        val r = api("search", mapOf("query" to q, "types" to "TRACKS,ARTISTS,ALBUMS", "limit" to 30))
+        val artists = r.path("artists", "items").list.take(6).mapNotNull { a ->
+            Album("ar-${a["id"].long}", a["name"].str ?: return@mapNotNull null, "Artist", image(a["picture"].str, 320))
+        }
+        val albums = r.path("albums", "items").list.take(10).map { al ->
+            val by = al["artists"].list.firstOrNull()?.get("name").str ?: ""
+            Album(al["id"].long.toString(), al["title"].str ?: "Album",
+                listOf(by, (al["releaseDate"].str ?: "").take(4)).filter { it.isNotEmpty() }.joinToString(" · "), image(al["cover"].str, 320))
+        }
+        return Found(tracks(r.path("tracks", "items").list), artists, albums)
+    }
+
     override fun radio(t: Track): List<Track> {
         val id = if (t.source == "tidal") t.tidal else resolve(t)?.get("id").long
         return tracks(api("tracks/${id ?: return emptyList()}/radio", mapOf("limit" to 40))["items"].list)

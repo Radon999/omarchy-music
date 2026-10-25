@@ -60,7 +60,9 @@ class Ui {
     var selectPool by mutableStateOf(listOf<Track>())  // the list being selected from
     var selectPlace by mutableStateOf<RowPlace?>(null)
     var query by mutableStateOf("")
-    var results by mutableStateOf<List<Track>?>(null)
+    var found by mutableStateOf<org.omarchy.music.Found?>(null)
+    var foundIn by mutableStateOf("")                   // where it was searched: tidal, ytm, local…
+    var searchSeq = 0
     var resultsAreList by mutableStateOf(false)
     var searching by mutableStateOf(false)
     var sheet by mutableStateOf<String?>(null)          // "accounts", "eq", "tidal-login", "spotify-login"…
@@ -71,7 +73,7 @@ class Ui {
 
     sealed class Page {
         data class Artist(val name: String, val prefer: String?) : Page()
-        data class AlbumPage(val album: Album, val source: String) : Page()
+        data class AlbumPage(val album: Album, val source: String, val tracks: List<Track>? = null) : Page()
     }
 
     fun startSelecting(pool: List<Track>, place: RowPlace?, first: Track?) {
@@ -181,10 +183,10 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
 }
 
 @Composable
-fun PlaylistRow(p: Album, onClick: () -> Unit) {
+fun PlaylistRow(p: Album, art: Any? = null, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        ArtImage(p.thumb.takeIf { it.isNotEmpty() }, 44.dp)
+        ArtImage(art ?: p.thumb.takeIf { it.isNotEmpty() }, 44.dp)
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Text(p.title, style = T.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val sub = listOf(p.sub, if (p.count.isNotEmpty()) "${p.count} songs" else "").filter { it.isNotEmpty() }.joinToString(" · ")

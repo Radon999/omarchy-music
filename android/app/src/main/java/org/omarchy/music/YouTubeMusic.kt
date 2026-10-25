@@ -136,6 +136,27 @@ class YouTubeMusic(private val cookie: String?) : Source {
         return songs(call("search", buildJsonObject { put("query", q); put("params", SONGS) })).take(30)
     }
 
+    override fun find(q: String): Found {
+        if (linkSource(q) != null) return Found(search(q))
+        fun rows(params: String) = find(call("search", buildJsonObject { put("query", q); put("params", params) }), "musicResponsiveListItemRenderer")
+        fun cols(r: JsonElement) = r["flexColumns"].list.map { it["musicResponsiveListItemFlexColumnRenderer"]["text"] }
+        val artists = rows(ARTISTS).mapNotNull { r ->
+            r.path("navigationEndpoint", "browseEndpoint", "browseId").str ?: return@mapNotNull null
+            val name = runs(cols(r).firstOrNull()).firstOrNull()?.get("text").str ?: return@mapNotNull null
+            Album("ar-" + norm(name), name, "Artist", thumb(r["thumbnail"]))
+        }.take(6)
+        // An album's line: "Album • Artist • 2019".
+        val albums = rows(ALBUMS).mapNotNull { r ->
+            val id = r.path("navigationEndpoint", "browseEndpoint", "browseId").str ?: return@mapNotNull null
+            val c = cols(r)
+            val rs = c.drop(1).flatMap { runs(it) }
+            val by = rs.filter { pageType(it) == "MUSIC_PAGE_TYPE_ARTIST" }.mapNotNull { it["text"].str }.joinToString(", ")
+            val year = Regex("\\b(19|20)\\d\\d\\b").find(rs.joinToString("") { it["text"].str ?: "" })?.value ?: ""
+            Album(id, text(c.firstOrNull()).ifEmpty { "Album" }, listOf(by, year).filter { it.isNotEmpty() }.joinToString(" · "), thumb(r["thumbnail"]))
+        }.take(10)
+        return Found(search(q), artists, albums)
+    }
+
     private fun radioOf(vid: String): List<Track> = songs(call("next", buildJsonObject {
         put("videoId", vid); put("playlistId", "RDAMVM$vid"); put("isAudioOnly", true)
         put("enablePersistentPlaylistPanel", true); put("tunerSettingValue", "AUTOMIX_SETTING_NORMAL")
@@ -207,5 +228,6 @@ class YouTubeMusic(private val cookie: String?) : Source {
         const val ORIGIN = "https://music.youtube.com"
         const val SONGS = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
         const val ARTISTS = "EgWKAQIgAWoMEA4QChADEAQQCRAF"
+        const val ALBUMS = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
     }
 }

@@ -17,7 +17,6 @@ import java.time.ZoneId
  *  that Last.fm hasn't got. A big year takes a minute the first time (Last.fm hands out
  *  200 scrobbles a request); then it's kept and only the new ones are read. */
 object Wrapped {
-    private const val LASTFM_BLANK = "2a96cbd8b46e442fc41c2b86b821562f"   // Last.fm's grey star, for "no picture"
     private val NOT_GENRES = setOf("seen live", "favorites", "favourites", "favorite", "favourite", "my favorites", "albums i own",
         "female vocalists", "male vocalists", "female vocalist", "male vocalist", "female", "male",
         "under 2000 listeners", "spotify", "beautiful", "awesome", "love", "amazing", "epic", "cool",
