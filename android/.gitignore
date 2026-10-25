@@ -6,3 +6,5 @@ tidal.properties
 *.keystore
 .idea/
 *.iml
+*.jks
+keystore.properties

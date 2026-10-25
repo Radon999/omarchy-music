@@ -99,21 +99,29 @@ PROFILE = os.environ.get("OMARCHY_MUSIC_PROFILE", "")
 SUFFIX = f"-{PROFILE}" if PROFILE else ""
 APP_ID = "org.omarchy.music" + (f".{PROFILE}" if PROFILE else "")
 HOME = Path.home()
+WINDOWS = sys.platform == "win32"
+# Logins, settings and play counts: ~/.local/state on Linux, %LOCALAPPDATA%\omarchy-music on Windows.
+STATE_DIR = (Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local") / "omarchy-music") if WINDOWS \
+    else HOME / ".local" / "state"
 MUSIC = Path(os.environ.get("OMARCHY_MUSIC_DIR") or HOME / "Music" / "Omarchy Music")
 SONGS, ART = MUSIC / "songs", MUSIC / "art"
 LIBRARY = MUSIC / "library.json"
 MISSING = MUSIC / "missing.json"    # songs Tidal had no lossless copy of, and when we looked
 PLAYLISTS = MUSIC / "playlists.json"   # the playlists you make here
-CACHE = HOME / ".cache" / "omarchy-music"
+CACHE = STATE_DIR / "cache" if WINDOWS else HOME / ".cache" / "omarchy-music"
 THUMBS = CACHE / "thumbs"
 STATE = HOME / ".local" / "state" / f"omarchy-music{SUFFIX}.json"
 PLAYS = HOME / ".local" / "state" / f"omarchy-music{SUFFIX}-plays.json"   # what you played, when, how often
 LOCAL_INDEX = CACHE / f"local{SUFFIX}.json"   # the tags of the songs in your folders, read once
 SOCK = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"omarchy-music{SUFFIX}-mpv.sock"
+PIPE = rf"\\.\pipe\omarchy-music{SUFFIX}-mpv"   # mpv's IPC on Windows, where there are no Unix sockets
 CURRENT = HOME / ".local" / "state" / "omarchy" / "current"
 THEME_DIR = CURRENT / "theme"
-OPACITY = 0.85  # window background; text and art stay fully opaque
-BROWSERS = ("chromium", "brave", "chrome", "firefox")
+OPACITY = 1.0 if WINDOWS else 0.85  # window background; text and art stay fully opaque (Windows draws no see-through windows)
+# Chrome and Edge on Windows lock their cookies to themselves (app-bound encryption): Firefox first there.
+BROWSERS = ("firefox", "chrome", "edge", "brave") if WINDOWS else ("chromium", "brave", "chrome", "firefox")
+# Windows: the helper programs run without a console window popping up.
+NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {}
 # A browser's, for sites that turn other clients away; our own name where a service asks for one.
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36"
 APP_UA = "OmarchyMusic/2.0 (personal music player)"
@@ -254,6 +262,8 @@ def load_theme():
             colors.update({k: v for k, v in tomllib.load(f).items() if isinstance(v, str)})
     except (OSError, tomllib.TOMLDecodeError):
         pass
+    if WINDOWS:
+        return {"c": colors, "font": "Consolas", "radius": 4}
     try:
         font = subprocess.run(["fc-match", "monospace", "-f", "%{family}"], capture_output=True,
                               text=True, timeout=2).stdout.split(",")[0] or "monospace"
@@ -740,7 +750,7 @@ def file_cover(path):
 # song that looks finished.
 # =============================================================================
 
-TIDAL_SESSION = HOME / ".local" / "state" / "omarchy-music-tidal.json"
+TIDAL_SESSION = STATE_DIR / "omarchy-music-tidal.json"
 RETRY_MISSING = 7 * 86400   # look again for songs Tidal didn't have after a week
 SYNC_EVERY = 3 * 3600       # pick up songs added to your playlists (on your phone, say)
 LOSSLESS = {"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"}
@@ -1117,7 +1127,7 @@ class Tidal:
             # FLAC in MP4 segments: take the FLAC out, untouched.
             flac = dest.with_suffix(".remux.flac")
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(part), "-map", "0:a", "-c:a", "copy",
-                            str(flac)], check=True, capture_output=True, timeout=300)
+                            str(flac)], check=True, capture_output=True, timeout=300, **NO_WINDOW)
             part.unlink()
             part = flac
         info = tag_flac(part, c, cover, track)
@@ -1429,6 +1439,8 @@ COOKIE_LOCK = threading.Lock()
 
 
 def cookie_keyring():
+    if WINDOWS:
+        return None   # Windows keeps the key itself (DPAPI)
     return "GNOMEKEYRING" if subprocess.run(["pgrep", "-x", "gnome-keyring-d"],
                                             capture_output=True).returncode == 0 else None
 
@@ -1792,7 +1804,7 @@ class AppleMusic:
 # artist's top songs: another service fills those in.
 # =============================================================================
 
-SPOTIFY_AUTH = HOME / ".local" / "state" / "omarchy-music-spotify.json"   # your app's client ID + login, mode 600
+SPOTIFY_AUTH = STATE_DIR / "omarchy-music-spotify.json"   # your app's client ID + login, mode 600
 SPOTIFY_API = "https://api.spotify.com/v1"
 SPOTIFY_PORT = 8898
 SPOTIFY_REDIRECT = f"http://127.0.0.1:{SPOTIFY_PORT}/callback"
@@ -2054,37 +2066,140 @@ def _die_with_parent():
     ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
 
 
+def child(args, **kw):
+    """Start a helper program that goes when the app goes, however it goes."""
+    if not WINDOWS:
+        return subprocess.Popen(args, preexec_fn=_die_with_parent, **kw)
+    proc = subprocess.Popen(args, **NO_WINDOW, **kw)
+    _windows_job().assign(proc)
+    return proc
+
+
+class _WindowsJob:
+    """A Windows job object that ends its processes when the app's handle on it closes
+    (Windows' counterpart of PR_SET_PDEATHSIG)."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.k32 = k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        self.job = k32.CreateJobObjectW(None, None)
+
+        class Basic(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", Basic), ("IoInfo", ctypes.c_uint64 * 6),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+        info = Extended()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject(wintypes.HANDLE(self.job), 9, ctypes.byref(info), ctypes.sizeof(info))
+
+    def assign(self, proc):
+        from ctypes import wintypes
+        self.k32.AssignProcessToJobObject(wintypes.HANDLE(self.job), wintypes.HANDLE(int(proc._handle)))
+
+
+_JOB = None
+
+
+def _windows_job():
+    global _JOB
+    if _JOB is None:
+        _JOB = _WindowsJob()
+    return _JOB
+
+
+class _PipeIPC:
+    """mpv's IPC on Windows: a named pipe, read and written at once through asyncio's
+    overlapped I/O (a plain handle to a pipe can't read and write at the same time)."""
+
+    def __init__(self, path, on_line):
+        import asyncio
+        self.loop = asyncio.ProactorEventLoop()
+        self.transport = None
+        ready, failed = threading.Event(), []
+
+        class Proto(asyncio.Protocol):
+            buf = b""
+
+            def data_received(p, data):
+                p.buf += data
+                while b"\n" in p.buf:
+                    line, p.buf = p.buf.split(b"\n", 1)
+                    on_line(line)
+
+        async def connect():
+            for _ in range(100):
+                try:
+                    self.transport, _proto = await self.loop.create_pipe_connection(Proto, path)
+                    return
+                except OSError:
+                    await asyncio.sleep(0.05)
+
+        def run():
+            asyncio.set_event_loop(self.loop)
+            try:
+                self.loop.run_until_complete(connect())
+            except Exception as e:  # noqa: BLE001 -- reported below
+                failed.append(e)
+            ready.set()
+            if self.transport:
+                self.loop.run_forever()
+        threading.Thread(target=run, daemon=True).start()
+        ready.wait(15)
+        if not self.transport:
+            raise RuntimeError("mpv did not start")
+
+    def send(self, data):
+        self.loop.call_soon_threadsafe(self.transport.write, data)
+
+
 class Player:
     def __init__(self, on_event):
         self.on_event = on_event
-        SOCK.unlink(missing_ok=True)
-        self.proc = subprocess.Popen(
+        if not WINDOWS:
+            SOCK.unlink(missing_ok=True)
+        self.proc = child(
             ["mpv", "--idle=yes", "--no-video", "--no-terminal", "--load-scripts=no",
              f"--audio-client-name=omarchy-music{SUFFIX}",  # the desktop visualizer listens to this stream only
              "--no-config", "--audio-display=no", "--gapless-audio=weak", "--volume=100",
-             f"--input-ipc-server={SOCK}", *shlex.split(os.environ.get("OMARCHY_MUSIC_MPV", ""))],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            preexec_fn=_die_with_parent)
-        self.sock = None
-        for _ in range(100):
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.connect(str(SOCK))
-                self.sock = s
-                break
-            except OSError:
-                time.sleep(0.05)
-        if not self.sock:
-            raise RuntimeError("mpv did not start")
+             f"--input-ipc-server={PIPE if WINDOWS else SOCK}", *shlex.split(os.environ.get("OMARCHY_MUSIC_MPV", ""))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.sock = self.pipe = None
+        self.heard = False
         self.wlock = threading.Lock()
-        threading.Thread(target=self._reader, daemon=True).start()
+        if WINDOWS:
+            self.pipe = _PipeIPC(PIPE, self._line)
+        else:
+            for _ in range(100):
+                try:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    s.connect(str(SOCK))
+                    self.sock = s
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            if not self.sock:
+                raise RuntimeError("mpv did not start")
+            threading.Thread(target=self._reader, daemon=True).start()
         for i, prop in enumerate(("time-pos", "duration", "pause", "idle-active"), 1):
             self.cmd("observe_property", i, prop)
 
     def cmd(self, *args):
+        data = (json.dumps({"command": list(args)}) + "\n").encode()
+        if self.pipe:
+            self.pipe.send(data)
+            return
         with self.wlock:
             try:
-                self.sock.sendall((json.dumps({"command": list(args)}) + "\n").encode())
+                self.sock.sendall(data)
             except OSError:
                 pass
 
@@ -2100,12 +2215,16 @@ class Player:
             buf += chunk
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
-                if "event" in msg:
-                    GLib.idle_add(lambda m=msg: (self.on_event(m), False)[1])
+                self._line(line)
+
+    def _line(self, line):
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            return
+        self.heard = True   # mpv answered (the self-test checks this)
+        if "event" in msg:
+            GLib.idle_add(lambda m=msg: (self.on_event(m), False)[1])
 
     def load(self, path, paused=False, start=0):
         opts = f"pause={'yes' if paused else 'no'}" + (f",start={start:.1f}" if start else "")
@@ -2258,6 +2377,42 @@ MPRIS_XML = """
 </node>"""
 MPRIS_PATH = "/org/mpris/MediaPlayer2"
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+
+
+class MediaKeys:
+    """Windows: the keyboard's play/pause, next, previous and stop keys, taken system-wide
+    (RegisterHotKey) on a thread of their own. MPRIS's counterpart, without the overlay."""
+    KEYS = {0xB3: "toggle_pause", 0xB0: "next", 0xB1: "previous", 0xB2: "stop"}
+
+    def __init__(self, app):
+        self.app = app
+        if os.environ.get("OMARCHY_MUSIC_MPRIS") == "0":
+            return
+        threading.Thread(target=self._listen, daemon=True).start()
+
+    def _listen(self):
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        keys = {}
+        for i, (vk, act) in enumerate(self.KEYS.items(), 1):
+            if user32.RegisterHotKey(None, i, 0x4000, vk):   # MOD_NOREPEAT; fails if another app has the key
+                keys[i] = act
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == 0x0312 and msg.wParam in keys:   # WM_HOTKEY
+                act = keys[msg.wParam]
+                GLib.idle_add(lambda act=act: (self._do(act), False)[1])
+
+    def _do(self, act):
+        a = self.app
+        if act == "stop":
+            a.set_paused(True)
+        else:
+            getattr(a, act)()
+
+    def changed(self):
+        pass
 
 
 class Mpris:
@@ -2834,7 +2989,7 @@ class Tagger:
 # and the like heart loves the song there too
 # =============================================================================
 
-LASTFM = HOME / ".local" / "state" / "omarchy-music-lastfm.json"                  # API account + login, mode 600
+LASTFM = STATE_DIR / "omarchy-music-lastfm.json"                  # API account + login, mode 600
 SCROBBLES = HOME / ".local" / "state" / f"omarchy-music{SUFFIX}-scrobbles.json"    # waiting for the network
 LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
 
@@ -3164,21 +3319,44 @@ class Remote:
             self.app.toast(f"Couldn't start the phone remote: {e.strerror or e}")
             return
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        try:   # announce it, so the phone finds it without typing an address
-            self.avahi = subprocess.Popen(["avahi-publish-service", f"Omarchy Music on {socket.gethostname()}",
-                                           REMOTE_SERVICE, str(REMOTE_PORT)],
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=_die_with_parent)
-        except OSError:
-            self.avahi = None   # no Avahi: the phone takes the address instead
+        self.announce()
+
+    def announce(self):
+        """Tell the network, so the phone finds this app without typing an address: Avahi on
+        Linux, the zeroconf module on Windows. Without either, the phone takes the address."""
+        name = f"Omarchy Music on {socket.gethostname()}"
+        if not WINDOWS:
+            try:
+                self.avahi = child(["avahi-publish-service", name, REMOTE_SERVICE, str(REMOTE_PORT)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                self.avahi = None
+            return
+        try:
+            from zeroconf import ServiceInfo, Zeroconf
+            info = ServiceInfo(f"{REMOTE_SERVICE}.local.", f"{name}.{REMOTE_SERVICE}.local.", port=REMOTE_PORT,
+                               addresses=[socket.inet_aton(lan_address())], server=f"{socket.gethostname()}.local.")
+            zc = Zeroconf()
+            zc.register_service(info)
+            self.avahi = (zc, info)
+        except Exception:  # noqa: BLE001 -- no zeroconf module, or no network yet
+            self.avahi = None
 
     def stop(self):
         if self.server:
             self.server.shutdown()
             self.server.server_close()
             self.server = None
-        if self.avahi:
+        if isinstance(self.avahi, tuple):
+            zc, info = self.avahi
+            try:
+                zc.unregister_service(info)
+                zc.close()
+            except Exception:  # noqa: BLE001 -- going anyway
+                pass
+        elif self.avahi:
             self.avahi.terminate()
-            self.avahi = None
+        self.avahi = None
 
     def pair(self, code, name):
         if not self.code or code != self.code:
@@ -3602,7 +3780,16 @@ class MusicWindow(Adw.ApplicationWindow):
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.toasts = Adw.ToastOverlay(child=root)
-        self.set_content(self.toasts)
+        if WINDOWS:
+            # Windows: a title bar to move and close it by, and closing it quits (there is no
+            # bar icon or keybind there to bring a hidden window back).
+            frame = Adw.ToolbarView(content=self.toasts)
+            frame.add_top_bar(Adw.HeaderBar(title_widget=Adw.WindowTitle(title="Omarchy Music")))
+            self.set_content(frame)
+            self.set_hide_on_close(False)
+            self.connect("close-request", lambda *_: (app.quit_app(), True)[1])
+        else:
+            self.set_content(self.toasts)
 
         # ---- top: brand + search ----
         top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -5866,7 +6053,7 @@ class MusicApp(Adw.Application):
         self.dl = Downloader(self.lib)
         self.art = ArtCache(self.lib)
         self.player = Player(self.on_mpv)
-        self.mpris = Mpris(self)
+        self.mpris = MediaKeys(self) if WINDOWS else Mpris(self)
         self.lastfm = LastFM()
         self.lyrics = Lyrics(self)
         self.tagger = Tagger(self)
@@ -5909,6 +6096,8 @@ class MusicApp(Adw.Application):
         GLib.timeout_add_seconds(15 * 60, lambda: (in_thread(self.lastfm.flush, done=self.lastfm_result), True)[1])
 
     def do_activate(self):
+        if not self.win and os.environ.get("OMARCHY_MUSIC_SELFTEST") == "1":
+            GLib.timeout_add_seconds(5, self.self_test)
         if not self.win:
             self.win = MusicWindow(self)
             self.win.update_now_playing()
@@ -5920,6 +6109,25 @@ class MusicApp(Adw.Application):
             self.win.set_visible(False)
         else:
             self.show_window()
+
+    def self_test(self):
+        """OMARCHY_MUSIC_SELFTEST=1 (the Windows build checks its package with it): the window
+        opened, mpv runs and answers. Prints the verdict and exits 0 or 1."""
+        missing = []
+        for mod in ("requests", "mutagen", "ytmusicapi", "tidalapi", "yt_dlp"):   # imported when first needed
+            try:
+                __import__(mod)
+            except Exception as e:
+                missing.append(f"{mod} ({e})")
+        import requests
+        certs = Path(requests.certs.where()).is_file()   # what HTTPS checks servers against
+        ok = bool(self.win) and self.player.proc.poll() is None and self.player.heard and not missing and certs
+        print(f"selftest {'ok' if ok else 'FAILED'}: window={bool(self.win)} mpv_running={self.player.proc.poll() is None} "
+              f"mpv_answered={self.player.heard} modules={'ok' if not missing else ', '.join(missing)} certs={certs} "
+              f"gtk={Gtk.get_major_version()}.{Gtk.get_minor_version()} "
+              f"adw={Adw.get_major_version()}.{Adw.get_minor_version()}", flush=True)
+        self.player.quit()
+        os._exit(0 if ok else 1)
 
     def show_window(self, tab=None):
         if not self.win:
@@ -7204,8 +7412,8 @@ def primary_running():
 
 
 def start_in_background():
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--background"], start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--background"], start_new_session=not WINDOWS,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
     for _ in range(150):
         if primary_running():
             return True
@@ -7216,6 +7424,14 @@ def start_in_background():
 def tell_running(verb):
     if primary_running():
         subprocess.run([sys.executable, os.path.abspath(__file__), verb], timeout=20, check=False)
+
+
+def open_url(url):
+    """A page in your browser, from the terminal commands."""
+    if WINDOWS:
+        os.startfile(url)  # noqa: S606 -- the default browser
+    else:
+        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def lastfm_login():
@@ -7235,7 +7451,7 @@ def lastfm_login():
             fm.set_account("", "")   # ask for them again next time
         return 1
     print("Approve Omarchy Music on this Last.fm page (opening it in your browser):", url, sep="\n", flush=True)
-    subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    open_url(url)
     for _ in range(60):
         time.sleep(3)
         try:
@@ -7266,7 +7482,7 @@ def spotify_login():
 
     def opened(url):
         print("Approve Omarchy Music on this Spotify page (opening it in your browser):", url, sep="\n", flush=True)
-        subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open_url(url)
     try:
         sp.login(client_id, opened)
     except (ValueError, RuntimeError, OSError) as e:

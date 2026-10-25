@@ -4,7 +4,12 @@ A small music popup for [Omarchy](https://omarchy.org/) (Hyprland), themed live 
 Omarchy theme. You browse YouTube Music, Tidal, Apple Music or Spotify, plus the music
 in your own folders. Everything plays in lossless FLAC from Tidal.
 
-It is a single Python/GTK 4 file: `omarchy-music`.
+It is a single Python/GTK 4 file: `omarchy-music`. It also runs on **Windows**, and there is
+an **Android** app.
+
+**Downloads** (Windows installer, Android APK) are on the
+[download page](https://varixxl.github.io/omarchy-music/) and the
+[releases page](https://github.com/Varixxl/omarchy-music/releases).
 
 ## Features
 
@@ -41,7 +46,8 @@ It is a single Python/GTK 4 file: `omarchy-music`.
 - **Background tagging.** Saved songs get genre, composer, label, MusicBrainz IDs and a big
   cover.
 - **Last.fm.** Plays are scrobbled, and **Wrapped** looks back on any year of your history.
-- **Desktop controls.** Media keys work through MPRIS (playerctl). The `omarchy-music`
+- **Desktop controls.** Media keys work through MPRIS (playerctl) on Linux, and directly on
+  Windows. The `omarchy-music`
   command has a CLI (`omarchy-music help`).
 - **Phone remote.** The Android app can play on the desktop instead of the phone (see below).
 
@@ -59,6 +65,12 @@ tools/tidal-keys.sh          # writes tidal.properties (gitignored) from the tid
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+`./gradlew assembleRelease` signs with the key named in
+`~/.local/share/omarchy-music/keystore.properties` (`storeFile`, `storePassword`, `keyAlias`,
+`keyPassword`). That file and the key stay outside the repository. Without them, the
+release build is signed with the debug key. A phone with a debug build installed has to
+uninstall it once before it takes a release build, because the signatures differ.
 
 On the phone, YouTube Music and Apple Music sign in on their own pages inside the app.
 Tidal, Spotify and Last.fm connect the same way as on the desktop. Downloads go to
@@ -90,7 +102,7 @@ sudo ufw allow from 192.168.1.0/24 to any port 5353 proto udp   # finding it wit
 
 ```sh
 sudo pacman -S --needed mpv ffmpeg python-gobject gtk4 libadwaita
-git clone https://github.com/<you>/omarchy-music.git ~/Projects/omarchy-music
+git clone https://github.com/Varixxl/omarchy-music.git ~/Projects/omarchy-music
 ~/Projects/omarchy-music/install.sh
 ```
 
@@ -117,12 +129,28 @@ o.window({ class = "org.omarchy.music" }, {
 Then bind a key to `~/.local/bin/omarchy-music`. Running the command again toggles the
 popup.
 
+## Windows
+
+Get `OmarchyMusic-Setup.exe` from the releases page. It installs for your account only
+(no administrator rights needed) and adds Omarchy Music to the Start menu. It's the same app
+in a normal window, with Python, GTK 4, mpv and ffmpeg bundled. Media keys control it
+directly.
+
+The installer is built by GitHub Actions (`.github/workflows/windows.yml`) in MSYS2:
+`packaging/windows/build.sh` gathers the app with everything it runs on, and
+`packaging/windows/installer.iss` (Inno Setup) packs it. Pushing a `v*` tag builds it and
+attaches it to that release. Running the workflow by hand gives the installer as a build
+artifact.
+
+On Windows, sign in to YouTube Music and Apple Music in **Firefox**. Chrome and Edge encrypt
+their cookies so that only they can read them.
+
 ## Accounts
 
 Open the accounts menu with the ☰ button, or run `omarchy-music accounts`.
 
 - **YouTube Music / Apple Music.** Sign in at music.youtube.com and music.apple.com in
-  Chromium. The app reads those sign-ins from Chromium's cookies.
+  Chromium (Firefox on Windows). The app reads those sign-ins from the browser's cookies.
 - **Tidal** (required for playback). Click **Connect**, or run `omarchy-music --tidal-login`.
   Then sign in on Tidal's page and paste back the address it ends on. Lossless needs a Tidal
   subscription.
@@ -150,6 +178,10 @@ folder:
 | Tidal, Spotify and Last.fm logins (mode 600) | `~/.local/state/omarchy-music-{tidal,spotify,lastfm}.json` |
 | Cover and tag cache | `~/.cache/omarchy-music/` |
 
+On Windows, everything under `~/.local/state` and `~/.cache` is in
+`%LOCALAPPDATA%\omarchy-music` instead, and downloads go to `Music\Omarchy Music` in your
+user folder.
+
 To start over, quit the app (`omarchy-music quit`) and delete those paths.
 
 ## Development
@@ -161,3 +193,9 @@ A second copy can run beside your own. Its own app id and state come from
 - `OMARCHY_MUSIC_MPRIS=0`: no media keys.
 - `OMARCHY_MUSIC_NO_FOCUS=1`.
 - `OMARCHY_MUSIC_MPV="--ao=null"`: silent.
+- `OMARCHY_MUSIC_SELFTEST=1`: opens the window, checks that mpv and the modules work, prints
+  the result and exits (the Windows build runs this).
+
+## License
+
+MIT. See `LICENSE`.

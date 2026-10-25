@@ -1,0 +1,65 @@
+# Builds the Windows installer (OmarchyMusic-Setup.exe) and, for a v* tag, attaches it
+# to that tag's release. Run it by hand from the Actions tab to just get the installer.
+name: Windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: >-
+            gtk4:p libadwaita:p adwaita-icon-theme:p python:p python-gobject:p
+            python-pip:p python-requests:p python-mutagen:p mpv:p ffmpeg:p
+
+      - name: Bundle the app
+        shell: msys2 {0}
+        run: ./packaging/windows/build.sh
+
+      # The bundle on its own, with nothing of MSYS2's on PATH: the window opens and mpv answers.
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\dist\OmarchyMusic\bin;C:\Windows\System32;C:\Windows"
+          $env:OMARCHY_MUSIC_SELFTEST = "1"
+          $p = Start-Process -FilePath dist\OmarchyMusic\bin\python.exe -ArgumentList "dist\OmarchyMusic\omarchy-music" `
+            -NoNewWindow -PassThru -RedirectStandardOutput selftest.out -RedirectStandardError selftest.err
+          if (-not $p.WaitForExit(90000)) { $p.Kill(); Write-Error "timed out" }
+          Get-Content selftest.out, selftest.err
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $version = if ("$env:GITHUB_REF_NAME" -like "v*") { "$env:GITHUB_REF_NAME".Substring(1) } else { "0.0.0" }
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            if (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6") { $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6" }
+            else { choco install innosetup -y --no-progress; $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6" }
+          }
+          iscc /DAppVersion=$version packaging\windows\installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OmarchyMusic-Setup
+          path: dist/OmarchyMusic-Setup.exe
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Omarchy Music ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/OmarchyMusic-Setup.exe --clobber

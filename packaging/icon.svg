@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="256" height="256">
+  <!-- Omarchy Music: a note in the accent colour on the window's dark blue (the Android icon too). -->
+  <rect width="108" height="108" rx="20" fill="#1A1B26"/>
+  <path fill="#7AA2F7" d="M46,32 L74,26 L74,64 A8,8 0 1,1 68,56.3 L68,38.5 L52,42 L52,70 A8,8 0 1,1 46,62.3 Z"/>
+</svg>

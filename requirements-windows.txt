@@ -1,0 +1,7 @@
+# Windows: the modules pip installs on top of MSYS2's (which brings Python, PyGObject,
+# GTK 4, libadwaita, requests, mutagen, mpv and ffmpeg). secretstorage is Linux-only;
+# zeroconf announces the phone remote on the network instead of Avahi.
+ytmusicapi
+tidalapi
+yt-dlp
+zeroconf

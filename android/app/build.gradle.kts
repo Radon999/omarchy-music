@@ -13,6 +13,14 @@ val tidal = Properties().apply {
     rootProject.file("tidal.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
+// The release key isn't in the repository either: keystore.properties (storeFile, storePassword,
+// keyAlias, keyPassword) sits next to it, outside, in ~/.local/share/omarchy-music/. Without
+// it, release builds are signed with the debug key.
+val keystore = Properties().apply {
+    File(System.getProperty("user.home"), ".local/share/omarchy-music/keystore.properties")
+        .takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+
 android {
     namespace = "org.omarchy.music"
     compileSdk = 35
@@ -22,15 +30,24 @@ android {
         minSdk = 29
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
         buildConfigField("String", "TIDAL_CLIENT_ID", "\"${tidal.getProperty("client_id", "")}\"")
         buildConfigField("String", "TIDAL_CLIENT_SECRET", "\"${tidal.getProperty("client_secret", "")}\"")
+    }
+
+    signingConfigs {
+        if (keystore.getProperty("storeFile") != null) create("release") {
+            storeFile = File(keystore.getProperty("storeFile"))
+            storePassword = keystore.getProperty("storePassword")
+            keyAlias = keystore.getProperty("keyAlias")
+            keyPassword = keystore.getProperty("keyPassword")
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
