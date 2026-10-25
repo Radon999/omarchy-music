@@ -1,0 +1,215 @@
+# A merged pull request is released by itself: the next patch version (the next minor one if
+# a pull request in it has the "minor" label; no release if the merged one has "no-release"),
+# with everything merged since the last release, the Windows installer and the signed APK.
+# Pushing to main without a pull request (a release made by hand) releases nothing here.
+#
+# The release key never meets the repository's code: android-build builds the APK without it,
+# and android-sign, the only job that can read the key (the "release" environment's secrets),
+# runs nothing from the repository. So read changes to this file closely before merging them.
+#
+# Run it by hand from the Actions tab for a dry run: everything is built and signed, and the
+# APK is kept as a workflow artifact, but nothing is committed, tagged or released.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The release key's certificate: an APK signed with anything else isn't released.
+  SIGNER: b2b985419729c0d6f1351954de29cec2506aecdb46cc0ad0cc12c0fe92550706
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      skip: ${{ steps.pr.outputs.skip }}
+      tag: ${{ steps.release.outputs.tag }}
+      ref: ${{ steps.release.outputs.ref }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: The merged pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0] // empty' > pr.json
+          if [ ! -s pr.json ]; then echo "Not a merged pull request: nothing to release"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if jq -e '.labels | map(.name) | index("no-release")' pr.json >/dev/null; then
+            echo "#$(jq .number pr.json) has the no-release label"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # main as it is now, not the merge itself: a merge that waited behind another release
+      # comes after that release's version bump.
+      - uses: actions/checkout@v6
+        if: steps.pr.outputs.skip != 'true'
+        with:
+          ref: ${{ github.event_name == 'push' && 'main' || github.sha }}
+          fetch-depth: 0
+
+      - name: Version, notes and draft release
+        id: release
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cur=$(sed -n 's/^VERSION = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' omarchy-music)
+          [ -n "$cur" ] || { echo "No VERSION in omarchy-music"; exit 1; }
+          since=$(git log -1 --format=%cI "v$cur" 2>/dev/null || git log -1 --format=%cI HEAD~1)
+          gh pr list --state merged --base main --limit 100 --search "merged:>$since" \
+            --json number,title,author,labels,mergedAt --jq 'sort_by(.mergedAt)' > prs.json
+          IFS=. read -r major minor patch <<< "$cur"
+          if jq -e 'map(.labels[].name) | index("minor")' prs.json >/dev/null; then minor=$((minor + 1)); patch=0
+          else patch=$((patch + 1)); fi
+          next="$major.$minor.$patch"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "Dry run: would release $next with:"; jq -r '.[] | "  #\(.number) \(.title)"' prs.json
+            { echo "tag="; echo "ref=$GITHUB_SHA"; echo "version=$cur"; } >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git rev-parse -q --verify "refs/tags/v$next" >/dev/null && { echo "v$next already exists"; exit 1; }
+
+          # The app compares VERSION with the latest release; Android needs a higher versionCode.
+          sed -i "s/^VERSION = \"$cur\"/VERSION = \"$next\"/" omarchy-music
+          sed -i -E "s/(versionCode = )[0-9]+/\1$((major * 10000 + minor * 100 + patch))/; s/(versionName = )\"[^\"]*\"/\1\"$next\"/" \
+            android/app/build.gradle.kts
+          grep -q "^VERSION = \"$next\"" omarchy-music && grep -q "versionName = \"$next\"" android/app/build.gradle.kts
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -am "Release $next" -m "$(jq -r '.[] | "#\(.number) \(.title)"' prs.json)"
+          git tag -a "v$next" -m "Omarchy Music $next"
+          git push origin HEAD:main "v$next"
+
+          {
+            echo "## What's new"
+            echo
+            jq -r --arg owner "${GITHUB_REPOSITORY%%/*}" '.[] | "- \(.title) (#\(.number)\(if .author.login == $owner then "" else ", thanks @\(.author.login)" end))"' prs.json
+            echo
+            echo "All the changes: https://github.com/$GITHUB_REPOSITORY/compare/v$cur...v$next"
+            echo
+            echo "## Updating"
+            echo
+            echo "- Pick **Update** in the accounts menu (☰). Opening the menu checks for it (from 1.1.3; older versions check when they start)."
+            echo "- **From 1.0.0, or a debug build on Android:** install this one by hand, as described in the [1.1.0 notes](https://github.com/$GITHUB_REPOSITORY/releases/tag/v1.1.0)."
+          } > notes.md
+          gh release create "v$next" --draft --verify-tag --title "Omarchy Music $next" --notes-file notes.md
+          { echo "tag=v$next"; echo "ref=v$next"; echo "version=$next"; } >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/windows.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+
+  # Builds with the repository's code and no key: the release build falls back to the debug key.
+  android-build:
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tidal's app keys
+        run: |
+          python -m pip install --quiet tidalapi
+          OMARCHY_MUSIC_PYTHON=python android/tools/tidal-keys.sh
+      - name: Test and build
+        working-directory: android
+        run: ./gradlew -q --no-daemon clean testReleaseUnitTest assembleRelease
+      - name: The version is the release's
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          aapt2=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2
+          "$aapt2" dump badging android/app/build/outputs/apk/release/app-release.apk | head -1 | tee badging.txt
+          grep -q "versionName='$VERSION'" badging.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: apk-unsigned
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 1
+
+  # Signs the APK: no checkout, nothing of the repository's runs here.
+  android-sign:
+    needs: [prepare, android-build]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: apk-unsigned
+      - name: Sign
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.jks"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-pass env:STORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled false \
+            --out OmarchyMusic.apk app-release.apk
+          "$tools/apksigner" verify --print-certs OmarchyMusic.apk | tee certs.txt
+          grep -q "Signer #1 certificate SHA-256 digest: $SIGNER" certs.txt
+          [ "$(grep -c '^Signer #' certs.txt)" -eq 1 ]
+          sha256sum OmarchyMusic.apk
+      - name: Attach to the release
+        if: needs.prepare.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" OmarchyMusic.apk --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Keep the dry run's APK
+        if: needs.prepare.outputs.tag == ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: OmarchyMusic-apk
+          path: OmarchyMusic.apk
+          retention-days: 3
+
+  # Only once both are attached: until then the apps don't see it.
+  publish:
+    needs: [prepare, windows, android-sign]
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | tee assets.txt
+          grep -qx OmarchyMusic-Setup.exe assets.txt && grep -qx OmarchyMusic.apk assets.txt
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
