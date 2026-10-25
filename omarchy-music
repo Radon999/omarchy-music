@@ -57,6 +57,8 @@ import base64
 import bisect
 import cmath
 import colorsys
+import collections
+import concurrent.futures
 import difflib
 import hashlib
 import itertools
@@ -799,6 +801,8 @@ def file_cover(path):
 
 TIDAL_SESSION = STATE_DIR / "omarchy-music-tidal.json"
 RETRY_MISSING = 7 * 86400   # look again for songs Tidal didn't have after a week
+SEGMENTS_AHEAD = 8          # hi-res download segments fetched at once
+SONGS_AT_ONCE = 3           # songs a Download you ask for saves at once
 SYNC_EVERY = 3 * 3600       # pick up songs added to your playlists (on your phone, say)
 LOSSLESS = {"LOSSLESS", "HI_RES", "HI_RES_LOSSLESS"}
 # The best Tidal has of each song: hi-res FLAC (up to 24-bit/192 kHz) where it
@@ -1300,12 +1304,26 @@ class Tidal:
         if manifest.is_encrypted:
             raise RuntimeError("Tidal sent an encrypted stream")
         part = dest.with_suffix(".part")
+        urls = manifest.get_urls()
         with open(part, "wb") as f:
-            for url in manifest.get_urls():
-                with requests.get(url, stream=True, timeout=30) as r:
+            if len(urls) == 1:
+                with requests.get(urls[0], stream=True, timeout=30) as r:
                     r.raise_for_status()
                     for chunk in r.iter_content(1 << 16):
                         f.write(chunk)
+            else:   # hi-res: segments of a few seconds, fetched several at once, written in order
+                def fetch(url):
+                    r = requests.get(url, timeout=30)
+                    r.raise_for_status()
+                    return r.content
+                with concurrent.futures.ThreadPoolExecutor(SEGMENTS_AHEAD) as pool:
+                    pending = collections.deque()
+                    for url in urls:
+                        pending.append(pool.submit(fetch, url))
+                        if len(pending) >= SEGMENTS_AHEAD:
+                            f.write(pending.popleft().result())
+                    while pending:
+                        f.write(pending.popleft().result())
         if manifest.is_mpd:
             # FLAC in MP4 segments: take the FLAC out, untouched.
             flac = dest.with_suffix(".remux.flac")
@@ -1486,28 +1504,44 @@ class Downloader:
         progress() runs on the UI thread after each song. Returns how it went:
         {"saved": n, "missing": [tracks Tidal has no lossless copy of], "failed": [(track, why)]}."""
         out = {"saved": 0, "missing": [], "failed": []}
-        for track in tracks:
-            vid = track["id"]
-            if self.lib.is_flac(vid) or (not force and self.lib.recently_missing(vid)):
-                continue
-            with self.lock:
-                if vid in self.active:
-                    continue          # playback is already getting it
-                self.active[vid] = []
-            path, err = None, None
-            try:
-                path = self._download(track)
-                out["saved"] += 1
-            except NoLosslessMatch as e:
-                err = e
-                out["missing"].append(track)
-            except Exception as e:  # noqa: BLE001 -- next song; it is tried again next sync
-                err = e
-                out["failed"].append((track, str(e) or type(e).__name__))
-                print(f"download {vid} ({track.get('artist')} - {track.get('title')}) failed: {e!r}", file=sys.stderr)
-            finally:
-                self._finish(vid, path or self.lib.file(vid), None if self.lib.has(vid) else err)
-            GLib.idle_add(lambda: (progress(), False)[1])
+        todo, counted = iter(tracks), threading.Lock()
+
+        def work():
+            while True:
+                with counted:
+                    track = next(todo, None)
+                if track is None:
+                    return
+                vid = track["id"]
+                if self.lib.is_flac(vid) or (not force and self.lib.recently_missing(vid)):
+                    continue
+                with self.lock:
+                    if vid in self.active:
+                        continue          # playback is already getting it
+                    self.active[vid] = []
+                path, err = None, None
+                try:
+                    path = self._download(track)
+                    with counted:
+                        out["saved"] += 1
+                except NoLosslessMatch as e:
+                    err = e
+                    with counted:
+                        out["missing"].append(track)
+                except Exception as e:  # noqa: BLE001 -- next song; it is tried again next sync
+                    err = e
+                    with counted:
+                        out["failed"].append((track, str(e) or type(e).__name__))
+                    print(f"download {vid} ({track.get('artist')} - {track.get('title')}) failed: {e!r}", file=sys.stderr)
+                finally:
+                    self._finish(vid, path or self.lib.file(vid), None if self.lib.has(vid) else err)
+                GLib.idle_add(lambda: (progress(), False)[1])
+
+        threads = [threading.Thread(target=work, daemon=True) for _ in range(SONGS_AT_ONCE if force else 1)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         return out
 
     def _download(self, track):

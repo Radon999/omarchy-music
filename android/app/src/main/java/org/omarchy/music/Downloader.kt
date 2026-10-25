@@ -6,6 +6,12 @@ import android.provider.MediaStore
 import kotlinx.serialization.json.JsonElement
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 
 /** Gets songs ready to play: Tidal's stream looked up (nothing saved), or the song
  *  downloaded as tagged FLAC into Music/Omarchy Music/. Songs Tidal has no lossless copy
@@ -121,24 +127,30 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
         }.joinToString(". ").ifEmpty { "Nothing new to download" }
     }
 
-    /** Save every song in tracks as FLAC, one at a time (blocking); progress(done) runs after
-     *  each song. Songs Tidal recently didn't have are left alone, unless force (you asked). */
-    fun sync(tracks: List<Track>, force: Boolean = false, progress: (Int) -> Unit): Outcome {
+    /** Save every song in tracks as FLAC, workers songs at a time (blocking); progress(done) runs
+     *  after each song. Songs Tidal recently didn't have are left alone, unless force (you asked). */
+    fun sync(tracks: List<Track>, force: Boolean = false, workers: Int = 1, progress: (Int) -> Unit): Outcome {
         val out = Outcome()
-        for ((i, t) in tracks.withIndex()) {
-            if (!(lib.isFlac(t.id) || (!force && lib.recentlyMissing(t.id)) || busy(t.id) || t.isFile)) {
-                try {
-                    download(t)
-                    out.saved++
-                } catch (_: NoLosslessMatch) {
-                    out.missing += t
-                } catch (e: Exception) {
-                    out.failed += t to (e.message ?: e.javaClass.simpleName)
-                    android.util.Log.w("omarchy-music", "download ${t.id} (${t.artist} - ${t.title}) failed", e)
+        val next = AtomicInteger()
+        val done = AtomicInteger()
+        fun work() {
+            while (true) {
+                val t = tracks.getOrNull(next.getAndIncrement()) ?: return
+                if (!(lib.isFlac(t.id) || (!force && lib.recentlyMissing(t.id)) || busy(t.id) || t.isFile)) {
+                    try {
+                        download(t)
+                        synchronized(out) { out.saved++ }
+                    } catch (_: NoLosslessMatch) {
+                        synchronized(out) { out.missing += t }
+                    } catch (e: Exception) {
+                        synchronized(out) { out.failed += t to (e.message ?: e.javaClass.simpleName) }
+                        android.util.Log.w("omarchy-music", "download ${t.id} (${t.artist} - ${t.title}) failed", e)
+                    }
                 }
+                progress(done.incrementAndGet())
             }
-            progress(i + 1)
         }
+        if (workers <= 1) work() else (1..workers).map { thread { work() } }.forEach { it.join() }
         return out
     }
 
@@ -175,10 +187,24 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
         val timescale = Regex("timescale=\"(\\d+)\"").find(mpd)?.groupValues?.get(1)?.toLong() ?: 0
         val rate = Regex("audioSamplingRate=\"(\\d+)\"").find(mpd)?.groupValues?.get(1)?.toLong() ?: timescale
         val total = if (timescale > 0) samples * rate / timescale else 0
-        dest.outputStream().buffered().use { out ->
-            Flac.fromMp4(httpBytes(init), (start until start + count).asSequence().map { n ->
-                httpBytes(media.replace("\$Number\$", n.toString()))
-            }, out, total)
+        // The segments are a few seconds each: fetch several at once (one by one, each waited
+        // for a round trip), and hand them on in order.
+        val pool = Executors.newFixedThreadPool(SEGMENTS_AHEAD)
+        try {
+            val segments = sequence {
+                val pending = ArrayDeque<Future<ByteArray>>()
+                var n = start
+                while (n < start + count || pending.isNotEmpty()) {
+                    while (n < start + count && pending.size < SEGMENTS_AHEAD) {
+                        val url = media.replace("\$Number\$", (n++).toString())
+                        pending.addLast(pool.submit(Callable { httpBytes(url) }))
+                    }
+                    yield(try { pending.removeFirst().get() } catch (e: ExecutionException) { throw e.cause ?: e })
+                }
+            }
+            dest.outputStream().buffered().use { out -> Flac.fromMp4(httpBytes(init), segments, out, total) }
+        } finally {
+            pool.shutdownNow()
         }
     }
 
@@ -205,5 +231,7 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
 
     companion object {
         const val STREAM_FOR = 15 * 60   // seconds a looked-up stream address is trusted for
+        const val SEGMENTS_AHEAD = 8     // hi-res segments fetched at once
+        const val SONGS_AT_ONCE = 3      // songs a Download you ask for saves at once
     }
 }

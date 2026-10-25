@@ -22,6 +22,7 @@ class Tidal(ctx: Context) : Source {
                        val session: String = "", val country: String = "US", val user: Long = 0)
 
     private val file = File(ctx.filesDir, "tidal.json")
+    @Volatile private var quietUntil = 0L   // after a "too many requests": no calls before this
     @Volatile private var s: Session? = readText(file)?.let { runCatching { JSON.decodeFromString(Session.serializer(), it) }.getOrNull() }
     val connected get() = s != null
     override val signedIn get() = connected
@@ -85,12 +86,25 @@ class Tidal(ctx: Context) : Source {
             .entries.joinToString("&") { "${it.key}=${enc(it.value.toString())}" }
         val url = "$base$path?$q"
         val headers = { mapOf("authorization" to "${s!!.type} ${s!!.access}", "x-tidal-client-version" to "2025.7.16") }
-        return try {
-            httpJson(url, headers(), body, method)
-        } catch (e: HttpError) {
-            if (e.code != 401) throw e
-            refresh()
-            httpJson(url, headers(), body, method)
+        var attempt = 0
+        while (true) {
+            val wait = quietUntil - System.currentTimeMillis()
+            if (wait > 0) Thread.sleep(wait)
+            try {
+                return try {
+                    httpJson(url, headers(), body, method)
+                } catch (e: HttpError) {
+                    if (e.code != 401) throw e
+                    refresh()
+                    httpJson(url, headers(), body, method)
+                }
+            } catch (e: HttpError) {
+                // Too many at once (a Download saves several songs together): every caller
+                // pauses, longer each time, then tries again.
+                if (e.code != 429 || attempt >= 5) throw e
+                val pause = 1000L shl attempt++
+                synchronized(this) { quietUntil = maxOf(quietUntil, System.currentTimeMillis() + pause) }
+            }
         }
     }
 

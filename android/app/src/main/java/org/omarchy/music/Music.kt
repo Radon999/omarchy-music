@@ -552,7 +552,7 @@ object Music {
         downloading = true
         val batch = downloads
         downloadNote = "Downloading in FLAC · 0 of ${batch.size}"
-        bg({ dl.sync(batch, force = true) { n -> scope.launch { savedVersion++; downloadNote = "Downloading in FLAC · $n of ${batch.size}" } } }) { out, err ->
+        bg({ dl.sync(batch, force = true, workers = Downloader.SONGS_AT_ONCE) { n -> scope.launch { savedVersion++; downloadNote = "Downloading in FLAC · $n of ${batch.size}" } } }) { out, err ->
             downloads = downloads.filter { d -> batch.none { it.id == d.id } }
             toast(out?.summary() ?: "Couldn't download: ${err?.message?.take(90)}")
             downloadNext()
