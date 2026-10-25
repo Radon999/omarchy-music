@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
 import org.omarchy.music.Dj
+import org.omarchy.music.SpotifyHistory
+import org.omarchy.music.Stats
 import org.omarchy.music.Found
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
@@ -217,7 +219,7 @@ fun MusicTab(ui: Ui) {
     var ask by remember { mutableStateOf("") }
     if (choosing) FolderBrowser { choosing = false }
     LaunchedEffect(Unit) { if (granted) Music.rescanSoon() }
-    LaunchedEffect(ui.musicView, Music.accountsVersion) { if (ui.musicView == "top") Music.freshenMostPlayed() }
+    LaunchedEffect(ui.musicView, Music.accountsVersion, SpotifyHistory.count) { if (ui.musicView == "top") Stats.refresh() }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) Music.importPlaylist(uri) }
     Music.musicVersion
     Music.savedVersion
@@ -267,7 +269,7 @@ fun MusicTab(ui: Ui) {
                                     }
                                 }
                             } else Section(if (ui.musicView == "recent") "RECENTLY PLAYED"
-                                           else if (Music.mostPlayedFromLastFm) "MOST PLAYED · LAST.FM" else "MOST PLAYED")
+                                           else if (Music.mostPlayedFromStats) "MOST PLAYED · STATS" else "MOST PLAYED")
                         }
                         if (ui.musicView == "all" && Music.musicSort in setOf("artist", "album")) grouped(tracks, ui, Music.musicSort == "artist")
                         else tracks(tracks, ui, ui.musicView) { t -> if (ui.musicView == "top") "${t.plays} play${if (t.plays != 1) "s" else ""}" else "" }

@@ -257,6 +257,11 @@ object Wrapped {
         return rows
     }
 
+    /** Your scrobbles in year, as (time, title), from the cache Wrapped keeps (blocking: what's
+     *  new is asked of Last.fm). For [Stats], to tell which Spotify plays Last.fm has too. */
+    fun scrobbleTimes(ctx: Context, year: Int): List<Pair<Long, String>> =
+        scrobbles(File(ctx.filesDir, "wrapped").apply { mkdirs() }, Period.Year(year)) {}.map { it.t to it.title }
+
     /** rows with your Spotify plays from start to end that Last.fm hasn't got. A play Last.fm
      *  has is the same song scrobbled from five minutes before it began until five after it stopped. */
     private fun withSpotify(rows: List<Row>, start: Long, end: Long): List<Row> {

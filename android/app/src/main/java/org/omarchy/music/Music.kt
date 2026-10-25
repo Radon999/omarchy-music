@@ -222,35 +222,28 @@ object Music {
     }
 
     // ---- most played ----
-    private var fmTop: Pair<Double, List<Track>?> = 0.0 to null
-    private var fmTopBusy = false
+    private var mostPlayedFor: List<Stats.Song>? = null
+    private var mostPlayedMade = listOf<Track>()
 
-    /** The Music tab's Most played: your Last.fm top songs when Last.fm is connected (every
-     *  scrobble, from anywhere), else what you've played here. Until Last.fm's list comes,
-     *  the songs played here stand in. */
-    fun mostPlayed(): List<Track> = if (LastFm.connected) fmTop.second ?: plays.top() else plays.top()
-    val mostPlayedFromLastFm get() = LastFm.connected && fmTop.second != null
-
-    /** Ask Last.fm for your top songs, when the list is over ten minutes old. */
-    fun freshenMostPlayed() {
-        if (!LastFm.connected || fmTopBusy) return
-        val (at, songs) = fmTop
-        if (songs != null && now() - at < 600) return
-        fmTopBusy = true
-        bg({ lastFmTopSongs() }) { res, _ ->
-            fmTopBusy = false
-            if (res != null) fmTop = now() to res
-            else if (songs == null) fmTop = now() - 480 to null   // try again in two minutes
-            musicVersion++
+    /** The Music tab's Most played: every play added up (see [Stats]): Last.fm's, your Spotify
+     *  history's and, without Last.fm, the plays here. Until the counts are in, the plays here stand in. */
+    fun mostPlayed(): List<Track> {
+        val counts = Stats.songs
+        if (counts.isEmpty()) return plays.top()
+        if (counts !== mostPlayedFor) {
+            val mine = songIndex()
+            mostPlayedMade = counts.take(500).map { fmSong(it.title, it.artist, it.thumb, mine).copy(plays = it.plays) }
+            mostPlayedFor = counts
         }
+        return mostPlayedMade
     }
+    val mostPlayedFromStats get() = Stats.songs.isNotEmpty() && (LastFm.connected || SpotifyHistory.count > 0)
 
-    /** (blocking) Your n most scrobbled songs: as you have them here when you do (saved, in your
-     *  folders, played), else to be found on Tidal when you play them. */
-    private fun lastFmTopSongs(n: Int = 200): List<Track> {
+    /** Song key to your copy of it: saved, in your folders, or played here. */
+    fun songIndex(): Map<Pair<String, String>, Track> {
         val mine = HashMap<Pair<String, String>, Track>()
         for (t in plays.items.values.map { it.track } + mySongs()) mine[songKey(t)] = t   // yours on disk win over ones only played
-        return LastFm.top("track", n).map { x -> fmSong(x.name, x.artist, x.image, mine).copy(plays = x.plays) }
+        return mine
     }
 
     /** A song Last.fm named: yours (mine: song key to song) when you have it, else one to be

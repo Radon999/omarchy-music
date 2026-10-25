@@ -75,6 +75,7 @@ import subprocess
 import sys
 import threading
 import functools
+import zipfile
 import time
 import tomllib
 import unicodedata
@@ -83,7 +84,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -3530,9 +3531,9 @@ class LastFM:
         rt = self.call("user.getRecentTracks", user=self.user, limit=1, **{"from": int(start), "to": int(end)})
         return int(((rt.get("recenttracks") or {}).get("@attr") or {}).get("total") or 0)
 
-    def top(self, kind, limit=10, period="overall"):
+    def top(self, kind, limit=10, period="overall", page=1):
         """Your all-time (or period's) top artists, tracks or albums: [(name, artist, plays, image)]."""
-        res = self.call(f"user.getTop{kind.title()}s", user=self.user, period=period, limit=limit)
+        res = self.call(f"user.getTop{kind.title()}s", user=self.user, period=period, limit=limit, page=page)
         items = (res.get(f"top{kind}s") or {}).get(kind) or []
         out = []
         for x in [items] if isinstance(items, dict) else items:
@@ -3541,6 +3542,271 @@ class LastFM:
             out.append((x.get("name") or "", artist.get("name", "") if isinstance(artist, dict) else "",
                         int(x.get("playcount") or 0), img))
         return out
+
+
+# =============================================================================
+# Your plays everywhere: your Spotify history (from the data download Spotify
+# gives you) and the counts that add it to Last.fm's, for Most played, the
+# Artists tab and the artist pages
+# =============================================================================
+SPOTIFY_HISTORY = STATE_DIR / f"omarchy-music{SUFFIX}-spotify-history.json"
+STATS = CACHE / f"stats{SUFFIX}.json"   # the counts added up, kept between starts
+STATS_FOR = 600       # seconds the counts are good for, before they're added up again
+FM_TOP_PAGES = 5      # Last.fm's top songs, 200 a page: your 1,000 most played
+FM_ARTIST_PAGES = 2   # and your 400 most played artists
+
+
+class SpotifyHistory:
+    """What you played on Spotify, from the zip its privacy page gives you (the extended
+    streaming history, or the past year's), as the phone reads it. A play counts from 30
+    seconds, as Spotify counts streams; podcasts and videos are left out."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.plays = [tuple(p) for p in read_json(SPOTIFY_HISTORY, {}).get("plays", [])]   # (start, artist, title, album, ms)
+
+    def add(self, new):
+        """Add plays, but not those here already: the same song starting or stopping
+        within two minutes. How many were new."""
+        with self.lock:
+            have = {}
+            for p in self.plays:
+                have.setdefault(norm(clean_title(p[2])), []).append(p)
+            fresh = []
+            for p in new:
+                same = have.setdefault(norm(clean_title(p[2])), [])
+                end = p[0] + p[4] // 1000
+                if all(abs(q[0] - p[0]) >= 120 and abs(q[0] + q[4] // 1000 - end) >= 120 for q in same):
+                    same.append(p)
+                    fresh.append(p)
+            if fresh:
+                self.plays = sorted(self.plays + fresh)
+                write_atomic(SPOTIFY_HISTORY, json.dumps({"plays": self.plays}))
+            return len(fresh)
+
+    def clear(self):
+        with self.lock:
+            self.plays = []
+            SPOTIFY_HISTORY.unlink(missing_ok=True)
+
+    @staticmethod
+    def parse(entries):
+        """The plays in one history file. The extended history: ts (when it stopped, UTC),
+        ms_played, master_metadata_*; the past year's: endTime ("2024-01-31 18:02", UTC),
+        artistName, trackName, msPlayed."""
+        out = []
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict):
+                continue
+            ms = int(e.get("ms_played") or e.get("msPlayed") or 0)
+            title = e.get("master_metadata_track_name") or e.get("trackName")
+            artist = e.get("master_metadata_album_artist_name") or e.get("artistName")
+            try:
+                if e.get("ts"):
+                    end = int(datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).timestamp())
+                elif e.get("endTime"):
+                    end = int(datetime.strptime(e["endTime"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc).timestamp())
+                else:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if ms >= 30000 and title and artist and artist != "Unknown Artist":
+                out.append((end - ms // 1000, artist, title, e.get("master_metadata_album_album_name") or "", ms))
+        return out
+
+    @staticmethod
+    def wanted(path):
+        name = path.replace("\\", "/").rsplit("/", 1)[-1]
+        return name.endswith(".json") and (name.startswith("Streaming_History_Audio") or (
+            name.startswith("StreamingHistory") and "podcast" not in name.lower() and "video" not in name.lower()))
+
+    def import_file(self, path):
+        """Read Spotify's zip (or one of its .json files); how many plays were new (blocking)."""
+        out = []
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as z:
+                names = [n for n in z.namelist() if self.wanted(n)]
+                if not names:
+                    raise ValueError("there's no streaming history in that zip: Spotify's download has "
+                                     "Streaming_History_Audio files (or StreamingHistory_music)")
+                for n in names:
+                    with z.open(n) as f:
+                        try:
+                            out += self.parse(json.load(f))
+                        except ValueError:
+                            pass   # not a history file after all
+        else:
+            out = self.parse(read_json(Path(path), []))
+        if not out:
+            raise ValueError("no songs played for 30 seconds or more in it")
+        return self.add(out)
+
+
+def not_scrobbled(plays, rows):
+    """The Spotify plays (start, artist, title, album, ms) that Last.fm doesn't have among
+    rows (its scrobbles, (time, artist, title, album, image)): a scrobble of the same song
+    from five minutes before a play began until five after it stopped is that play, and
+    each scrobble stands for one play."""
+    scrobbled = {}
+    for r in rows:
+        scrobbled.setdefault(norm(clean_title(r[2])), []).append(r[0])
+    out = []
+    for p in plays:
+        times = scrobbled.get(norm(clean_title(p[2])))
+        hit = next((i for i, t in enumerate(times or []) if p[0] - 300 <= t <= p[0] + p[4] // 1000 + 300), None)
+        if hit is None:
+            out.append(p)
+        else:
+            del times[hit]
+    return out
+
+
+def scrobble_rows(fm, period, progress=None):
+    """Your scrobbles in period (a year, "m2026-10" or "w2026-10-19"): [(time, artist, title,
+    album, image)], read from Last.fm once and kept in WRAPPED; later only what's new is asked for."""
+    start = period_start(period).timestamp()
+    end = min(period_end(period).timestamp(), time.time())
+    WRAPPED.mkdir(parents=True, exist_ok=True)
+    path = WRAPPED / f"{safe_name(fm.user.lower())}-{period}.json"
+    saved = read_json(path, {})
+    rows = [tuple(r) for r in saved.get("rows", [])]
+    since = saved.get("until", start)
+    if since < end - 60:
+        new = fm.recent(since, end, lambda p, n: progress and progress(f"Reading your scrobbles · {period_name(period)} · "
+                                                                      f"page {p} of {n}"))
+        have = {(r[0], r[2]) for r in rows}
+        rows = sorted(rows + [r for r in new if (r[0], r[2]) not in have])
+        write_atomic(path, json.dumps({"rows": rows, "until": end}))
+    return rows
+
+
+def add_plays(songs, title, artist, album, thumb, n, source):
+    """Count n plays from source ("lastfm", "spotify" or "here") for a song in songs (song key -> its counts)."""
+    if not title or not artist or n <= 0:
+        return
+    k = song_key({"title": title, "artist": artist})
+    s = songs.get(k)
+    if s is None:
+        s = songs[k] = {"title": title, "artist": artist, "album": album or "", "thumb": thumb or "",
+                        "plays": 0, "lastfm": 0, "spotify": 0, "here": 0}
+    s[source] += n
+    s["plays"] += n
+    s["album"] = s["album"] or album or ""
+    s["thumb"] = s["thumb"] or thumb or ""
+
+
+class Stats:
+    """Every play added up, from wherever you played it: Last.fm's (all time: your 1,000 most
+    played songs and 400 most played artists), your Spotify history's that Last.fm doesn't
+    have (a Spotify play Last.fm scrobbled too counts once), and without Last.fm, the plays
+    here. Most played, the Artists tab and the artist pages show these. Added up again in
+    the background when they're older than STATS_FOR or what goes into them changed."""
+
+    def __init__(self, app):
+        self.app = app
+        saved = read_json(STATS, {})
+        self.songs = saved.get("songs") or []       # most played first: {title, artist, album, thumb, plays, lastfm, spotify, here}
+        self.artists = saved.get("artists") or []   # [{name, plays, lastfm, spotify, here, thumb}], most played first
+        self.built, self.sig = saved.get("built", 0), saved.get("sig")
+        self.busy, self.status, self.error = False, "", ""
+        self.watchers = []   # called (on the UI thread) when new counts are in
+
+    def inputs(self):
+        a = self.app
+        return [a.lastfm.user if a.lastfm.connected else "", len(a.spotify_history.plays),
+                0 if a.lastfm.connected else sum(e.get("plays", 0) for e in a.plays.items.values())]
+
+    @property
+    def sources(self):
+        """Where the counts come from: "Last.fm", "Spotify", "here", in that order."""
+        have = {k for s in self.songs[:200] for k in ("lastfm", "spotify", "here") if s.get(k)}
+        return [name for k, name in (("lastfm", "Last.fm"), ("spotify", "Spotify"), ("here", "here")) if k in have]
+
+    def refresh(self, force=False):
+        """Add them up again (off the UI thread) if they're stale."""
+        if self.busy or not (force or self.sig != self.inputs() or time.time() - self.built > STATS_FOR):
+            return
+        self.busy = True
+
+        def progress(text):
+            self.status = text
+
+        def done(res, err):
+            self.busy, self.status = False, ""
+            if err is not None:
+                self.error = str(err)[:120]
+                self.built = time.time() - STATS_FOR + 120   # try again in two minutes
+                print(f"stats: {err!r}", file=sys.stderr)
+            else:
+                self.error = ""
+            for cb in self.watchers:
+                cb()
+        in_thread(self.build, progress, done=done)
+
+    def build(self, progress=lambda text: None):
+        """(blocking) Add everything up and keep it."""
+        a, fm = self.app, self.app.lastfm
+        sig = self.inputs()
+        songs, artists = {}, {}
+        if fm.connected:
+            for page in range(1, FM_TOP_PAGES + 1):
+                progress(f"Your Last.fm plays · page {page} of {FM_TOP_PAGES}")
+                got = fm.top("track", 200, page=page)
+                for name, artist, plays, img in got:
+                    add_plays(songs, name, artist, "", "" if LASTFM_BLANK in img else img, plays, "lastfm")
+                if len(got) < 200:
+                    break
+            for page in range(1, FM_ARTIST_PAGES + 1):
+                got = fm.top("artist", 200, page=page)
+                for name, _a, plays, _img in got:   # Last.fm's artist pictures are all its grey star now
+                    add_plays(artists, name, name, "", "", plays, "lastfm")
+                if len(got) < 200:
+                    break
+        else:
+            for e in a.plays.items.values():
+                t = e.get("track") or {}
+                add_plays(songs, t.get("title"), t.get("artist"), t.get("album"), t.get("thumb"), e.get("plays", 0), "here")
+        extra = list(a.spotify_history.plays)
+        if extra and fm.connected:
+            years = sorted({datetime.fromtimestamp(p[0]).year for p in extra})
+            first = datetime.fromtimestamp(fm.info().get("registered") or time.time()).year
+            rows = []
+            for y in years:
+                if y >= first:   # nothing was scrobbled before you joined Last.fm
+                    rows += scrobble_rows(fm, y, progress)
+            extra = not_scrobbled(extra, rows)
+        for p in extra:
+            add_plays(songs, p[2], p[1], p[3], "", 1, "spotify")
+        # Artists: Last.fm's own totals (more than its top songs add up to), else the songs'.
+        by_lead = {}
+        for s in songs.values():
+            lead = s["artist"].split(",")[0].strip()
+            for source in ("spotify", "here") if fm.connected else ("lastfm", "spotify", "here"):
+                add_plays(by_lead, lead, lead, "", "", s[source], source)
+            pic = by_lead.get(song_key({"title": lead, "artist": lead}))
+            if pic is not None and not pic["thumb"]:
+                pic["thumb"] = s["thumb"]
+        for k, s in by_lead.items():
+            if k in artists:
+                for source in ("spotify", "here"):
+                    artists[k][source] += s[source]
+                    artists[k]["plays"] += s[source]
+            else:
+                artists[k] = s
+        self.songs = sorted(songs.values(), key=lambda s: -s["plays"])
+        self.artists = [{"name": s["title"], **{k: s[k] for k in ("plays", "lastfm", "spotify", "here", "thumb")}}
+                        for s in sorted(artists.values(), key=lambda s: -s["plays"])]
+        self.built, self.sig = time.time(), sig
+        write_atomic(STATS, json.dumps({"songs": self.songs, "artists": self.artists, "built": self.built, "sig": sig}))
+
+    def artist_songs(self, name):
+        """The songs of artist name (theirs or with them), most played first."""
+        n = norm(name)
+        return [s for s in self.songs if any(norm(a) == n for a in re.split(r",|&| x | feat\.? | ft\.? ", s["artist"]))]
+
+    def artist(self, name):
+        n = norm(name)
+        return next((a for a in self.artists if norm(a["name"]) == n), None)
 
 
 # =============================================================================
@@ -5448,6 +5714,15 @@ class MusicWindow(Adw.ApplicationWindow):
                                 quiet=True))
             buttons.append(pill("Connect", lambda: a.lastfm_connect(key.get_text(), secret.get_text())))
             across(buttons)
+        plays = len(a.spotify_history.plays)
+        line("Spotify history", a.spotify_importing or (
+             f"{plays:,} plays from your Spotify download, in Most played, Artists and Wrapped" if plays else
+             "Import the zip from Spotify's privacy page (Download your data) to add its plays to your stats"),
+             bool(plays), pill("Import", self.pick_spotify_history, quiet=bool(plays)))
+        if plays and not fm.connected:
+            across(pill(f"✦  Open your {wrapped_year()} Wrapped", a.open_wrapped))
+        if plays:
+            across(pill("Forget the Spotify history", a.spotify_history_clear, quiet=True))
 
         box.append(Gtk.Separator())
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
@@ -5502,6 +5777,26 @@ class MusicWindow(Adw.ApplicationWindow):
                 return   # cancelled
             if f and f.get_path():
                 self.app.import_playlist(f.get_path())
+        dlg.open(self, None, chosen)
+
+    def pick_spotify_history(self):
+        """Pick the zip Spotify's privacy page gave you (or one of its .json files)."""
+        filt = Gtk.FileFilter(name="Spotify's data download (.zip, .json)")
+        for pat in ("*.zip", "*.json", "*.ZIP", "*.JSON"):
+            filt.add_pattern(pat)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filt)
+        downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or str(HOME)
+        dlg = Gtk.FileDialog(title="Import your Spotify history", filters=filters, default_filter=filt,
+                             initial_folder=Gio.File.new_for_path(downloads))
+
+        def chosen(d, res):
+            try:
+                f = d.open_finish(res)
+            except GLib.Error:
+                return   # cancelled
+            if f and f.get_path():
+                self.app.import_spotify_history(f.get_path())
         dlg.open(self, None, chosen)
 
     def update_tagger_label(self):
@@ -5814,7 +6109,7 @@ class MusicWindow(Adw.ApplicationWindow):
         else:
             tracks = a.most_played()
         # The same songs in the same order as shown: only the marks may have changed.
-        sig = (view, sort, tuple(t["id"] for t in tracks), a.lastfm.connected and bool(a.fm_top[1]))
+        sig = (view, sort, tuple((t["id"], t.get("plays")) for t in tracks), tuple(a.stats.sources))
         if sig == getattr(self, "_music_sig", None) and not lst.is_empty():
             self.refresh_count()
             self.mark_rows()
@@ -5841,8 +6136,8 @@ class MusicWindow(Adw.ApplicationWindow):
             self.refresh_count()
             lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=self.sort_chips()))
         else:
-            self.section(lst, {"recent": "RECENTLY PLAYED", "top": "MOST PLAYED · LAST.FM" if a.lastfm.connected and a.fm_top[1]
-                               else "MOST PLAYED"}[view])
+            self.section(lst, {"recent": "RECENTLY PLAYED", "top": "MOST PLAYED · STATS" if a.stats.songs and (
+                a.lastfm.connected or a.spotify_history.plays) else "MOST PLAYED"}[view])
         group = [None]
 
         def add(i):
@@ -7177,14 +7472,35 @@ def top_genres(app, artists):
 def wrapped_data(app, period, progress):
     """Everything Wrapped shows for a year (or "all"). It blocks: a big year takes a
     minute the first time (Last.fm hands out 200 scrobbles a request), then it's kept."""
-    fm = app.lastfm
+    fm, spotify = app.lastfm, list(app.spotify_history.plays)
+    if not fm.connected and not spotify:
+        raise RuntimeError("connect Last.fm, or import your Spotify history, in the accounts menu (☰)")
     WRAPPED.mkdir(parents=True, exist_ok=True)
-    progress("Opening your Last.fm…")
-    me = fm.info()
+    if fm.connected:
+        progress("Opening your Last.fm…")
+        me = fm.info()
+    else:
+        me = {"name": "You", "playcount": 0, "registered": 0}
     first_year = datetime.fromtimestamp(me["registered"]).year if me["registered"] else datetime.now().year
+    if spotify:
+        first_year = min(first_year, datetime.fromtimestamp(spotify[0][0]).year)
     years = list(range(datetime.now().year, first_year - 1, -1))
     base = {"period": period, "kind": period_kind(period), "user": me["name"], "years": years, "since": first_year}
-    if period == "all":
+    if period == "all" and spotify:   # Spotify's plays go in play by play: every year's scrobbles, then
+        rows = []
+        for y in reversed(years):
+            if fm.connected:
+                rows += scrobble_rows(fm, y, progress)
+        rows = sorted(rows + [(p[0], p[1], p[2], p[3], "") for p in not_scrobbled(spotify, rows)])
+        if not rows:
+            return base | {"empty": True}
+        data = base | year_stats(rows)
+        counts = Counter(datetime.fromtimestamp(r[0]).year for r in rows)
+        data |= {"scrobbles": len(rows), "years_count": [(y, counts[y]) for y in reversed(years)], "artist_count": None,
+                 "minutes": round(len(rows) * 3.5)}
+        data["artists"] = data["artists"][:30]
+        del data["plays"], data["names"]
+    elif period == "all":
         counts = []
         for y in reversed(years):
             progress(f"Counting your scrobbles · {y}")
@@ -7202,16 +7518,10 @@ def wrapped_data(app, period, progress):
         start = period_start(period).timestamp()
         natural_end = period_end(period).timestamp()
         end = min(natural_end, time.time())
-        path = WRAPPED / f"{safe_name(fm.user.lower())}-{period}.json"
-        saved = read_json(path, {})
-        rows = [tuple(r) for r in saved.get("rows", [])]
-        since = saved.get("until", start)
-        if since < end - 60:
-            new = fm.recent(since, end, lambda p, n: progress(f"Reading your scrobbles · {period_name(period)} · "
-                                                               f"page {p} of {n}"))
-            have = {(r[0], r[2]) for r in rows}
-            rows = sorted(rows + [r for r in new if (r[0], r[2]) not in have])
-            write_atomic(path, json.dumps({"rows": rows, "until": end}))
+        rows = scrobble_rows(fm, period, progress) if fm.connected else []
+        mine = [p for p in spotify if start <= p[0] < end]
+        if mine:   # with your Spotify plays that Last.fm hasn't got
+            rows = sorted(rows + [(p[0], p[1], p[2], p[3], "") for p in not_scrobbled(mine, rows)])
         if not rows:
             return base | {"empty": True}
         data = base | year_stats(rows)
@@ -7231,7 +7541,7 @@ def wrapped_data(app, period, progress):
         progress("Comparing with before…")
         try:   # as far into the period before as this one has gone
             length = natural_end - start
-            data["prev_count"] = fm.count(start - length, start - length + (end - start))
+            data["prev_count"] = fm.count(start - length, start - length + (end - start)) if fm.connected else None
         except Exception:  # noqa: BLE001 -- no comparison, then
             data["prev_count"] = None
     progress("Finding your genres…")
@@ -7998,7 +8308,9 @@ class MusicApp(Adw.Application):
         self.keep_played = False   # off: songs stream from Tidal and download only when you pick Download
         self.music_sort = "title"  # how the Music tab's All is sorted
         self.search_in = "tidal"   # where the search bar looks (SEARCH_IN)
-        self.fm_top = (0.0, None)  # (when, songs): your Last.fm most played, for the Music tab
+        self.spotify_history = SpotifyHistory()
+        self.stats = Stats(self)   # every play added up: Most played, the Artists tab, artist pages
+        self.stats.watchers.append(self.stats_changed)
         self.streaming = False     # what's playing comes from Tidal's stream, not a file
         self.stream_retry = -1     # the load_seq whose broken stream was picked up again already
         self.tint_path = self.tint_provider = None
@@ -8216,8 +8528,8 @@ class MusicApp(Adw.Application):
                 return fail("omarchy-music wrapped [YEAR|month|week|all]", 2)
             self.open_wrapped("all" if arg.startswith("all") else this_period(arg) if arg in ("month", "week")
                               else int(arg) if arg else None)
-            if not self.lastfm.connected:
-                return fail("Wrapped is made from your Last.fm scrobbles: connect Last.fm first "
+            if not self.lastfm.connected and not self.spotify_history.plays:
+                return fail("Wrapped is made from your Last.fm scrobbles or your Spotify history: connect Last.fm first "
                             "(the accounts menu, or omarchy-music --lastfm-login)")
         elif verb == "tag":
             n = len(self.tagger.untagged())
@@ -8576,33 +8888,22 @@ class MusicApp(Adw.Application):
         return out + [t for t in self.local.tracks() if t["file"] not in seen]
 
     def most_played(self):
-        """The Music tab's Most played: your Last.fm top songs when Last.fm is connected (every
-        scrobble, from anywhere), else what you've played here. Last.fm's list is asked for again
-        after ten minutes; until it comes, the songs played here stand in."""
-        if not self.lastfm.connected:
+        """The Music tab's Most played: every play added up (see Stats): Last.fm's, your Spotify
+        history's and, without Last.fm, the plays here. Until the counts are in, the plays here stand in."""
+        self.stats.refresh()
+        if not self.stats.songs:
             return self.plays.top()
-        when, songs = self.fm_top
-        if (songs is None or time.time() - when > 600) and not getattr(self, "fm_top_busy", False):
-            self.fm_top_busy = True
+        mine = self.song_index()
+        return [dict(self.fm_song(st["title"], st["artist"], st["thumb"], mine), plays=st["plays"],
+                     plays_from={k: st[k] for k in ("lastfm", "spotify", "here") if st.get(k)})
+                for st in self.stats.songs[:500]]
 
-            def done(res, err):
-                self.fm_top_busy = False
-                if res is not None:
-                    self.fm_top = (time.time(), res)
-                elif songs is None:
-                    self.fm_top = (time.time() - 480, None)   # try again in two minutes
-                if self.win and self.win.music_view == "top" and not self.win.selecting:
-                    self.win.refresh_music()
-            in_thread(self.lastfm_top_songs, done=done)
-        return [dict(t) for t in songs] if songs is not None else self.plays.top()
-
-    def lastfm_top_songs(self, n=200):
-        """(blocking) Your n most scrobbled songs: as you have them here when you do (saved, in your
-        folders, played), else to be found on Tidal or YouTube Music when you play them."""
+    def song_index(self):
+        """Song key -> your copy of it (saved, in your folders, or played here)."""
         mine = {}
         for t in [e["track"] for e in self.plays.items.values()] + self.my_songs():
             mine[song_key(t)] = t   # yours on disk win over ones only played
-        return [dict(self.fm_song(name, artist, img, mine), plays=plays) for name, artist, plays, img in self.lastfm.top("track", n)]
+        return mine
 
     @staticmethod
     def fm_song(name, artist, img, mine):
@@ -9198,11 +9499,44 @@ class MusicApp(Adw.Application):
             in_thread(self.lastfm.scrobble, ls["meta"], ls["start"], done=self.lastfm_result)
 
     # ---- Wrapped ----
+    # ---- your Spotify history and the stats ----
+    spotify_importing = ""   # what the import is doing, for the accounts menu
+
+    def import_spotify_history(self, path):
+        self.spotify_importing = "Reading your Spotify history…"
+        self.refresh_accounts_soon()
+
+        def done(n, err):
+            self.spotify_importing = ""
+            if err is not None:
+                self.toast(f"Couldn't import that: {str(err)[:100]}")
+            else:
+                total = len(self.spotify_history.plays)
+                self.toast(f"Added {n:,} plays from Spotify ({total:,} in all)" if n else "Those plays were all here already")
+                self.stats.refresh(force=True)
+            self.refresh_accounts_soon()
+        in_thread(self.spotify_history.import_file, path, done=done)
+
+    def spotify_history_clear(self):
+        self.spotify_history.clear()
+        self.stats.refresh(force=True)
+        self.refresh_accounts_soon()
+
+    def refresh_accounts_soon(self):
+        if self.win and self.win.accounts_pop.get_visible():
+            self.win.refresh_accounts()
+
+    def stats_changed(self):
+        """New counts are in: show them where they're shown."""
+        if self.win:
+            if self.win.music_view == "top" and not self.win.selecting:
+                self.win.refresh_music()
+
     def open_wrapped(self, period=None):
-        """Your Wrapped, in a window of its own, from your Last.fm history."""
-        if not self.lastfm.connected:
+        """Your Wrapped, in a window of its own, from your Last.fm history and your Spotify history."""
+        if not self.lastfm.connected and not self.spotify_history.plays:
             self.show_window()
-            self.toast("Connect Last.fm first: Wrapped is made from your scrobbles")
+            self.toast("Connect Last.fm, or import your Spotify history, first: Wrapped is made from your plays")
             self.win.accounts_pop.popup()
             return
         period = period or wrapped_year()

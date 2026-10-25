@@ -241,8 +241,8 @@ object LastFm {
         call("user.getRecentTracks", params = mapOf("user" to user, "limit" to 1, "from" to start, "to" to end)).path("recenttracks", "@attr", "total").long?.toInt() ?: 0
 
     /** Your top artists, tracks or albums (kind: "artist", "track", "album"). */
-    fun top(kind: String, limit: Int = 10, period: String = "overall"): List<Top> {
-        val res = call("user.getTop${kind.replaceFirstChar { it.uppercase() }}s", params = mapOf("user" to user, "period" to period, "limit" to limit))
+    fun top(kind: String, limit: Int = 10, period: String = "overall", page: Int = 1): List<Top> {
+        val res = call("user.getTop${kind.replaceFirstChar { it.uppercase() }}s", params = mapOf("user" to user, "period" to period, "limit" to limit, "page" to page))
         return items(res.path("top${kind}s", kind)).map { x ->
             val a = x["artist"]
             Top(x["name"].str ?: "", (if (a is JsonObject) a["name"].str else null) ?: "", x["playcount"].long?.toInt() ?: 0, image(x))
