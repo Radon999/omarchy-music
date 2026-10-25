@@ -10,9 +10,14 @@ It is a single Python/GTK 4 file: `omarchy-music`.
 
 - **Four services, one player.** Switch between them at the top. Each song is matched on
   Tidal (by ISRC when the service has one, otherwise by title, artist and length) and
-  downloaded as FLAC the first time you play it, or when you pick **Download**.
-- **Nothing downloads on its own.** Each service has a **Sync** switch in the accounts menu
-  that saves all of its playlists. Every switch is off to start.
+  **streamed in FLAC**, hi-res (up to 24-bit/192 kHz) where Tidal has it.
+- **Download when you choose.** Click the **⤓ FLAC** mark next to the controls, or pick
+  **Download** in a song's menu (or for a selection), to save the FLAC and play it from disk.
+- **Nothing downloads on its own.** **Keep** (in the accounts menu) saves every song you
+  play. Each service's **Sync** switch saves all of its playlists. Both are off to start.
+- **Apple Music.** Browse and search your Apple Music library and playlists. Apple's own audio
+  is locked with DRM (FairPlay), so Apple songs stream and download from the same recording
+  on Tidal, matched by ISRC.
 - **Local files.** Songs in your folders (`~/Music` to start; add more in the accounts menu)
   appear in the Music tab beside your downloads, with the covers they carry.
 - **Music tab:**

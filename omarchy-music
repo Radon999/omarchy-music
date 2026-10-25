@@ -3,13 +3,15 @@
 
 Browse and search YouTube Music, Tidal, Apple Music or Spotify (switch at the
 top), and the music in your own folders (~/Music to start). The audio of the
-services always comes from Tidal in FLAC: each song is matched there (by its
-ISRC when the service has one, else by title, artist and length), downloaded
-the first time you play it (or when you pick Download) and played from disk
-after that. Nothing downloads on its own: each service has a Sync switch in
-the accounts menu, off to start, that saves all of its playlists. Songs Tidal
-has no lossless copy of are skipped. The next song in the queue is fetched
-ahead so tracks change without a gap.
+services always comes from Tidal in FLAC (hi-res where Tidal has it): each
+song is matched there (by its ISRC when the service has one, else by title,
+artist and length) and streamed. Download (the FLAC mark by the controls, or
+a song's menu) saves it to play from disk. Nothing downloads on its own: "Keep"
+in the accounts menu saves every song you play, and each service has a Sync
+switch that saves all of its playlists, all off to start. Apple Music's own
+audio is locked with DRM, so its songs play from the same recording on Tidal.
+Songs Tidal has no lossless copy of are skipped. The next song in the queue
+is looked up ahead so tracks change without a wait.
 
 The Music tab has all your songs (downloaded and in your folders), your own
 playlists, and what you played recently, added recently and play most. Click
@@ -1066,6 +1068,28 @@ class Tidal:
         same_album = 0.05 if track.get("album") and similar(track["album"].lower(), album.lower()) > 0.8 else 0.0
         return 0.55 * t + 0.2 * lead + 0.1 * credits + 0.15 * closeness + same_album
 
+    def stream(self, c):
+        """Tidal track c as something mpv plays straight from Tidal, nothing saved:
+        (address, "24-bit/96 kHz"). CD quality comes as one FLAC file; hi-res as
+        FLAC in MP4 segments, listed by a DASH manifest that goes to mpv inline
+        (ffmpeg won't let a manifest on disk point at the web)."""
+        with self.lock:
+            st = c.get_stream()
+            manifest = st.get_stream_manifest()
+        if st.audio_quality not in LOSSLESS or "FLAC" not in str(manifest.get_codecs()).upper():
+            raise NoLosslessMatch("Tidal only has it lossy")
+        if manifest.is_encrypted:
+            raise RuntimeError("Tidal sent an encrypted stream")
+        rate = (manifest.sample_rate if manifest.is_mpd else st.sample_rate) or 44100
+        bits = st.bit_depth or 16
+        if bits == 16 and rate > 48000:
+            bits = 24   # Tidal leaves the depth out of hi-res answers; hi-res is 24-bit
+        quality = f"{bits}-bit/{rate / 1000:g} kHz"
+        if manifest.is_mpd:
+            data = base64.b64encode(st.get_manifest_data().encode()).decode()
+            return f"data://application/dash+xml;base64,{data}", quality
+        return manifest.get_urls()[0], quality
+
     def download(self, c, dest, cover, track):
         """Save Tidal track c at dest as tagged FLAC; returns (bits, sample rate)."""
         import requests
@@ -1144,6 +1168,7 @@ class Downloader:
         self.lib = library
         self.tidal = None          # a Tidal once it is set up
         self.active = {}           # vid -> [callbacks]
+        self.streams = {}          # vid -> (address, quality, when): Tidal streams looked up
         self.lock = threading.Lock()
         self.on_saved = None       # on_saved(vid) after each new FLAC: the tagger takes it from there
 
@@ -1165,6 +1190,52 @@ class Downloader:
 
     def busy(self, vid):
         return vid in self.active
+
+    STREAM_FOR = 15 * 60   # seconds a looked-up stream address is trusted for
+
+    def stream(self, track, done):
+        """Play track without saving it: done(address, error) on the UI thread, the
+        address being a file when the song is on disk, else Tidal's stream."""
+        vid = track["id"]
+        if source_of(track) == "file" or self.lib.has(vid):
+            self.fetch(track, done)
+            return
+        got = self.streams.get(vid)
+        if got and time.time() - got[2] < self.STREAM_FOR:
+            done(got[0], None)
+            return
+
+        def work():
+            if not (self.tidal and self.tidal.connected):
+                raise RuntimeError("connect Tidal in the accounts menu first")
+            match = self.tidal.resolve(track)
+            if not match:
+                self.lib.mark_missing(vid)
+                raise NoLosslessMatch("not on Tidal in lossless")
+            same = self.lib.by_tidal(match.id)
+            if same and Path(same["file"]).exists():
+                return same["file"], same.get("quality", "")   # saved from another service already
+            try:
+                url, quality = self.tidal.stream(match)
+            except NoLosslessMatch:
+                self.lib.mark_missing(vid)
+                raise
+            return url, quality
+
+        def finish(res, err):
+            if err:
+                done(None, err)
+                return
+            self.streams[vid] = (res[0], res[1], time.time())
+            done(res[0], None)
+        in_thread(work, done=finish)
+
+    def forget_stream(self, vid):
+        self.streams.pop(vid, None)
+
+    def stream_quality(self, vid):
+        got = self.streams.get(vid)
+        return got[1] if got else ""
 
     def sync(self, tracks, progress):
         """Save every song in tracks as FLAC, one at a time (blocking). Songs
@@ -2030,8 +2101,9 @@ class Player:
                 if "event" in msg:
                     GLib.idle_add(lambda m=msg: (self.on_event(m), False)[1])
 
-    def load(self, path, paused=False):
-        self.cmd("loadfile", path, "replace", -1, f"pause={'yes' if paused else 'no'}")
+    def load(self, path, paused=False, start=0):
+        opts = f"pause={'yes' if paused else 'no'}" + (f",start={start:.1f}" if start else "")
+        self.cmd("loadfile", path, "replace", -1, opts)
 
     def set_volume(self, volume, muted):
         self.cmd("set_property", "volume", volume)
@@ -3413,8 +3485,12 @@ class MusicWindow(Adw.ApplicationWindow):
         controls.set_start_widget(modes)
         self.saved_label = Gtk.Label(valign=Gtk.Align.CENTER)
         self.saved_label.add_css_class("time")
+        self.save_btn = Gtk.Button(child=self.saved_label, valign=Gtk.Align.CENTER, can_target=False)
+        self.save_btn.add_css_class("ctl")
+        self.save_btn.add_css_class("save")
+        self.save_btn.connect("clicked", lambda *_: app.save_current())
         end = Gtk.Box(spacing=4)
-        end.append(self.saved_label)
+        end.append(self.save_btn)
         end.append(self.eq_button())
         end.append(self.volume_button())
         controls.set_end_widget(end)
@@ -3657,6 +3733,10 @@ class MusicWindow(Adw.ApplicationWindow):
         tidal = a.dl.tidal
         if tidal and tidal.connected:
             line("Tidal", "Connected · every song plays in FLAC", True, sync_switch("tidal"))
+            keep = Gtk.Switch(active=a.keep_played, valign=Gtk.Align.CENTER)
+            keep.connect("notify::active", lambda sw, _p: a.set_keep_played(sw.get_active()))
+            line("Keep", "Save every song you play, in FLAC. Off: songs stream from Tidal and download "
+                 "only when you pick Download", a.keep_played, keep)
         elif tidal:
             line("Tidal", "Sign in on the page that opened, then paste the address it ends on" if a.tidal_link
                  else "Connect to play everything in FLAC", False, pill("Connect", a.connect_tidal))
@@ -4501,6 +4581,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.refresh_account()
         self.refresh_queue()
         self.refresh_results()
+        self.update_saved()
 
     def on_row(self, key, row):
         if self.selecting:   # a click picks the song (or unpicks it) instead of playing it
@@ -4624,14 +4705,30 @@ class MusicWindow(Adw.ApplicationWindow):
         self.art.apply(self.np_art, t)
         self.update_tint(t)
         self.play_btn.set_icon_name("media-playback-start-symbolic" if a.paused else "media-playback-pause-symbolic")
-        saved = self.lib.items.get(t["id"]) if self.lib.has(t["id"]) else None
-        flac = bool(saved) and saved.get("format") == "flac"
-        self.saved_label.set_label("FLAC" if flac else "✓ offline" if saved else "")
-        self.saved_label.set_tooltip_text(f"FLAC {saved.get('quality', '')} on disk: plays without data" if flac
-                                          else "Saved on disk: plays without data" if saved else None)
+        self.update_saved()
         self.update_like()
         if self.stack.get_visible_child_name() == "lyrics":
             self.lyrics.show_for(t)
+
+    def update_saved(self):
+        """The FLAC mark by the controls: on disk, being saved, or streaming (click to download)."""
+        a = self.app
+        t = a.current_track()
+        if not t:
+            return
+        saved = self.lib.items.get(t["id"]) if self.lib.has(t["id"]) else None
+        flac = bool(saved) and saved.get("format") == "flac"
+        saving = t["id"] in a.dl.active or any(d["id"] == t["id"] for d in a.downloads)
+        stream = not saved and source_of(t) != "file"
+        quality = a.dl.stream_quality(t["id"])
+        self.saved_label.set_label("FLAC" if flac else "✓ offline" if saved else "Saving…" if saving
+                                   else "󰇚 FLAC" if stream else "")
+        self.save_btn.set_can_target(stream and not saving)
+        self.save_btn.set_tooltip_text(f"FLAC {saved.get('quality', '')} on disk: plays without data" if flac
+                                       else "Saved on disk: plays without data" if saved
+                                       else "Downloading it in FLAC" if saving
+                                       else f"Streaming FLAC{' ' + quality if quality else ''} from Tidal. "
+                                            "Click to download it" if stream else None)
 
     LIKE_WORDS = {"ytm": ("Like on YouTube Music", "Unlike on YouTube Music"),
                   "tidal": ("Add to your Tidal favourites", "Remove from your Tidal favourites"),
@@ -5499,6 +5596,9 @@ class MusicApp(Adw.Application):
         self.commands = set()   # command lines that get their answer once their songs are found
         self.folders = [str(HOME / "Music")]   # where your own music is
         self.art_colors = True  # the window takes the colour of the album art
+        self.keep_played = False   # off: songs stream from Tidal and download only when you pick Download
+        self.streaming = False     # what's playing comes from Tidal's stream, not a file
+        self.stream_retry = -1     # the load_seq whose broken stream was picked up again already
         self.tint_path = self.tint_provider = None
         self.spotify_connecting = False
         self.downloads, self.downloading = [], False   # songs you picked to download, one after another
@@ -5536,6 +5636,7 @@ class MusicApp(Adw.Application):
         if isinstance(state.get("folders"), list):
             self.folders = [f for f in state["folders"] if isinstance(f, str)]
         self.art_colors = bool(state.get("art_colors", True))
+        self.keep_played = bool(state.get("keep_played", False))
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
         self.player.set_volume(self.volume, self.muted)
         self.load_eq(state.get("eq") or {})
@@ -5582,7 +5683,7 @@ class MusicApp(Adw.Application):
                                        "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
-                                       "art_colors": self.art_colors}))
+                                       "art_colors": self.art_colors, "keep_played": self.keep_played}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -6162,6 +6263,8 @@ class MusicApp(Adw.Application):
             return
         self.downloads += new
         self.toast(f"Downloading {len(new)} song{'s' if len(new) != 1 else ''} in FLAC")
+        if self.win:
+            self.win.update_saved()
         if not self.downloading:
             self.download_next()
 
@@ -6567,10 +6670,12 @@ class MusicApp(Adw.Application):
         self.load_seq += 1
         seq = self.load_seq
         self.position, self.duration = 0.0, t.get("duration") or 0
+        on_disk = self.lib.has(t["id"]) or source_of(t) == "file"
+        self.streaming = not (on_disk or self.keep_played)
         if self.win:
             self.win.update_now_playing()
             self.win.update_position(0, self.duration)
-            self.win.set_status("" if self.lib.has(t["id"]) or source_of(t) == "file" else "Downloading FLAC…")
+            self.win.set_status("" if on_disk else "Downloading FLAC…" if self.keep_played else "Loading the stream…")
             self.win.refresh_queue()
 
         def ready(path, err):
@@ -6583,6 +6688,11 @@ class MusicApp(Adw.Application):
                                    else f"Couldn't get “{t['title']}”: {err}")
                 if autoplay:   # a song restored at startup stays put instead of skipping on its own
                     GLib.timeout_add(1500, lambda: (seq == self.load_seq and self.next(), False)[1])
+                else:
+                    self.paused = True   # nothing is loaded, whatever idle mpv says
+                    if self.win:
+                        self.win.update_now_playing()
+                    self.mpris.changed()
                 return
             if self.win:
                 self.win.set_status("")
@@ -6595,16 +6705,55 @@ class MusicApp(Adw.Application):
                 self.win.update_now_playing()
             self.mpris.changed()
             self.prefetch()
-        self.dl.fetch(t, ready)
+        (self.dl.stream if self.streaming else self.dl.fetch)(t, ready)
         self.save_state()
         # Keep a radio going: near the end of the queue, ask for more like the last song.
         if self.radio_from and self.index >= len(self.queue) - 2:
             self.extend_radio(self.queue[-1])
 
     def prefetch(self):
+        """Get the next song ready, so it starts without a wait: its stream looked up,
+        or (keeping what you play) the song downloaded."""
         nxt = self.queue[self.index + 1] if self.index + 1 < len(self.queue) else None
-        if nxt and not self.lib.has(nxt["id"]):
+        if not nxt or self.lib.has(nxt["id"]) or source_of(nxt) == "file":
+            return
+        if self.keep_played:
             self.dl.fetch(nxt, lambda *_: self.win and self.win.refresh_all())
+        else:
+            self.dl.stream(nxt, lambda *_: None)
+
+    def stream_broke(self):
+        """Tidal's stream stopped short (its address ran out during a long pause, say):
+        look it up again and carry on from the same place, once per song."""
+        t = self.current_track()
+        if not t or not self.streaming:
+            return
+        seq, pos, paused = self.load_seq, self.position, self.paused
+        if self.stream_retry == seq:
+            self.toast(f"Lost the stream of “{t['title']}”")
+            if not paused:
+                self.next()
+            return
+        self.stream_retry = seq
+        self.dl.forget_stream(t["id"])
+
+        def ready(path, err):
+            if seq != self.load_seq:
+                return
+            if err:
+                self.toast(f"Couldn't get “{t['title']}” back: {err}")
+                return
+            self.player.load(path, paused=paused, start=pos)
+        self.dl.stream(t, ready)
+
+    def save_current(self):
+        t = self.current_track()
+        if t:
+            self.download([t])
+
+    def set_keep_played(self, on):
+        self.keep_played = on
+        self.save_soon()
 
     # ---- playback ----
     def toggle_pause(self):
@@ -6751,7 +6900,12 @@ class MusicApp(Adw.Application):
         elif ev == "playback-restart" and not self.eq_synced:
             self.retune_eq()  # a seek or new song rebuilt the filters from the graph, before the latest tweaks
         elif ev == "end-file" and msg.get("reason") == "eof":
-            self.track_ended()
+            if self.streaming and self.duration and self.position < self.duration - 5:
+                self.stream_broke()   # the network went away mid-song: that's not the end
+            else:
+                self.track_ended()
+        elif ev == "end-file" and msg.get("reason") == "error":
+            self.stream_broke()
 
 
 def song_key(t):
