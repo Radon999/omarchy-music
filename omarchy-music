@@ -71,6 +71,7 @@ import socket
 import subprocess
 import sys
 import threading
+import functools
 import time
 import tomllib
 import unicodedata
@@ -207,6 +208,7 @@ def safe_name(track_id):
     return re.sub(r"[^\w.-]", "_", track_id)
 
 
+@functools.lru_cache(maxsize=1 << 16)   # sorting thousands of songs asks for the same names again and again
 def norm(s):
     """Lowercase letters and digits only, accents dropped: for comparing names across services."""
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode() or (s or "")
@@ -4185,26 +4187,37 @@ class TrackRow(Gtk.ListBoxRow):
         text.append(title)
         text.append(sub)
         box.append(text)
-        vid = track["id"]
-        if source_of(track) == "file":
-            pass
-        elif removable:
-            box.append(icon_button("user-trash-symbolic", "row-action", "Remove download",
-                                   lambda: win.remove_download(vid)))
-        elif win.lib.has(vid):
-            ok = Gtk.Label(label="✓", tooltip_text="Downloaded: plays without data")
-            ok.add_css_class("saved")
-            box.append(ok)
-        elif win.dl.busy(vid):
-            box.append(Adw.Spinner())
-        elif win.lib.recently_missing(vid):
-            miss = Gtk.Label(label="–", tooltip_text="No lossless copy on Tidal: skipped")
-            miss.add_css_class("pending")
-            box.append(miss)
-        else:
-            box.append(icon_button("folder-download-symbolic", "row-action", "Download in FLAC",
-                                   lambda: win.download_only(track)))
+        self.box, self.removable, self.mark, self.mark_state = box, removable, None, None
+        self.update_mark()
         self.set_child(box)
+
+    def update_mark(self):
+        """The mark at the end of the row: saved, saving, not on Tidal, or a download button."""
+        win, track, vid = self.win, self.track, self.track["id"]
+        state = ("file" if source_of(track) == "file" else "remove" if self.removable else "saved" if win.lib.has(vid)
+                 else "busy" if win.dl.busy(vid) else "missing" if win.lib.recently_missing(vid) else "download")
+        if state == self.mark_state:
+            return
+        self.mark_state = state
+        if self.mark is not None:
+            self.box.remove(self.mark)
+        if state == "remove":
+            mark = icon_button("user-trash-symbolic", "row-action", "Remove download", lambda: win.remove_download(vid))
+        elif state == "saved":
+            mark = Gtk.Label(label="✓", tooltip_text="Downloaded: plays without data")
+            mark.add_css_class("saved")
+        elif state == "busy":
+            mark = Adw.Spinner()
+        elif state == "missing":
+            mark = Gtk.Label(label="–", tooltip_text="No lossless copy on Tidal: skipped")
+            mark.add_css_class("pending")
+        elif state == "download":
+            mark = icon_button("folder-download-symbolic", "row-action", "Download in FLAC", lambda: win.download_only(track))
+        else:
+            mark = None
+        self.mark = mark
+        if mark is not None:
+            self.box.append(mark)
 
     def on_press(self, gesture, _n, _x, _y):
         state = gesture.get_current_event_state()
@@ -4421,6 +4434,8 @@ class MusicWindow(Adw.ApplicationWindow):
         super().__init__(application=app, title="Music", default_width=420, default_height=680)
         self.app = app
         self.lib, self.dl, self.art = app.lib, app.dl, app.art
+        self.stale = {}   # tab: its rebuild, waiting until you go to it
+        self.connect("map", lambda *_: self.run_stale(self.stack.get_visible_child_name()))
         self.set_hide_on_close(True)
         self.add_css_class("main")   # the window the album art colours
         self.results, self.search_seq = [], 0
@@ -4485,7 +4500,9 @@ class MusicWindow(Adw.ApplicationWindow):
         # ---- tabs ----
         tabs = Gtk.Box(spacing=4)
         tabs.add_css_class("tabs")
-        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=120, vexpand=True)
+        # No crossfade on Windows: it draws both pages for each frame of it, which stutters there.
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.NONE if WINDOWS else Gtk.StackTransitionType.CROSSFADE,
+                               transition_duration=120, vexpand=True)
         self.tab_buttons = {}
         first = None
         for key, label in (("search", "Search"), ("account", "Library"), ("music", "Music"), ("queue", "Up next")):
@@ -4996,12 +5013,45 @@ class MusicWindow(Adw.ApplicationWindow):
         setattr(self, f"{key}_list", lst)
         return lst
 
+    def shown(self, tab):
+        """Whether tab is what you see now: the window open and that tab in front."""
+        return self.get_visible() and self.stack.get_visible_child_name() == tab
+
+    def when_shown(self, tab, rebuild):
+        """rebuild now if tab is in view, else once you go to it: rebuilding lists nobody sees,
+        on every song and every download, made the window lag (most on Windows)."""
+        if self.shown(tab):
+            self.stale.pop(tab, None)
+            rebuild()
+        else:
+            self.stale[tab] = rebuild
+
+    def run_stale(self, tab):
+        rebuild = self.stale.pop(tab, None)
+        if rebuild:
+            rebuild()
+
+    def mark_rows(self):
+        """What's playing and what's saved, on the rows there are, without rebuilding the lists."""
+        cur = (self.app.current_track() or {}).get("id")
+        for key in ("search", "account", "music", "artist"):
+            for r in self.rows(getattr(self, f"{key}_list", None)):
+                (r.add_css_class if r.track["id"] == cur else r.remove_css_class)("playing")
+                r.update_mark()
+
+    def song_changed(self):
+        """Another song plays: the marks move, and Up next starts from it."""
+        self.mark_rows()
+        self.refresh_queue()
+        self.update_saved()
+
     def show_tab(self, key):
         if self.selecting:
             self.stop_selecting()
         if not self.tab_buttons[key].get_active():
             self.tab_buttons[key].set_active(True)
         self.stack.set_visible_child_name(key)
+        self.run_stale(key)
         if key == "lyrics":
             self.lyrics.show_for(self.app.current_track())
         elif key == "music":
@@ -5091,37 +5141,61 @@ class MusicWindow(Adw.ApplicationWindow):
     # Long lists (a big music folder has thousands of songs) get their rows as you scroll: each
     # row costs a few tenths of a millisecond to make and lay out, so all of them at once froze
     # the window for seconds, worst on Windows.
-    LAZY_FIRST, LAZY_STEP = 120, 200
+    # The rows you see come at once; the next ones a few at a time between frames, so the
+    # window keeps drawing while they're made.
+    LAZY_FIRST, LAZY_AHEAD, LAZY_CHUNK = 30, 120, 15
 
-    def lazy(self, lst, n, add):
-        """Rows 0..n-1 at the end of lst, each made by add(i): the first LAZY_FIRST now, the rest
-        as you scroll near the bottom. A rebuild of lst drops what was still to come."""
+    def lazy(self, lst, n, add, first=0):
+        """Rows 0..n-1 at the end of lst, each made by add(i): the first LAZY_FIRST (or first) now,
+        more as you scroll near the bottom. A rebuild of lst drops what was still to come."""
         if not hasattr(self, "_lazy"):
             self._lazy = {}
-        made = [0]
+        st = {"made": 0, "want": 0, "pump": False}
         mark = []
 
-        def more(count):
-            if self._lazy.get(id(lst)) is not more or (mark and mark[0].get_parent() is not lst):
-                return False   # lst was rebuilt since
-            end = min(n, made[0] + count)
-            for i in range(made[0], end):
+        def alive():
+            return self._lazy.get(id(lst)) is more and not (mark and mark[0].get_parent() is not lst)
+
+        def make(count):
+            end = min(n, st["made"] + count)
+            for i in range(st["made"], end):
                 add(i)
-            made[0] = end
+            st["made"] = end
             if end >= n:
                 self._lazy.pop(id(lst), None)
+
+        def pump():
+            if not alive() or st["made"] >= st["want"]:
+                st["pump"] = False
+                return False
+            make(self.LAZY_CHUNK)
+            return True
+
+        def more(count, now=False):
+            """count rows more: now, or between frames."""
+            if not alive():
+                return False
+            if now:
+                make(count)
+                return True
+            st["want"] = max(st["want"], st["made"] + count)
+            if not st["pump"]:
+                st["pump"] = True
+                GLib.idle_add(pump)   # below drawing (and input) in priority: frames come between
             return True
         self._lazy[id(lst)] = more
-        more(self.LAZY_FIRST)
+        make(max(self.LAZY_FIRST, first))
         last = lst.get_last_child()
         if last is not None:
             mark.append(last)
+        if alive():
+            more(self.LAZY_AHEAD)
         self.watch_scroll(lst)
 
     def lazy_all(self, lst):
         """Every row of lst made now (to select all of them)."""
         more = getattr(self, "_lazy", {}).get(id(lst))
-        while more and more(10 ** 6) and self._lazy.get(id(lst)) is more:
+        while more and more(10 ** 6, now=True) and self._lazy.get(id(lst)) is more:
             pass
 
     def watch_scroll(self, lst):
@@ -5133,8 +5207,8 @@ class MusicWindow(Adw.ApplicationWindow):
 
         def check(a, *_):
             more = getattr(self, "_lazy", {}).get(id(lst))
-            if more and a.get_value() + 2 * a.get_page_size() >= a.get_upper():
-                GLib.idle_add(lambda: (more(self.LAZY_STEP), False)[1])
+            if more and a.get_value() + 3 * a.get_page_size() >= a.get_upper():
+                more(self.LAZY_AHEAD)
         adj.connect("value-changed", check)
         adj.connect("changed", check)
 
@@ -5201,7 +5275,10 @@ class MusicWindow(Adw.ApplicationWindow):
         self.count_label.set_label(" · ".join(parts).upper())
 
     def refresh_music(self):
-        """The Music tab, as the chips above it say."""
+        """The Music tab, as the chips above it say (once you can see it)."""
+        self.when_shown("music", self._refresh_music)
+
+    def _refresh_music(self):
         lst, view, a = self.music_list, self.music_view, self.app
         self.count_label = None
         if view == "playlists":
@@ -5224,6 +5301,17 @@ class MusicWindow(Adw.ApplicationWindow):
             tracks = a.plays.recent()
         else:
             tracks = a.most_played()
+        # The same songs in the same order as shown: only the marks may have changed.
+        sig = (view, sort, tuple(t["id"] for t in tracks), a.lastfm.connected and bool(a.fm_top[1]))
+        if sig == getattr(self, "_music_sig", None) and lst.get_first_child() is not None:
+            self.refresh_count()
+            self.mark_rows()
+            return
+        same_view = (getattr(self, "_music_sig", None) or (None, None))[:2] == sig[:2]
+        self._music_sig = sig
+        sw = lst.get_ancestor(Gtk.ScrolledWindow)
+        keep = sw.get_vadjustment().get_value() if sw and same_view else 0
+        made = sum(1 for _ in self.rows(lst)) if keep else 0
         if not tracks:
             folders = ", ".join(short_path(f) for f in a.folders) or "no folders yet"
             title, body = {
@@ -5256,11 +5344,14 @@ class MusicWindow(Adw.ApplicationWindow):
                                     None if sort == "artist" else artist)
             extra = f"{t['plays']} play{'s' if t['plays'] != 1 else ''}" if view == "top" else ""
             self.add_track(lst, t, i, tracks, removable=view == "all" and self.lib.has(t["id"]), extra=extra)
-        self.lazy(lst, len(tracks), add)
+        self.lazy(lst, len(tracks), add, first=made)
+        if keep:   # the same list with a song more or less: stay where you were in it
+            GLib.idle_add(lambda: (sw.get_vadjustment().set_value(keep), False)[1])
 
     def refresh_dj(self):
         """The DJ: what it said last, Start or Switch it up, a box to ask it for something, and its songs to come."""
         lst, a = self.music_list, self.app
+        self._music_sig = None
         lst.remove_all()
         dj = a.dj
         shown = dj["sets"].get(str(dj.get("shown") or "")) if dj["on"] else None
@@ -5345,6 +5436,7 @@ class MusicWindow(Adw.ApplicationWindow):
 
     def refresh_playlists(self):
         lst = self.music_list
+        self._music_sig = None
         if self.open_mine:
             self.refresh_mine()
             return
@@ -5367,6 +5459,7 @@ class MusicWindow(Adw.ApplicationWindow):
     def refresh_mine(self):
         """One of your playlists, open."""
         lst = self.music_list
+        self._music_sig = None
         pl = self.app.lists.get(self.open_mine)
         if not pl:
             self.open_mine = None
@@ -5691,6 +5784,9 @@ class MusicWindow(Adw.ApplicationWindow):
         return row
 
     def refresh_account(self):
+        self.when_shown("account", self._refresh_account)
+
+    def _refresh_account(self):
         lst = self.account_list
         key = self.app.source
         src = self.app.sources.get(key)
@@ -5805,6 +5901,9 @@ class MusicWindow(Adw.ApplicationWindow):
     def refresh_queue(self):
         """What's playing and what comes after it, in order: the songs you queued first.
         (Songs already played aren't listed; Previous goes back through them.)"""
+        self.when_shown("queue", self._refresh_queue)
+
+    def _refresh_queue(self):
         q, i = self.app.queue, self.app.index
         lst = self.queue_list
         if not q[max(i, 0):]:
@@ -5871,15 +5970,21 @@ class MusicWindow(Adw.ApplicationWindow):
 
     def refresh_results(self):
         if self.results or self.result_artists or self.result_albums:
-            self.render_search()
+            self.when_shown("search", self.render_search)
 
     def refresh_all(self):
-        self.refresh_music()
-        if self.open_playlist and self.open_playlist[1] is not None:
-            self.refresh_account()
+        """Songs were saved or removed: the marks on the rows now; the Music tab, where your
+        downloads are songs of their own, a moment later (a sync saves one song after another)."""
+        self.mark_rows()
         self.refresh_queue()
-        self.refresh_results()
         self.update_saved()
+        if not getattr(self, "_music_soon", 0):
+            def later():
+                self._music_soon = 0
+                if not self.selecting:
+                    self.refresh_music()
+                return False
+            self._music_soon = GLib.timeout_add(1500, later)
 
     def on_row(self, key, row):
         if self.selecting:   # a click picks the song (or unpicks it) instead of playing it
@@ -8363,7 +8468,7 @@ class MusicApp(Adw.Application):
             if autoplay:
                 self.begin_listen(t)
             if self.win:
-                self.win.refresh_all()
+                self.win.song_changed()
                 self.win.update_now_playing()
             self.mpris.changed()
             self.prefetch()
