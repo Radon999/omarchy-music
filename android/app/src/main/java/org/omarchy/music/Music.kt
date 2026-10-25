@@ -326,6 +326,7 @@ object Music {
         } else if (key !in sources) sourceErrors[key] = err?.message ?: "unavailable"
         accountsVersion++
         if (key == "tidal") playerReady()
+        if (key == "spotify" && src?.signedIn == true) bg({ SpotifyHistory.sync() })   // its last plays, for your Wrapped
         syncLibrary()
     }
 

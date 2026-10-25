@@ -116,6 +116,14 @@ class Spotify(ctx: Context) : Source {
 
     private fun get(path: String, params: Map<String, Any> = emptyMap()) = request(path, params)
 
+    /** Your last plays (up to 50, newest first) after a time in ms, for your Wrapped. A login
+     *  from before the app asked to read them can't: connecting again lets it. */
+    fun recentlyPlayed(afterMs: Long): List<JsonElement> = try {
+        get("/me/player/recently-played", mapOf("limit" to 50) + if (afterMs > 0) mapOf("after" to afterMs) else emptyMap())["items"].list
+    } catch (e: HttpError) {
+        if (e.code == 401 || e.code == 403) error("connect Spotify again to let the app read your recent plays") else throw e
+    }
+
     /** Every item of a list Spotify hands out a page at a time. */
     private fun pages(path: String, params: Map<String, Any> = emptyMap(), cap: Int = 10000): List<JsonElement> {
         val out = ArrayList<JsonElement>()
@@ -202,6 +210,6 @@ class Spotify(ctx: Context) : Source {
     companion object {
         const val API = "https://api.spotify.com/v1"
         const val REDIRECT = "http://127.0.0.1:8898/callback"
-        const val SCOPES = "user-library-read user-library-modify playlist-read-private playlist-read-collaborative"
+        const val SCOPES = "user-library-read user-library-modify playlist-read-private playlist-read-collaborative user-read-recently-played"
     }
 }

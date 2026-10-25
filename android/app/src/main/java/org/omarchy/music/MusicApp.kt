@@ -14,6 +14,7 @@ class MusicApp : Application(), ImageLoaderFactory {
         super.onCreate()
         Music.init(this)
         LastFm.init(this)
+        SpotifyHistory.init(this)
         Services.start(this)
         Updater.init(this)
     }

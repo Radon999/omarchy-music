@@ -7,6 +7,8 @@ import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -159,6 +161,7 @@ private fun AccountsSheet(ui: Ui) {
             }
             Divider()
             LastFmLine(ui)
+            SpotifyHistoryLine(ui)
         }
     }
 }
@@ -222,6 +225,43 @@ private fun LastFmLine(ui: Ui) {
         Pill("Make an API account", quiet = true) { Services.open("https://www.last.fm/api/account/create") }
         Pill("Connect") { LastFm.begin(key, secret) { ok -> if (ok) ui.sheet = "lastfm-login" } }
     }
+}
+
+/** Your Spotify plays for Wrapped: the zip from Spotify's privacy page, and your last plays
+ *  through the connection, picked up when the app starts. */
+@Composable
+private fun SpotifyHistoryLine(ui: Ui) {
+    val h = org.omarchy.music.SpotifyHistory
+    val sp = Music.sources["spotify"] as? org.omarchy.music.Spotify
+    var asking by remember { mutableStateOf(false) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) Music.bg({ h.importFile(Music.ctx, uri) }) { n, err ->
+            Music.toast(if (err != null) "Couldn't import it: ${err.message?.take(140)}"
+                else "Added ${"%,d".format(n ?: 0)} Spotify plays to your Wrapped" + if (n == 0) " (you had them all)" else "")
+        }
+    }
+    val state = h.busy ?: if (h.count > 0) "${"%,d".format(h.count)} Spotify plays in your Wrapped, each counted once with your scrobbles"
+        else "Add your Spotify listening to your Wrapped: import the zip from Spotify's privacy page" +
+            if (sp?.signedIn == true) ". Your last plays come in by themselves" else ", or connect Spotify for your last plays"
+    Line("History", state, h.count > 0) {}
+    Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+        Pill("Get the zip", quiet = true) { Services.open("https://www.spotify.com/account/privacy/") }
+        if (sp?.signedIn == true) Pill("Sync", quiet = true) {
+            Music.bg({ h.sync() }) { n, err ->
+                Music.toast(if (err != null) "Couldn't read your Spotify plays: ${err.message?.take(100)}"
+                    else "${"%,d".format(n ?: 0)} new Spotify play${if (n == 1) "" else "s"}")
+            }
+        }
+        if (h.count > 0) Pill("Clear", quiet = true) { asking = true }
+        Pill("Import zip") { if (h.busy == null) pick.launch(arrayOf("application/zip", "application/json", "application/octet-stream")) }
+    }
+    if (h.count > 0 && !LastFm.connected) ActionRow("✦  Your ${org.omarchy.music.Wrapped.year()} Wrapped  ›") { ui.sheet = "wrapped" }
+    if (asking) AlertDialog(onDismissRequest = { asking = false }, containerColor = C.light,
+        title = { Text("Clear your Spotify history?", style = T.title) },
+        text = { Text("Wrapped goes back to your Last.fm scrobbles. Plays from the zip come back if you import it again; " +
+            "the last plays picked up from Spotify don't.", style = T.sub) },
+        confirmButton = { TextButton({ asking = false; Music.bg({ h.clear() }) }) { Text("Clear", color = C.accent) } },
+        dismissButton = { TextButton({ asking = false }) { Text("Cancel", color = C.muted) } })
 }
 
 @Composable

@@ -13,8 +13,9 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 
 /** Wrapped: your year in music (or all of it) from your Last.fm history, the desktop's
- *  numbers worked out the same way. A big year takes a minute the first time (Last.fm
- *  hands out 200 scrobbles a request); then it's kept and only the new ones are read. */
+ *  numbers worked out the same way, with the Spotify plays you imported (SpotifyHistory)
+ *  that Last.fm hasn't got. A big year takes a minute the first time (Last.fm hands out
+ *  200 scrobbles a request); then it's kept and only the new ones are read. */
 object Wrapped {
     private const val LASTFM_BLANK = "2a96cbd8b46e442fc41c2b86b821562f"   // Last.fm's grey star, for "no picture"
     private val NOT_GENRES = setOf("seen live", "favorites", "favourites", "favorite", "favourite", "my favorites", "albums i own",
@@ -49,7 +50,8 @@ object Wrapped {
     )
 
     @Serializable
-    private data class Row(val t: Long, val artist: String, val title: String, val album: String, val image: String)
+    private data class Row(val t: Long, val artist: String, val title: String, val album: String, val image: String,
+                           val ms: Long = 0)   // how long it played, for Spotify's plays
     @Serializable
     private data class Saved(val rows: List<Row> = emptyList(), val until: Long = 0)
 
@@ -128,8 +130,11 @@ object Wrapped {
     private val durSer = MapSerializer(String.serializer(), Double.serializer())
     private val tagSer = MapSerializer(String.serializer(), ListSerializer(PairSerializer(String.serializer(), Int.serializer())))
 
-    /** Minutes of music in rows: each song's length (yours, else Last.fm's), the typical length for the few nobody knows. */
-    private fun minutes(dir: File, rows: List<Row>): Int {
+    /** Minutes of music in rows: how long Spotify says it played, else each song's length (yours,
+     *  else Last.fm's), the typical length for the few nobody knows. */
+    private fun minutes(dir: File, all: List<Row>): Int {
+        val timed = all.sumOf { it.ms } / 1000.0
+        val rows = all.filter { it.ms == 0L }
         val known = HashMap<String, Double>()
         for (e in Music.lib.items.values.toList()) if (e.duration > 0)
             known["${norm(e.artist.split(",")[0])}|${norm(cleanTitle(e.title))}"] = e.duration
@@ -141,7 +146,7 @@ object Wrapped {
         for ((k, _) in plays.entries.sortedByDescending { it.value }) {
             val key = "${norm(k.first)}|${norm(cleanTitle(k.second))}"
             var sec = known[key] ?: cache[key]
-            if (sec == null && asked < 80) {   // Last.fm, for your most played; one request each
+            if (sec == null && asked < 80 && LastFm.key.isNotEmpty()) {   // Last.fm, for your most played; one request each
                 asked++
                 sec = runCatching { LastFm.duration(k.first, k.second) }.getOrDefault(0.0)
                 cache[key] = sec
@@ -150,11 +155,12 @@ object Wrapped {
         }
         writeAtomic(file, JSON.encodeToString(durSer, cache))
         val typical = lengths.values.sorted().let { if (it.isEmpty()) 210.0 else it[it.size / 2] }
-        return Math.round(plays.entries.sumOf { (k, n) -> n * (lengths[k] ?: typical) } / 60).toInt()
+        return Math.round((timed + plays.entries.sumOf { (k, n) -> n * (lengths[k] ?: typical) }) / 60).toInt()
     }
 
     /** Your top genres: each top artist's Last.fm tags, weighted by how much you played them. */
     private fun genres(dir: File, artists: List<Pair<String, Int>>): List<String> {
+        if (LastFm.key.isEmpty()) return emptyList()   // the tags come from Last.fm
         val file = File(dir, "tags.json")
         val cache = readText(file)?.let { runCatching { JSON.decodeFromString(tagSer, it) }.getOrNull() }?.toMutableMap() ?: mutableMapOf()
         val score = LinkedHashMap<String, Double>()
@@ -168,44 +174,77 @@ object Wrapped {
         return score.entries.sortedByDescending { it.value }.take(5).map { genreName(it.key) }
     }
 
+    /** A year's scrobbles: kept, and only the new ones read from Last.fm. */
+    private fun scrobbles(dir: File, year: Int, progress: (String) -> Unit): List<Row> {
+        val start = startOf(year)
+        val end = minOf(startOf(year + 1), now().toLong())
+        if (end <= start) return emptyList()
+        val file = File(dir, "${safeName(LastFm.user.lowercase())}-$year.json")
+        val saved = readText(file)?.let { runCatching { JSON.decodeFromString(Saved.serializer(), it) }.getOrNull() } ?: Saved()
+        var rows = saved.rows
+        val since = if (saved.until > 0) saved.until else start
+        if (since < end - 60) {
+            val new = LastFm.recent(since, end) { p, n -> progress("Reading your $year scrobbles · page $p of $n") }
+            val have = rows.map { it.t to it.title }.toHashSet()
+            rows = (rows + new.filter { (it.time to it.title) !in have }.map { Row(it.time, it.artist, it.title, it.album, it.image) })
+                .sortedBy { it.t }
+            writeAtomic(file, JSON.encodeToString(Saved.serializer(), Saved(rows, end)))
+        }
+        return rows
+    }
+
+    /** rows with your Spotify plays from start to end that Last.fm hasn't got. A play Last.fm
+     *  has is the same song scrobbled from five minutes before it began until five after it stopped. */
+    private fun withSpotify(rows: List<Row>, start: Long, end: Long): List<Row> {
+        val plays = SpotifyHistory.plays.filter { it.t in start until end }
+        if (plays.isEmpty()) return rows
+        val scrobbled = HashMap<String, MutableList<Long>>()
+        for (r in rows) scrobbled.getOrPut(cleanTitle(r.title)) { ArrayList() } += r.t
+        val extra = plays.filter { p ->
+            val times = scrobbled[cleanTitle(p.title)] ?: return@filter true
+            val i = times.indexOfFirst { it >= p.t - 300 && it <= p.t + p.ms / 1000 + 300 }
+            if (i >= 0) times.removeAt(i)   // each scrobble stands for one play
+            i < 0
+        }.map { Row(it.t, it.artist, it.title, it.album, "", it.ms) }
+        return (rows + extra).sortedBy { it.t }
+    }
+
     /** Everything Wrapped shows for a year (or null: all time). It blocks. */
     fun load(ctx: Context, period: Int?, progress: (String) -> Unit): Data {
         val dir = File(ctx.filesDir, "wrapped").apply { mkdirs() }
-        progress("Opening your Last.fm…")
-        val me = LastFm.info()
+        val fm = LastFm.connected
+        val spotify = SpotifyHistory.plays
+        if (!fm && spotify.isEmpty()) error("Connect Last.fm, or import your Spotify history, in the accounts menu (☰).")
+        val me = if (fm) { progress("Opening your Last.fm…"); LastFm.info() } else null
         val thisYear = LocalDate.now().year
-        val firstYear = if (me.registered > 0) local(me.registered).year else thisYear
+        var firstYear = me?.registered?.takeIf { it > 0 }?.let { local(it).year } ?: thisYear
+        spotify.firstOrNull()?.let { firstYear = minOf(firstYear, local(it.t).year) }
         val years = (thisYear downTo firstYear).toList()
-        val base = Data(period, me.name, years, firstYear)
+        val user = me?.name ?: (Music.sources["spotify"] as? Spotify)?.user?.ifEmpty { null } ?: "You"
+        val base = Data(period, user, years, firstYear)
         var data: Data
-        if (period == null) {
+        if (period == null && spotify.isEmpty()) {   // Last.fm adds it all up: no need to read every scrobble
             val counts = years.reversed().map { y ->
                 progress("Counting your scrobbles · $y")
                 y to LastFm.count(startOf(y), startOf(y + 1))
             }
             progress("Your all-time favourites…")
-            if (me.playcount == 0) return base.copy(empty = true)
+            if (me!!.playcount == 0) return base.copy(empty = true)
             data = base.copy(scrobbles = me.playcount, yearsCount = counts,
                 artists = LastFm.top("artist", 30).map { it.name to it.plays },
                 songs = LastFm.top("track", 10).map { Song(it.name, it.artist, it.plays, it.image) },
                 albums = LastFm.top("album", 5).map { AlbumPlays(it.name, it.artist, it.plays, it.image) },
                 minutes = Math.round(me.playcount * 3.5).toInt())   // about three and a half minutes a song
         } else {
-            val start = startOf(period)
-            val end = minOf(startOf(period + 1), (now()).toLong())
-            val file = File(dir, "${safeName(LastFm.user.lowercase())}-$period.json")
-            val saved = readText(file)?.let { runCatching { JSON.decodeFromString(Saved.serializer(), it) }.getOrNull() } ?: Saved()
-            var rows = saved.rows
-            val since = if (saved.until > 0) saved.until else start
-            if (since < end - 60) {
-                val new = LastFm.recent(since, end) { p, n -> progress("Reading your $period scrobbles · page $p of $n") }
-                val have = rows.map { it.t to it.title }.toHashSet()
-                rows = (rows + new.filter { (it.time to it.title) !in have }.map { Row(it.time, it.artist, it.title, it.album, it.image) })
-                    .sortedBy { it.t }
-                writeAtomic(file, JSON.encodeToString(Saved.serializer(), Saved(rows, end)))
-            }
+            val rows = if (period == null)
+                withSpotify(if (fm) years.reversed().flatMap { scrobbles(dir, it, progress) } else emptyList(), Long.MIN_VALUE, Long.MAX_VALUE)
+            else withSpotify(if (fm) scrobbles(dir, period, progress) else emptyList(), startOf(period), startOf(period + 1))
             if (rows.isEmpty()) return base.copy(empty = true)
             data = yearStats(base, rows)
+            if (period == null) {
+                val perYear = rows.groupingBy { local(it.t).year }.eachCount()
+                data = data.copy(yearsCount = years.reversed().map { it to (perYear[it] ?: 0) })
+            }
             progress("Adding up your minutes…")
             data = data.copy(minutes = minutes(dir, rows))
         }
