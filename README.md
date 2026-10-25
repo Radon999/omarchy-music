@@ -66,7 +66,7 @@ an **Android** app.
 - **Lyrics.** Genius lyrics, or lines timed to the music (saved as `.lrc` files).
 - **Background tagging.** Saved songs get genre, composer, label, MusicBrainz IDs and a big
   cover.
-- **Last.fm.** Plays are scrobbled, and **Wrapped** looks back on any year of your history.
+- **Last.fm.** Plays are scrobbled, and **Wrapped** looks back on any week, month or year of your history (full screen with F11).
 - **Desktop controls.** Media keys work through MPRIS (playerctl) on Linux, and directly on
   Windows. The `omarchy-music`
   command has a CLI (`omarchy-music help`).
