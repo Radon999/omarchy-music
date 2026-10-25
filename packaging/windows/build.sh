@@ -26,7 +26,8 @@ cp -r "$PREFIX/lib/$PY" "$OUT/lib/"
 rm -rf "$OUT/lib/$PY"/{test,idlelib,tkinter,turtledemo,ensurepip,lib2to3} "$OUT/lib/$PY"/site-packages/pip
 find "$OUT/lib/$PY" -name __pycache__ -type d -prune -exec rm -rf {} +
 # Python modules other MSYS2 packages brought along that the app never imports.
-rm -rf "$OUT/lib/$PY"/site-packages/{imath*,Imath*,OpenEXR*,numpy*,setuptools*,_distutils_hack,wheel*}
+rm -rf "$OUT/lib/$PY"/site-packages/{imath*,Imath*,OpenEXR*,numpy*,setuptools*,_distutils_hack,wheel*,pip*,distlib*,distutils-precedence.pth} \
+    "$OUT/lib/$PY"/site-packages/{caca*,libxml2*,drv_libxml2.py,VapourSynth*,vapoursynth*,README.txt}
 echo "Python packages: $(ls "$OUT/lib/$PY/site-packages" | sed 's/-[0-9].*//' | sort -u | tr '\n' ' ')"
 
 # GObject introspection, image loaders, settings schemas, icons, fonts and TLS roots.
