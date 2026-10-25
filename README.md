@@ -103,7 +103,10 @@ Last.fm, which takes nothing older than two weeks.
 
 While **Play on** points at the desktop, the phone's now-playing bar, Up next and Lyrics
 follow the desktop, and every play, queue and button goes there. Songs stored on the phone
-itself keep playing on the phone.
+itself play on the desktop too: the desktop streams each one from the phone (port 8899 on
+the phone, while Play on points at the desktop). Each song's address carries a code only
+the phone can make, and the desktop takes such songs only from the phone that sent them.
+Keep the phone app running and on the same network while they play.
 
 The remote listens on TCP port 8897 and answers only paired phones. It is plain HTTP, so use
 it on a network you trust. Omarchy's firewall blocks the port until you allow it, for

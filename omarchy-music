@@ -197,6 +197,11 @@ def source_of(track):
     return (track or {}).get("source") or "ytm"   # songs saved before there were other services
 
 
+def is_phone_song(track):
+    """A song on the phone that's the remote, played here from the phone (see Remote.from_phone)."""
+    return source_of(track) == "file" and str(track.get("file") or "").startswith("http://")
+
+
 def safe_name(track_id):
     return re.sub(r"[^\w.-]", "_", track_id)
 
@@ -1253,6 +1258,9 @@ class Downloader:
         """Make sure track is on disk; done(path or None, error) on the UI thread."""
         vid = track["id"]
         if source_of(track) == "file":
+            if is_phone_song(track):   # streams from the phone that sent it
+                done(track["file"], None)
+                return
             done(track["file"], None if Path(track["file"]).exists() else FileNotFoundError(track["file"]))
             return
         if self.lib.has(vid):
@@ -1436,7 +1444,7 @@ class ArtCache:
         if path.exists():
             self._load(vid, path, picture)
             return
-        if source_of(track) == "file":
+        if source_of(track) == "file" and not is_phone_song(track):
             fetch, arg = self._cover_of, track.get("file")
             if vid in self.none:
                 return
@@ -2609,7 +2617,8 @@ def tidy_title(s):
 
 def song_meta(lib, track):
     entry = lib.items.get(track["id"]) or {}
-    path = entry.get("file") if entry.get("format") == "flac" else (track.get("file") if source_of(track) == "file" else None)
+    path = entry.get("file") if entry.get("format") == "flac" else (
+        track.get("file") if source_of(track) == "file" and not is_phone_song(track) else None)
     tags = file_tags(path) if path else {}
 
     def one(k):
@@ -3280,6 +3289,7 @@ class LastFM:
 # =============================================================================
 
 REMOTE_PORT = 8896 if PROFILE else 8897
+PHONE_SHARE_PORT = 8899   # where the phone app serves its own songs, while it is the remote
 
 
 def version_tuple(v):
@@ -3486,7 +3496,7 @@ class Remote:
                     return h.answer(401, {"error": "pair this phone first"})
                 if url.path == "/cmd":
                     try:
-                        on_ui(lambda: remote.command(body))
+                        on_ui(lambda: remote.command(body, h.client_address[0]))
                         return h.answer(200, {"ok": True})
                     except Exception as e:  # noqa: BLE001
                         return h.answer(400, {"error": str(e)[:200]})
@@ -3587,11 +3597,27 @@ class Remote:
             return file_cover(t["file"])
         return None
 
-    def command(self, b):
+    @staticmethod
+    def from_phone(t, phone):
+        """Whether t is a song a phone sent to play here as itself: a song on that phone,
+        which streams from it (only from the phone that sent it, and only its own songs)."""
+        if not isinstance(t, dict) or not t.get("id"):
+            return False
+        f = str(t.get("file") or "")
+        if source_of(t) != "file" and not f:
+            return True   # a song of a service: the desktop plays it as always
+        u = urllib.parse.urlsplit(f)
+        ok = (u.scheme == "http" and u.hostname == phone and u.port == PHONE_SHARE_PORT
+              and re.fullmatch(r"/song/\d+", u.path or "") is not None)
+        thumb = urllib.parse.urlsplit(str(t.get("thumb") or ""))
+        if ok and t.get("thumb") and not (thumb.scheme == "http" and thumb.hostname == phone and thumb.port == PHONE_SHARE_PORT):
+            t["thumb"] = ""
+        return ok
+
+    def command(self, b, phone=""):
         a = self.app
         verb = b.get("verb")
-        tracks = [t for t in b.get("tracks") or [] if isinstance(t, dict) and t.get("id")
-                  and not str(t.get("file") or "").startswith("content://")]   # songs on the phone stay there
+        tracks = [t for t in b.get("tracks") or [] if self.from_phone(t, phone)]
         if verb in ("play", "pause"):
             if verb == "play" and a.paused and a.current_track() and a.ended:
                 a.load_current()

@@ -64,6 +64,7 @@ object Remote {
             }
         }
         discover(ctx)
+        share()
     }
 
     private fun save() = writeAtomic(file, JSON.encodeToString(Saved.serializer(), Saved(host, token, name, on)))
@@ -73,12 +74,17 @@ object Remote {
         on = v && paired
         save()
         if (on) refresh()
+        share()
     }
 
     fun forget() {
         token = ""; on = false; reachable = false; qv = ""
         save()
+        share()
     }
+
+    /** The phone's songs are served only while it is the desktop's remote. */
+    private fun share() = Music.bg({ if (active) PhoneShare.start() else PhoneShare.stop() })
 
     /** Pair with the desktop at addr ("192.168.1.20:8897") using the code its accounts menu shows. */
     fun pair(addr: String, code: String, done: (Throwable?) -> Unit) {
@@ -93,6 +99,7 @@ object Remote {
                 host = h; token = tok; name = res["name"].str ?: "Desktop"; on = true
                 save()
                 refresh()
+                share()
             }
             done(err ?: if (tok == null) IllegalStateException("the desktop didn't answer with a pairing") else null)
         }
@@ -150,24 +157,27 @@ object Remote {
         }
     }
 
-    /** Songs the desktop can play: the ones on the phone itself stay here. */
-    private fun playable(tracks: List<Track>): List<Track> {
-        val ok = tracks.filter { it.file?.startsWith("content://") != true }
-        if (ok.size < tracks.size) Music.toast(if (ok.isEmpty()) "Songs on the phone play only on the phone" else
-            "${tracks.size - ok.size} song${if (tracks.size - ok.size > 1) "s" else ""} on the phone left out: the desktop can't reach ${if (tracks.size - ok.size > 1) "them" else "it"}")
-        return ok
+    /** tracks as the desktop can play them (blocking): the songs on the phone stream from
+     *  here (PhoneShare); one it can't share stays out, null in its place. */
+    private fun playable(tracks: List<Track>): List<Track?> {
+        val out = tracks.map { if (it.file?.startsWith("content://") == true) PhoneShare.forDesktop(it, host) else it }
+        val left = out.count { it == null }
+        if (left > 0) Music.toast(if (left == tracks.size) "The desktop can't reach this phone's songs: is the phone on the same network?"
+            else "$left song${if (left > 1) "s" else ""} on the phone left out: the desktop can't reach ${if (left > 1) "them" else "it"}")
+        return out
     }
 
     fun playFrom(tracks: List<Track>, i: Int, radio: Boolean) {
-        val t = tracks.getOrNull(i)
-        val ok = playable(tracks)
-        if (ok.isEmpty()) return
-        cmd("play_from", "tracks" to ok, "index" to maxOf(0, ok.indexOf(t)), "radio" to radio)
+        Music.bg({ playable(tracks) }) { out, _ ->
+            val t = out?.getOrNull(i)
+            val ok = out?.filterNotNull().orEmpty()
+            if (ok.isEmpty()) return@bg
+            cmd("play_from", "tracks" to ok, "index" to maxOf(0, ok.indexOf(t)), "radio" to (radio && ok.none { it.isFile }))
+        }
     }
 
     fun enqueue(tracks: List<Track>, how: String) {
-        val ok = playable(tracks)
-        if (ok.isNotEmpty()) cmd("enqueue", "tracks" to ok, "how" to how)
+        Music.bg({ playable(tracks).filterNotNull() }) { ok, _ -> if (!ok.isNullOrEmpty()) cmd("enqueue", "tracks" to ok, "how" to how) }
     }
 
     /** A desktop song's art: its picture on the web, or the desktop's copy (songs from its folders). */
