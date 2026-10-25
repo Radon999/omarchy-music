@@ -114,10 +114,15 @@ fun App() {
 private fun TopBar(ui: Ui) {
     Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("▶ ", style = T.brand.copy(color = C.accent))
-        Text("MUSIC", style = T.brand)
-        if (Remote.active) Text("  · DESKTOP", style = T.brand.copy(color = C.accent, fontSize = 11.sp))
-        Spacer(Modifier.weight(1f))
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column {
+            Text("MUSIC", style = T.brand)
+            // Playing on the desktop: said under the name, so the services and ☰ keep their room.
+            if (Remote.active) Text("ON DESKTOP", style = T.section.copy(color = C.accent, fontSize = 9.sp),
+                modifier = Modifier.clickable { ui.sheet = "accounts" })
+        }
+        // The services scroll in the room left; ☰ always stays on screen.
+        Row(Modifier.weight(1f).padding(start = 8.dp).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End)) {
             SOURCES.forEach { (k, name) ->
                 Chip(if (k == "ytm") "YouTube" else name.removeSuffix(" Music"), Music.source == k) {
                     if (Music.source != k) {
@@ -222,7 +227,10 @@ private fun NowPlaying(ui: Ui, bar: Color) {
             Ctl("⏮") { Music.previous() }
             Box(Modifier.padding(horizontal = 6.dp).size(46.dp).background(C.accent).clickable { Music.togglePause() },
                 contentAlignment = Alignment.Center) {
-                Text(if (paused) "▶" else "⏸", style = T.title.copy(color = C.darker, fontSize = 20.sp))
+                if (paused) Text("▶", style = T.title.copy(color = C.darker, fontSize = 20.sp))
+                else Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {   // drawn: ⏸ comes out as an emoji
+                    repeat(2) { Box(Modifier.size(5.dp, 18.dp).background(C.darker)) }
+                }
             }
             Ctl("⏭") { Music.next() }
             Spacer(Modifier.weight(1f))
