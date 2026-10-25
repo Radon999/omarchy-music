@@ -1318,6 +1318,20 @@ class Tidal:
         return info
 
 
+def download_summary(out):
+    """How a Download went, in a line: "Saved 12 songs in FLAC. 2 aren't on Tidal in lossless (…)"."""
+    saved, missing, failed = out["saved"], out["missing"], out["failed"]
+    bits = []
+    if saved:
+        bits.append(f"Saved {saved} song{'s' if saved != 1 else ''} in FLAC")
+    if missing:
+        names = ", ".join(t["title"] for t in missing[:2]) + ("…" if len(missing) > 2 else "")
+        bits.append(f"{len(missing)} {'isn' if len(missing) == 1 else 'aren'}'t on Tidal in lossless ({names})")
+    if failed:
+        bits.append(f"{len(failed)} failed: {failed[0][1][:90]}")
+    return ". ".join(bits) or "Nothing new to download"
+
+
 def track_from_tidal(c):
     album = c.album
     try:
@@ -1466,13 +1480,15 @@ class Downloader:
         got = self.streams.get(vid)
         return got[3] if got else None
 
-    def sync(self, tracks, progress):
+    def sync(self, tracks, progress, force=False):
         """Save every song in tracks as FLAC, one at a time (blocking). Songs
-        Tidal recently didn't have are left alone; progress() runs on the UI
-        thread after each song."""
+        Tidal recently didn't have are left alone, unless force (you asked);
+        progress() runs on the UI thread after each song. Returns how it went:
+        {"saved": n, "missing": [tracks Tidal has no lossless copy of], "failed": [(track, why)]}."""
+        out = {"saved": 0, "missing": [], "failed": []}
         for track in tracks:
             vid = track["id"]
-            if self.lib.is_flac(vid) or self.lib.recently_missing(vid):
+            if self.lib.is_flac(vid) or (not force and self.lib.recently_missing(vid)):
                 continue
             with self.lock:
                 if vid in self.active:
@@ -1481,11 +1497,18 @@ class Downloader:
             path, err = None, None
             try:
                 path = self._download(track)
+                out["saved"] += 1
+            except NoLosslessMatch as e:
+                err = e
+                out["missing"].append(track)
             except Exception as e:  # noqa: BLE001 -- next song; it is tried again next sync
                 err = e
+                out["failed"].append((track, str(e) or type(e).__name__))
+                print(f"download {vid} ({track.get('artist')} - {track.get('title')}) failed: {e!r}", file=sys.stderr)
             finally:
                 self._finish(vid, path or self.lib.file(vid), None if self.lib.has(vid) else err)
             GLib.idle_add(lambda: (progress(), False)[1])
+        return out
 
     def _download(self, track):
         vid = track["id"]
@@ -5251,6 +5274,12 @@ class MusicWindow(Adw.ApplicationWindow):
         box.append(text)
         lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
 
+    def download_button(self, tracks):
+        """[("Download", ...)] when some of tracks aren't saved yet, else []."""
+        if any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in tracks):
+            return [("Download", lambda _b: self.app.download(tracks), True)]
+        return []
+
     def actions_row(self, lst, buttons):
         """A row of pills: [(label, callback(the button), quiet)]."""
         box = Gtk.Box(spacing=6)
@@ -5672,8 +5701,7 @@ class MusicWindow(Adw.ApplicationWindow):
                    ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
                    ("DJ", lambda _b, pid=pl["id"]: self.dj_from({"kind": "playlist", "id": pid}), True),
                    ("Rename", lambda _b: self.rename_mine(), True)]
-        if any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in tracks):
-            buttons.append(("Download", lambda _b: self.app.download(tracks), True))
+        buttons += self.download_button(tracks)
         buttons.append(("Delete", lambda _b: self.delete_mine(), True))
         self.actions_row(lst, buttons if tracks else buttons[3:])
         if not tracks:
@@ -5845,7 +5873,8 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
                                        ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
                                        ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": al["title"], "songs": tracks}), True),
-                                       ("+ Playlist", lambda b: self.playlist_menu(b, tracks), True)])
+                                       ("+ Playlist", lambda b: self.playlist_menu(b, tracks), True)]
+                                 + self.download_button(tracks))
                 self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             self.scroll_top(lst)
             return
@@ -6025,7 +6054,8 @@ class MusicWindow(Adw.ApplicationWindow):
             if tracks:
                 self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
                                        ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
-                                       ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": pl["title"], "songs": tracks}), True)])
+                                       ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": pl["title"], "songs": tracks}), True)]
+                                 + self.download_button(tracks))
             self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             return
         if key not in self.playlists:
@@ -8567,7 +8597,11 @@ class MusicApp(Adw.Application):
             return
         self.downloading = True
         batch, self.downloads = self.downloads, []
-        in_thread(self.dl.sync, batch, lambda: self.win and self.win.refresh_all(), done=lambda *_: self.download_next())
+
+        def done(out, err):
+            self.toast(download_summary(out) if out else f"Couldn't download: {str(err)[:90]}")
+            self.download_next()
+        in_thread(self.dl.sync, batch, lambda: self.win and self.win.refresh_all(), True, done=done)
 
     # ---- Tidal and the FLAC sync of your whole library ----
     def connect_tidal(self):

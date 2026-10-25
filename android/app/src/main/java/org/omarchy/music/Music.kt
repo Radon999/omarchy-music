@@ -88,6 +88,8 @@ object Music {
     private var ended = false
     private var restorePending = false
     private var downloading = false
+    var downloadNote by mutableStateOf("")   // "Downloading in FLAC · 3 of 40" while a Download runs
+        private set
     private var syncAgain = false
 
     private class Listen(val id: String, val track: Track, var played: Double = 0.0, var counted: Boolean = false,
@@ -540,17 +542,19 @@ object Music {
         if (new.isEmpty()) { toast("Those are downloaded already"); return }
         if (!tidal.connected) { toast("Connect Tidal in the accounts menu first: downloads come from there, in FLAC"); return }
         downloads = downloads + new
-        toast("Downloading ${new.size} song${if (new.size != 1) "s" else ""} in FLAC")
+        toast("Downloading ${new.size} song${if (new.size != 1) "s" else ""} in FLAC" + if (Remote.active) " to this phone" else "")
         savedVersion++
         if (!downloading) downloadNext()
     }
 
     private fun downloadNext() {
-        if (downloads.isEmpty()) { downloading = false; savedVersion++; musicVersion++; return }
+        if (downloads.isEmpty()) { downloading = false; downloadNote = ""; savedVersion++; musicVersion++; return }
         downloading = true
         val batch = downloads
-        bg({ dl.sync(batch) { scope.launch { savedVersion++ } } }) { _, _ ->
+        downloadNote = "Downloading in FLAC · 0 of ${batch.size}"
+        bg({ dl.sync(batch, force = true) { n -> scope.launch { savedVersion++; downloadNote = "Downloading in FLAC · $n of ${batch.size}" } } }) { out, err ->
             downloads = downloads.filter { d -> batch.none { it.id == d.id } }
+            toast(out?.summary() ?: "Couldn't download: ${err?.message?.take(90)}")
             downloadNext()
         }
     }

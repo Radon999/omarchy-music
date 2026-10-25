@@ -107,14 +107,39 @@ class Downloader(private val ctx: Context, private val lib: Library, val tidal: 
         }
     }
 
-    /** Save every song in tracks as FLAC, one at a time (blocking). Songs Tidal recently
-     *  didn't have are left alone; progress() runs after each song. */
-    fun sync(tracks: List<Track>, progress: () -> Unit) {
-        for (t in tracks) {
-            if (lib.isFlac(t.id) || lib.recentlyMissing(t.id) || busy(t.id) || t.isFile) continue
-            runCatching { download(t) }
-            progress()
+    /** How a batch of downloads went. */
+    class Outcome {
+        var saved = 0
+        val missing = mutableListOf<Track>()                  // Tidal has no lossless copy
+        val failed = mutableListOf<Pair<Track, String>>()     // and why
+
+        fun summary(): String = buildList {
+            if (saved > 0) add("Saved $saved song${if (saved != 1) "s" else ""} in FLAC")
+            if (missing.isNotEmpty()) add("${missing.size} ${if (missing.size == 1) "isn't" else "aren't"} on Tidal in lossless (" +
+                missing.take(2).joinToString(", ") { it.title } + if (missing.size > 2) "…)" else ")")
+            if (failed.isNotEmpty()) add("${failed.size} failed: ${failed.first().second.take(90)}")
+        }.joinToString(". ").ifEmpty { "Nothing new to download" }
+    }
+
+    /** Save every song in tracks as FLAC, one at a time (blocking); progress(done) runs after
+     *  each song. Songs Tidal recently didn't have are left alone, unless force (you asked). */
+    fun sync(tracks: List<Track>, force: Boolean = false, progress: (Int) -> Unit): Outcome {
+        val out = Outcome()
+        for ((i, t) in tracks.withIndex()) {
+            if (!(lib.isFlac(t.id) || (!force && lib.recentlyMissing(t.id)) || busy(t.id) || t.isFile)) {
+                try {
+                    download(t)
+                    out.saved++
+                } catch (_: NoLosslessMatch) {
+                    out.missing += t
+                } catch (e: Exception) {
+                    out.failed += t to (e.message ?: e.javaClass.simpleName)
+                    android.util.Log.w("omarchy-music", "download ${t.id} (${t.artist} - ${t.title}) failed", e)
+                }
+            }
+            progress(i + 1)
         }
+        return out
     }
 
     private fun tags(t: Track, c: JsonElement, album: JsonElement?): Map<String, List<String>> = linkedMapOf(

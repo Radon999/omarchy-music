@@ -204,8 +204,9 @@ fun ListActions(tracks: List<Track>, extra: List<Pair<String, () -> Unit>> = emp
         }
         extra.forEach { (label, act) -> Pill(label, quiet = true, onClick = act) }
     }
-    if (tracks.isNotEmpty()) Text("${tracks.size} songs · ${fmtTotal(tracks)}", style = T.section,
-        modifier = Modifier.padding(start = 12.dp, bottom = 4.dp))
+    if (tracks.isNotEmpty()) Text("${tracks.size} songs · ${fmtTotal(tracks)}" +
+        if (Music.downloadNote.isNotEmpty() && tracks.any { t -> Music.downloads.any { it.id == t.id } }) " · ${Music.downloadNote}" else "",
+        style = T.section, modifier = Modifier.padding(start = 12.dp, bottom = 4.dp))
 }
 
 @Composable
