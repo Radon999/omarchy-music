@@ -109,6 +109,7 @@ fun App() {
             NowPlaying(ui, bar)
         }
         SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(bottom = 150.dp))
+        DesktopVolume(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp))
         Sheets(ui)
     }
 }
@@ -292,4 +293,22 @@ private fun SaveMark(ui: Ui) {
             if (lossy != null) Music.toast("Streaming ${Music.dl.streamQuality(t.id)} from $lossy: Tidal has no FLAC of this song")
             else Music.saveCurrent()
         }.padding(horizontal = 6.dp, vertical = 10.dp))
+}
+
+/** The desktop's volume for a moment after a volume button changed it (the phone's own bar shows the phone's). */
+@Composable
+private fun DesktopVolume(modifier: Modifier) {
+    val at = Remote.volumeShown
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(at) { if (at != 0L) { visible = true; kotlinx.coroutines.delay(1500); visible = false } }
+    if (!visible || !Remote.hasVolume) return
+    val v = if (Remote.status.muted) 0 else Remote.status.volume
+    Row(modifier.background(C.light).border(1.dp, C.line).padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text("Desktop volume", style = T.sub, modifier = Modifier.padding(end = 10.dp))
+        Box(Modifier.width(120.dp).height(4.dp).background(C.line)) {
+            Box(Modifier.fillMaxWidth(v / 100f).height(4.dp).background(C.accent))
+        }
+        Text("$v%", style = T.tab, modifier = Modifier.padding(start = 10.dp).width(40.dp))
+    }
 }

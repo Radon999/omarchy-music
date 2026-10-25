@@ -37,6 +37,17 @@ class MainActivity : ComponentActivity() {
         if (i?.action == Intent.ACTION_SEND) i.getStringExtra(Intent.EXTRA_TEXT)?.let { Music.shared = it }
     }
 
+    /** The volume buttons, while the phone is the desktop's remote: the desktop's volume, playing or not
+     *  (Android itself hands them to the desktop only while it plays). */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val up = event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
+        if ((up || event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) && Remote.hasVolume) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN) Remote.stepVolume(up)
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onResume() {
         super.onResume()
         visible = true

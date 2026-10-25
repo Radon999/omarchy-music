@@ -26,6 +26,7 @@ object Remote {
         val track: Track? = null, val paused: Boolean = true, val position: Double = 0.0, val duration: Double = 0.0,
         val repeat: String = "off", val liked: Boolean = false, val message: String = "", val index: Int = -1,
         val queue: List<Track> = emptyList(), val radio: Boolean = false, val dj: Dj.Shown = Dj.Shown(),
+        val volume: Int = -1, val muted: Boolean = false,   // -1: a desktop app too old to say
     )
 
     @Serializable
@@ -124,9 +125,41 @@ object Remote {
             val dj = Dj.Shown(d["on"].bool ?: false, d["busy"].str ?: "", d["kind"].str ?: "", d["line"].str ?: "",
                 (d["kinds"] as? kotlinx.serialization.json.JsonObject)?.mapValues { it.value.str ?: "" } ?: emptyMap(), d["from"].str ?: "")
             if (dj.on && dj.line.isNotEmpty() && dj.line != status.dj.line && status.track != null) Music.toast("DJ · ${dj.line}")
+            // A volume just set here wins over an answer that may predate it.
+            val fresh = System.nanoTime() - volumeAt > 2_000_000_000L
             status = Status(q.getOrNull(i), s["paused"].bool ?: true, s["position"].dbl ?: 0.0, s["duration"].dbl ?: 0.0,
-                s["repeat"].str ?: "off", s["liked"].bool ?: false, s["message"].str ?: "", i, q, s["radio"].bool ?: false, dj)
+                s["repeat"].str ?: "off", s["liked"].bool ?: false, s["message"].str ?: "", i, q, s["radio"].bool ?: false, dj,
+                if (fresh) s["volume"].long?.toInt() ?: -1 else status.volume, if (fresh) s["muted"].bool ?: false else status.muted)
         }
+    }
+
+    // ---- the desktop's volume, from the phone's volume buttons ----
+    const val VOLUME_STEP = 5   // percent a button press moves it, as Android's own steps
+    private var volumeAt = 0L
+    var volumeShown by mutableStateOf(0L)   // when a button press changed it in the app: shows the level a moment
+        private set
+
+    /** The desktop app can take its volume from here (1.1.5 on). */
+    val hasVolume get() = active && status.volume >= 0
+
+    fun setVolume(v: Int) {
+        val x = v.coerceIn(0, 100)
+        volumeAt = System.nanoTime()
+        status = status.copy(volume = x, muted = false)
+        cmd("volume", "volume" to x)
+    }
+
+    fun stepVolume(up: Boolean) {
+        if (!hasVolume) return
+        val now = if (status.muted && up) 0 else status.volume
+        setVolume((now / VOLUME_STEP + if (up) 1 else -1) * VOLUME_STEP)
+        volumeShown = System.nanoTime()
+    }
+
+    fun setMuted(on: Boolean) {
+        volumeAt = System.nanoTime()
+        status = status.copy(muted = on)
+        cmd("mute", "muted" to on)
     }
 
     /** Where the desktop is in the song now, between its answers. */

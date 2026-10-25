@@ -4127,6 +4127,7 @@ class Remote:
         out = {"index": a.index, "paused": a.paused, "position": a.position,
                "duration": a.duration or (t or {}).get("duration") or 0, "repeat": a.repeat,
                "liked": bool(t and t["id"] in a.liked), "radio": bool(a.radio_from), "qv": version,
+               "volume": round(a.volume), "muted": a.muted,
                "message": a.win.np_status.get_label() if a.win and a.win.np_status.get_visible() else ""}
         shown = (a.dj["sets"].get(str(a.dj.get("shown") or "")) if a.dj["on"] else None) or {}
         out["dj"] = {"on": a.dj["on"], "busy": a.dj_busy or "", "kind": shown.get("kind", ""), "line": shown.get("line", ""),
@@ -4201,6 +4202,11 @@ class Remote:
             if not tracks:
                 raise ValueError("no songs the desktop can play")
             a.enqueue(tracks, "next" if b.get("how") == "next" else "queue")
+        elif verb == "volume":   # the phone's volume buttons
+            a.set_volume(float(b.get("volume", a.volume)))
+        elif verb == "mute":
+            if bool(b.get("muted")) != a.muted:
+                a.toggle_mute()
         elif verb == "dj":
             do = b.get("do")
             if do == "start":
