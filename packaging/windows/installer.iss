@@ -69,14 +69,16 @@ end;
   can take longer than that, and a file still in use made the update roll back. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  Dir, Match, Script: String;
+  Dir, Quoted, Match, Script: String;
   Code: Integer;
 begin
   Result := '';
   Dir := ExpandConstant('{app}');
   if not DirExists(Dir) then
     exit;
-  Match := '$d = ''' + AddBackslash(Dir) + '''; ' +
+  Quoted := AddBackslash(Dir);
+  StringChangeEx(Quoted, '''', '''''', True);   { a ' in the folder's name, doubled for PowerShell }
+  Match := '$d = ''' + Quoted + '''; ' +
            'function Mine { Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) } }; ';
   Script := Match +
             '$p = Mine; if ($p) { $p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue }; ' +
