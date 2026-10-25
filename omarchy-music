@@ -4662,8 +4662,7 @@ class MusicWindow(Adw.ApplicationWindow):
 
     def fill(self, lst, tracks):
         lst.remove_all()
-        for i, t in enumerate(tracks):
-            self.add_track(lst, t, i, tracks)
+        self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
 
     def add_track(self, lst, track, i, group, **kw):
         """A song's row at the end of lst: one of group (its songs, in order), the i-th."""
@@ -4729,6 +4728,56 @@ class MusicWindow(Adw.ApplicationWindow):
             if isinstance(child, TrackRow):
                 yield child
             child = child.get_next_sibling()
+
+    # Long lists (a big music folder has thousands of songs) get their rows as you scroll: each
+    # row costs a few tenths of a millisecond to make and lay out, so all of them at once froze
+    # the window for seconds, worst on Windows.
+    LAZY_FIRST, LAZY_STEP = 120, 200
+
+    def lazy(self, lst, n, add):
+        """Rows 0..n-1 at the end of lst, each made by add(i): the first LAZY_FIRST now, the rest
+        as you scroll near the bottom. A rebuild of lst drops what was still to come."""
+        if not hasattr(self, "_lazy"):
+            self._lazy = {}
+        made = [0]
+        mark = []
+
+        def more(count):
+            if self._lazy.get(id(lst)) is not more or (mark and mark[0].get_parent() is not lst):
+                return False   # lst was rebuilt since
+            end = min(n, made[0] + count)
+            for i in range(made[0], end):
+                add(i)
+            made[0] = end
+            if end >= n:
+                self._lazy.pop(id(lst), None)
+            return True
+        self._lazy[id(lst)] = more
+        more(self.LAZY_FIRST)
+        last = lst.get_last_child()
+        if last is not None:
+            mark.append(last)
+        self.watch_scroll(lst)
+
+    def lazy_all(self, lst):
+        """Every row of lst made now (to select all of them)."""
+        more = getattr(self, "_lazy", {}).get(id(lst))
+        while more and more(10 ** 6) and self._lazy.get(id(lst)) is more:
+            pass
+
+    def watch_scroll(self, lst):
+        sw = lst.get_ancestor(Gtk.ScrolledWindow)
+        if not sw or getattr(lst, "lazy_watched", False):
+            return
+        lst.lazy_watched = True
+        adj = sw.get_vadjustment()
+
+        def check(a, *_):
+            more = getattr(self, "_lazy", {}).get(id(lst))
+            if more and a.get_value() + 2 * a.get_page_size() >= a.get_upper():
+                GLib.idle_add(lambda: (more(self.LAZY_STEP), False)[1])
+        adj.connect("value-changed", check)
+        adj.connect("changed", check)
 
     @staticmethod
     def scroll_top(lst):
@@ -4831,17 +4880,20 @@ class MusicWindow(Adw.ApplicationWindow):
         else:
             self.section(lst, {"recent": "RECENTLY PLAYED", "top": "MOST PLAYED · LAST.FM" if a.lastfm.connected and a.fm_top[1]
                                else "MOST PLAYED"}[view])
-        group = None
-        for i, t in enumerate(tracks):
+        group = [None]
+
+        def add(i):
+            t = tracks[i]
             if view == "all" and sort in ("artist", "album"):
                 artist = t["artist"].split(",")[0].strip() or "Unknown artist"
                 g = norm(artist) if sort == "artist" else norm(t.get("album"))
-                if g != group:
-                    group = g
+                if g != group[0]:
+                    group[0] = g
                     self.group_head(lst, artist if sort == "artist" else t.get("album") or "No album",
                                     None if sort == "artist" else artist)
             extra = f"{t['plays']} play{'s' if t['plays'] != 1 else ''}" if view == "top" else ""
             self.add_track(lst, t, i, tracks, removable=view == "all" and self.lib.has(t["id"]), extra=extra)
+        self.lazy(lst, len(tracks), add)
 
     def sort_chips(self):
         group = Adw.ToggleGroup(halign=Gtk.Align.START)
@@ -4921,8 +4973,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.section(lst, "EMPTY: RIGHT-CLICK A SONG › ADD TO PLAYLIST")
             return
         self.section(lst, f"{len(tracks)} SONG{'S' if len(tracks) != 1 else ''} · {fmt_total(tracks)}")
-        for i, t in enumerate(tracks):
-            self.add_track(lst, t, i, tracks)
+        self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
 
     def rename_mine(self):
         pl = self.app.lists.get(self.open_mine)
@@ -5087,8 +5138,7 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
                                        ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
                                        ("+ Playlist", lambda b: self.playlist_menu(b, tracks), True)])
-                for i, t in enumerate(tracks):
-                    self.add_track(lst, t, i, tracks)
+                self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             self.scroll_top(lst)
             return
         info, mine = page["info"], page["mine"]
@@ -5181,6 +5231,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.selectbar.set_reveal_child(False)
 
     def select_all(self):
+        self.lazy_all(self.select_list)
         rows = list(self.rows(self.select_list))
         on = not all(r.check.get_active() for r in rows)
         for r in rows:
@@ -5260,8 +5311,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if tracks is None:
                 self.section(lst, "LOADING…")
                 return
-            for i, t in enumerate(tracks):
-                self.add_track(lst, t, i, tracks)
+            self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             return
         if key not in self.playlists:
             self.set_empty(lst, "Loading your library…", "")
@@ -5351,16 +5401,20 @@ class MusicWindow(Adw.ApplicationWindow):
         lst.remove_all()
         heads = {"now": "NOW PLAYING", "queued": "QUEUED BY YOU",
                  "next": "UP NEXT · RADIO" if self.app.radio_from else "UP NEXT"}
-        last = None
-        for j in range(max(i, 0), len(q)):
+        last = [None]
+        start = max(i, 0)
+
+        def add(k):
+            j = start + k
             t = q[j]
             kind = "now" if j == i else "queued" if t.get("queued") else "next"
-            if kind != last:
+            if kind != last[0]:
                 self.section(lst, heads[kind])
-                last = kind
+                last[0] = kind
             row = self.add_track(lst, t, j, q, in_queue=True)
             if j == i:
                 row.add_css_class("playing")
+        self.lazy(lst, len(q) - start, add)
 
     def track_menu(self, row, x, y):
         """Right-click on a song: play it next, queue it, or take it out of the queue."""
