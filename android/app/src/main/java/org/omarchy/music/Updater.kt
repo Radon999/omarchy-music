@@ -16,16 +16,25 @@ import kotlinx.coroutines.launch
 import okhttp3.Request
 import java.io.File
 
-/** New releases on GitHub. It looks at start and every 12 hours; Update (in the accounts
- *  menu) downloads the release's APK and hands it to Android's installer, which asks you. */
+/** New releases on GitHub. It looks at start, every 12 hours and when you open the accounts
+ *  menu (Check looks now); Update downloads the release's APK and hands it to Android's
+ *  installer, which asks you. Android shows that question only while the app is on screen,
+ *  so one that came while you were away is kept, and asked when you come back (or Install). */
 @SuppressLint("StaticFieldLeak")
 object Updater {
     private const val REPO = "Varixxl/omarchy-music"
     private lateinit var ctx: Context
     var latest by mutableStateOf<String?>(null)   // the newer release ("1.2.0"), once there is one
         private set
-    var state by mutableStateOf("")               // "", "working", or what went wrong
+    var state by mutableStateOf("")               // "", "working", "confirm" (Android's question is waiting), or what went wrong
+    var checking by mutableStateOf(false)
+        private set
+    var checkError by mutableStateOf("")
+        private set
+    private var checkedAt = 0.0
     private var apk: String? = null
+    private var confirm: Intent? = null           // Android's "install this update?", not shown yet
+    private const val TAG = "omarchy-music"
 
     /** The version installed, as Android has it. Not BuildConfig.VERSION_NAME: Kotlin copies that
      *  into the code that reads it, and a build that doesn't recompile that code keeps the old one
@@ -45,23 +54,52 @@ object Updater {
         return false
     }
 
-    fun check() {
+    /** Look for a newer release (quiet: no message when there's none, as at start). */
+    fun check(quiet: Boolean = true) {
+        if (checking) return
+        checking = true
         Music.bg({
             httpJson("https://api.github.com/repos/$REPO/releases/latest",
                 mapOf("User-Agent" to "omarchy-music-android/$version", "Accept" to "application/vnd.github+json"))
-        }) { rel, _ ->
+        }) { rel, err ->
+            checking = false
+            checkedAt = now()
+            checkError = err?.let { "couldn't check: ${it.message?.take(60)}" } ?: ""
+            Music.accountsVersion++
             val tag = rel["tag_name"].str ?: return@bg
+            if (!newer(tag, version)) { if (!quiet) Music.toast("Omarchy Music $version is the newest"); return@bg }
             val url = rel["assets"].list.firstOrNull { it["name"].str == "OmarchyMusic.apk" }?.get("browser_download_url").str
-            if (url == null || !newer(tag, version)) return@bg
+            if (url == null) {   // the release is still being put up: its APK comes a few minutes after
+                if (!quiet) Music.toast("Omarchy Music ${tag.removePrefix("v")} is on its way: its Android app isn't up yet")
+                Music.scope.launch { delay(5 * 60_000L); check() }
+                return@bg
+            }
             if (latest != tag.removePrefix("v")) Music.toast("Omarchy Music ${tag.removePrefix("v")} is out: update it in the accounts menu (☰)")
             latest = tag.removePrefix("v"); apk = url
             Music.accountsVersion++
         }
     }
 
+    /** The accounts menu opened: look again if the last look is over ten minutes old. */
+    fun checkSoon() { if (now() - checkedAt > 600) check() }
+
+    /** The app is on screen again: ask Android's question that came while it wasn't. */
+    fun resumed(activity: android.app.Activity) {
+        val c = confirm ?: return
+        confirm = null
+        runCatching { activity.startActivity(c) }.onFailure { confirm = c; android.util.Log.w(TAG, "update: can't ask", it) }
+    }
+
+    /** Install, for an update whose question is waiting. */
+    fun askAgain(activity: android.app.Activity) {
+        if (confirm == null) { state = ""; install(); return }
+        resumed(activity)
+    }
+
     fun install() {
         val url = apk ?: return
         if (state == "working") return
+        android.util.Log.i(TAG, "update: installing $url over $version")
         if (!ctx.packageManager.canRequestPackageInstalls()) {
             // Android asks once whether this app may install apps; then pick Update again.
             Music.toast("Allow Omarchy Music to install apps, then pick Update again")
@@ -87,22 +125,30 @@ object Updater {
                 s.commit(done.intentSender)
             }
             file.delete()
-        }) { _, err -> if (err != null) state = "Couldn't update: ${err.message?.take(100)}" }
+        }) { _, err ->
+            if (err != null) { android.util.Log.w(TAG, "update failed", err); state = "Couldn't update: ${err.message?.take(100)}" }
+        }
     }
 
     /** Android's installer answers here: it wants you to confirm, or it's done, or it failed. */
     class Answer : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+            val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+            android.util.Log.i(TAG, "update: installer says $status ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""}")
+            when (status) {
                 PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                     @Suppress("DEPRECATION")
-                    val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
-                    context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    val ask = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return
+                    // Kept until it's answered: Android drops it when the app isn't on screen.
+                    confirm = ask
+                    state = "confirm"
+                    if (MainActivity.visible) runCatching { context.startActivity(ask); confirm = null }
+                        .onFailure { android.util.Log.w(TAG, "update: can't ask now", it) }
                 }
                 PackageInstaller.STATUS_SUCCESS -> state = ""
                 PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
                     state = "This copy is signed differently (built by hand?): uninstall it once, then install the release"
-                PackageInstaller.STATUS_FAILURE_ABORTED -> state = ""
+                PackageInstaller.STATUS_FAILURE_ABORTED -> { state = ""; confirm = null }
                 else -> state = "Couldn't update: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "the installer said no"}"
             }
         }

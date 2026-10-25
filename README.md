@@ -39,6 +39,11 @@ an **Android** app.
   - **Recent:** recently played.
   - **Most played:** with Last.fm connected, your most scrobbled songs from anywhere. Without
     it, the songs played here (a song counts after 30 seconds, or half of a shorter song).
+  - **DJ:** like Spotify's DJ, in text. Sets of six songs, each begun with a line: what you've
+    had on repeat, new songs from Tidal's and YouTube Music's radios, throwbacks, deep cuts of
+    artists you play, your top genre and more like what's playing (from your Last.fm history
+    when it's connected, else what you played here). **Switch it up** starts another kind of
+    set, and the box under it asks the DJ for a mood, a decade, a genre or an artist.
 - **Playlists.** Create, rename and delete them, and add or remove songs. They are stored in
   `playlists.json`.
 - **Import .m3u8 playlists.** Pick **Import a playlist (.m3u8)** under Playlists, for example
@@ -72,7 +77,7 @@ an **Android** app.
 
 `android/` holds the Android version (Kotlin, Jetpack Compose, Media3). It has the same
 services, Tidal FLAC streaming and downloads, Music tab, playlists, EQ with the headphone
-curves, lyrics, Last.fm and Wrapped, the search menu and .m3u8 import. It is a separate app, package `org.omarchy.music`.
+curves, lyrics, Last.fm and Wrapped, the search menu, .m3u8 import and the DJ. It is a separate app, package `org.omarchy.music`.
 What's playing shows in the notification shade and on the lock screen, the desktop's song
 too while the phone is its remote.
 

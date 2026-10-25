@@ -91,7 +91,7 @@ gi.require_version("Graphene", "1.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
-VERSION = "1.1.2"            # the release this is; GitHub's latest release is compared with it
+VERSION = "1.1.3"            # the release this is; GitHub's latest release is compared with it
 REPO = "Varixxl/omarchy-music"
 
 # OMARCHY_MUSIC_PROFILE=dev runs a second copy beside the real one, with its own
@@ -3699,9 +3699,10 @@ def version_tuple(v):
 
 
 class Updater:
-    """New releases on GitHub. It looks at start and every 12 hours, and installs only when
-    you pick Update: on Linux the git clone moves to the release and install.sh runs again;
-    on Windows the release's installer replaces this copy and opens the new one."""
+    """New releases on GitHub. It looks at start, every 12 hours and when you open the accounts
+    menu (Check looks now), and installs only when you pick Update: on Linux the git clone moves
+    to the release and install.sh runs again; on Windows the release's installer replaces this
+    copy and opens the new one."""
 
     def __init__(self, app):
         self.app = app
@@ -3709,26 +3710,48 @@ class Updater:
         self.installer = None    # its Windows installer's address
         self.state = ""          # "", "working", "restart" (Linux, updated), or what went wrong
         self.dir = Path(__file__).resolve().parent   # the git clone, or (Windows) where it's installed
+        self.checking, self.checked_at, self.check_error = False, 0, ""
 
-    def check(self):
-        def work():
-            import requests
-            r = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=15,
-                             headers={"User-Agent": f"omarchy-music/{VERSION}", "Accept": "application/vnd.github+json"})
-            r.raise_for_status()
-            return r.json()
+    @staticmethod
+    def release():
+        import requests
+        r = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=15,
+                         headers={"User-Agent": f"omarchy-music/{VERSION}", "Accept": "application/vnd.github+json"})
+        r.raise_for_status()
+        return r.json()
+
+    @staticmethod
+    def setup_of(rel):
+        return next((x["browser_download_url"] for x in rel.get("assets", []) if x.get("name") == "OmarchyMusic-Setup.exe"), None)
+
+    def check_soon(self):
+        """The accounts menu opened: look again if the last look is over ten minutes old."""
+        if time.time() - self.checked_at > 600:
+            self.check()
+
+    def check(self, quiet=True):
+        """Look for a newer release (quiet: no message when there's none, as at start)."""
+        if self.checking:
+            return
+        self.checking = True
 
         def done(rel, err):
-            if err or not rel or version_tuple(rel.get("tag_name")) <= version_tuple(VERSION):
+            self.checking, self.checked_at = False, time.time()
+            self.check_error = f"couldn't check: {str(err)[:60]}" if err else ""
+            self.app.accounts_changed()
+            if err or not rel:
+                return
+            if version_tuple(rel.get("tag_name")) <= version_tuple(VERSION):
+                if not quiet:
+                    self.app.toast(f"Omarchy Music {VERSION} is the newest")
                 return
             tag = rel["tag_name"]
             if tag != self.latest:
                 self.app.toast(f"Omarchy Music {tag.lstrip('v')} is out: update it in the accounts menu (☰)")
             self.latest = tag
-            self.installer = next((x["browser_download_url"] for x in rel.get("assets", [])
-                                   if x.get("name") == "OmarchyMusic-Setup.exe"), None)
+            self.installer = self.setup_of(rel)
             self.app.accounts_changed()
-        in_thread(work, done=done)
+        in_thread(self.release, done=done)
 
     def install(self):
         if self.state in ("working", "restart") or not self.latest:
@@ -3756,6 +3779,8 @@ class Updater:
     def _windows(self):
         import requests
         import tempfile
+        if not self.installer:   # it comes a few minutes after the release: look again
+            self.installer = self.setup_of(self.release())
         if not self.installer:
             raise RuntimeError("the release has no Windows installer yet: try again in a few minutes")
         dest = Path(tempfile.gettempdir()) / "OmarchyMusic-Setup.exe"
@@ -4723,7 +4748,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.accounts_box.add_css_class("accounts")
         self.accounts_box.set_size_request(350, -1)
         self.accounts_pop = Gtk.Popover(child=self.accounts_box)
-        self.accounts_pop.connect("show", lambda *_: self.refresh_accounts())
+        self.accounts_pop.connect("show", lambda *_: (self.app.updater.check_soon(), self.refresh_accounts()))
         btn = Gtk.MenuButton(popover=self.accounts_pop, icon_name="open-menu-symbolic", valign=Gtk.Align.CENTER,
                              tooltip_text="Accounts, Last.fm, tagging and lyrics")
         btn.add_css_class("ctl")
@@ -4794,8 +4819,11 @@ class MusicWindow(Adw.ApplicationWindow):
             else:
                 line("Update", up.state or f"Omarchy Music {new} is out (this is {VERSION})", False,
                      pill("Update", up.install))
-            grid.attach(Gtk.Separator(), 0, row, 3, 1)
-            row += 1
+        else:
+            line("Version", f"{VERSION} · checking…" if up.checking else f"{VERSION} · {up.check_error or 'up to date'}", False,
+                 *([] if up.checking else [pill("Check", lambda: up.check(quiet=False), quiet=True)]))
+        grid.attach(Gtk.Separator(), 0, row, 3, 1)
+        row += 1
         for key in ("ytm", "apple"):
             src = a.sources.get(key)
             if src and src.signed_in:

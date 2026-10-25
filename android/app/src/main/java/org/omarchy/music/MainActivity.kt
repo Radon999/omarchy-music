@@ -37,6 +37,21 @@ class MainActivity : ComponentActivity() {
         if (i?.action == Intent.ACTION_SEND) i.getStringExtra(Intent.EXTRA_TEXT)?.let { Music.shared = it }
     }
 
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        Updater.resumed(this)
+    }
+
+    override fun onPause() {
+        visible = false
+        super.onPause()
+    }
+
+    companion object {
+        @Volatile var visible = false   // on screen: Android lets it open the installer's question
+    }
+
     override fun onStart() {
         super.onStart()
         controller = MediaController.Builder(this, SessionToken(this, ComponentName(this, MusicService::class.java))).buildAsync()
