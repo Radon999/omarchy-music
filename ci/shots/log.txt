@@ -5,22 +5,22 @@ Success
 + python3 -
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 1.wav' /sdcard/Music/
-/tmp/Test Song 1.wav: 1 file pushed, 0 skipped. 11.0 MB/s (882044 bytes in 0.077s)
+/tmp/Test Song 1.wav: 1 file pushed, 0 skipped. 14.5 MB/s (882044 bytes in 0.058s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 2.wav' /sdcard/Music/
-/tmp/Test Song 2.wav: 1 file pushed, 0 skipped. 785.1 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 2.wav: 1 file pushed, 0 skipped. 738.6 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 3.wav' /sdcard/Music/
-/tmp/Test Song 3.wav: 1 file pushed, 0 skipped. 717.6 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 3.wav: 1 file pushed, 0 skipped. 667.0 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 4.wav' /sdcard/Music/
-/tmp/Test Song 4.wav: 1 file pushed, 0 skipped. 364.6 MB/s (882044 bytes in 0.002s)
+/tmp/Test Song 4.wav: 1 file pushed, 0 skipped. 623.5 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 5.wav' /sdcard/Music/
-/tmp/Test Song 5.wav: 1 file pushed, 0 skipped. 757.2 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 5.wav: 1 file pushed, 0 skipped. 753.0 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 6.wav' /sdcard/Music/
-/tmp/Test Song 6.wav: 1 file pushed, 0 skipped. 720.2 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 6.wav: 1 file pushed, 0 skipped. 452.3 MB/s (882044 bytes in 0.002s)
 + adb shell content call --method scan_volume --uri content://media --arg external_primary
 Result: Bundle[{}]
 + sleep 3
@@ -45,7 +45,7 @@ args: [-p, org.omarchy.music.test, -c, android.intent.category.LAUNCHER, 1]
 data="org.omarchy.music.test"
 data="android.intent.category.LAUNCHER"
 Events injected: 1
-## Network stats: elapsed time=154ms (0ms mobile, 0ms wifi, 154ms not connected)
+## Network stats: elapsed time=126ms (0ms mobile, 0ms wifi, 126ms not connected)
 + sleep 12
 + shot 01-home
 + adb exec-out screencap -p
@@ -135,19 +135,19 @@ not found: Artists
 + shot 13-home-scrolled
 + adb exec-out screencap -p
 + ls -la /home/runner/work/omarchy-music/omarchy-music/shots
-total 3368
-drwxr-xr-x 2 runner runner    4096 Oct 26 15:18 .
-drwxr-xr-x 5 runner runner    4096 Oct 26 15:16 ..
--rw-r--r-- 1 runner runner  151553 Oct 26 15:16 01-home.png
--rw-r--r-- 1 runner runner  150048 Oct 26 15:17 02-all-songs.png
--rw-r--r-- 1 runner runner  147384 Oct 26 15:17 03-playing-list.png
--rw-r--r-- 1 runner runner  155514 Oct 26 15:17 04-player.png
--rw-r--r-- 1 runner runner  149011 Oct 26 15:17 05-player-lyrics.png
--rw-r--r-- 1 runner runner  194530 Oct 26 15:17 06-player-queue.png
--rw-r--r-- 1 runner runner  172309 Oct 26 15:17 07-player-vis.png
--rw-r--r-- 1 runner runner  147554 Oct 26 15:17 08-back-to-list.png
--rw-r--r-- 1 runner runner   65004 Oct 26 15:17 09-favorites.png
--rw-r--r-- 1 runner runner  261185 Oct 26 15:18 10-menu.png
--rw-r--r-- 1 runner runner  147719 Oct 26 15:18 11-eq.png
--rw-r--r-- 1 runner runner 1381140 Oct 26 15:18 12-artists.png
--rw-r--r-- 1 runner runner  287317 Oct 26 15:18 13-home-scrolled.png
+total 3372
+drwxr-xr-x 2 runner runner    4096 Oct 26 15:41 .
+drwxr-xr-x 5 runner runner    4096 Oct 26 15:38 ..
+-rw-r--r-- 1 runner runner  151467 Oct 26 15:39 01-home.png
+-rw-r--r-- 1 runner runner  150697 Oct 26 15:40 02-all-songs.png
+-rw-r--r-- 1 runner runner  148022 Oct 26 15:40 03-playing-list.png
+-rw-r--r-- 1 runner runner  156210 Oct 26 15:40 04-player.png
+-rw-r--r-- 1 runner runner  150118 Oct 26 15:40 05-player-lyrics.png
+-rw-r--r-- 1 runner runner  195242 Oct 26 15:40 06-player-queue.png
+-rw-r--r-- 1 runner runner  172947 Oct 26 15:40 07-player-vis.png
+-rw-r--r-- 1 runner runner  148168 Oct 26 15:40 08-back-to-list.png
+-rw-r--r-- 1 runner runner   65684 Oct 26 15:40 09-favorites.png
+-rw-r--r-- 1 runner runner  261238 Oct 26 15:40 10-menu.png
+-rw-r--r-- 1 runner runner  147213 Oct 26 15:41 11-eq.png
+-rw-r--r-- 1 runner runner 1380715 Oct 26 15:41 12-artists.png
+-rw-r--r-- 1 runner runner  287469 Oct 26 15:41 13-home-scrolled.png
