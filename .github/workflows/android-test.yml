@@ -1,0 +1,84 @@
+# Test builds of the Android app from patches (ci/*.patch.b64, applied in order) on desktop-features
+# as it was (BASE). The APK is a side-by-side test app (org.omarchy.music.test, "VarMusic Test"),
+# signed with a test key kept here. With ci/PUSH present, the patched code goes to desktop-features.
+name: Android test build
+on:
+  push:
+    branches: [android-work]
+    paths: ["ci/*.patch.b64", "ci/PUSH"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BASE: 1c15c06
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: android-work
+          path: work
+      - uses: actions/checkout@v6
+        with:
+          ref: desktop-features
+          path: app
+          fetch-depth: 0
+      - name: Apply the patches
+        working-directory: app
+        run: |
+          git checkout -q "$BASE"
+          for f in $(ls ../work/ci/*.patch.b64 | sort -V); do
+            echo "applying $f"
+            base64 -d "$f" | gunzip | git apply --whitespace=nowarn -
+          done
+          git add -A
+          git -c user.name=Radon999 -c user.email=radon721690@gmail.com commit -qm "Android: favorites, skips, a song's own volume, moods by hand, .m3u8 export, looks, visualizer and Wrapped styles, download folder, copies, Duplicates, Upgrade" || true
+          git log --oneline -3
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tidal's app keys
+        working-directory: app
+        run: |
+          python -m pip install --quiet tidalapi
+          OMARCHY_MUSIC_PYTHON=python android/tools/tidal-keys.sh
+      - name: A test app, with the test key
+        working-directory: app
+        run: |
+          base64 -d ../work/ci/test.keystore.b64 > "$RUNNER_TEMP/test.keystore"
+          mkdir -p ~/.local/share/omarchy-music
+          printf 'storeFile=%s\nstorePassword=varmusictest\nkeyAlias=test\nkeyPassword=varmusictest\n' "$RUNNER_TEMP/test.keystore" > ~/.local/share/omarchy-music/keystore.properties
+          sed -i 's/applicationId = "org.omarchy.music"/applicationId = "org.omarchy.music.test"/' android/app/build.gradle.kts
+          sed -i 's/android:label="VarMusic"/android:label="VarMusic Test"/' android/app/src/main/AndroidManifest.xml
+          grep -n 'applicationId' android/app/build.gradle.kts
+      - name: Build
+        working-directory: app/android
+        run: |
+          ./gradlew --no-daemon assembleRelease > "$RUNNER_TEMP/build.log" 2>&1 || true
+          test -f app/build/outputs/apk/release/app-release.apk
+      - name: Say how it went (ci/result.txt)
+        if: always()
+        working-directory: work
+        run: |
+          { echo "run ${{ github.run_id }} · $(date -u)"; \
+            if [ -f ../app/android/app/build/outputs/apk/release/app-release.apk ]; then echo "BUILD OK"; else echo "BUILD FAILED"; fi; \
+            grep -E "^e: |^w: .*(unused|deprecated)? *$|error:|What went wrong" -A2 "$RUNNER_TEMP/build.log" | grep -v "^w: " | head -150; \
+            tail -25 "$RUNNER_TEMP/build.log"; } > ci/result.txt || true
+          git add ci/result.txt
+          git -c user.name=Radon999 -c user.email=radon721690@gmail.com commit -qm "ci: result" || true
+          git push origin HEAD:android-work || true
+      - uses: actions/upload-artifact@v6
+        with:
+          name: VarMusic-Test-apk
+          path: app/android/app/build/outputs/apk/release/app-release.apk
+      - name: To desktop-features
+        if: hashFiles('work/ci/PUSH') != ''
+        working-directory: app
+        run: |
+          git checkout -q -- android/app/build.gradle.kts android/app/src/main/AndroidManifest.xml
+          git push origin HEAD:desktop-features
