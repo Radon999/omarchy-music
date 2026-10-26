@@ -131,8 +131,7 @@ object Flac {
         val p = blocks.firstOrNull { it.type == 6 }?.data ?: return null
         val bb = ByteBuffer.wrap(p)
         bb.int
-        bb.position(bb.position() + bb.int)       // mime
-        bb.position(bb.position() + bb.int)       // description
+        repeat(2) { val len = bb.int; bb.position(bb.position() + len) }   // mime, description (read the length first)
         bb.position(bb.position() + 16)           // size, depth, colours
         val len = bb.int
         return p.copyOfRange(bb.position(), bb.position() + len)

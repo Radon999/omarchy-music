@@ -13,7 +13,7 @@ class TagsTest {
             writeBytes("fLaC".toByteArray() + byteArrayOf(0x80.toByte(), 0, 0, 34) + ByteArray(34) + "audio".toByteArray())
         }
         val out = File.createTempFile("song", ".flac")
-        out.outputStream().use { Flac.retag(bare, it, tags, null) }
+        out.outputStream().use { Flac.retag(bare, it, tags, byteArrayOf(7, 7)) }   // with a cover, as downloads have
         return out
     }
 
@@ -31,6 +31,7 @@ class TagsTest {
         assertEquals(listOf("Jazz"), c["GENRE"])
         assertEquals(listOf("US1"), c["ISRC"])          // the rest kept
         assertEquals("audio", String(res.readBytes().takeLast(5).toByteArray()))
+        assertEquals(listOf<Byte>(7, 7), res.inputStream().buffered().use { Flac.picture(Flac.readHeader(it)) }!!.toList())   // cover kept
     }
 
     @Test fun saysWhereSongsDisagree() {

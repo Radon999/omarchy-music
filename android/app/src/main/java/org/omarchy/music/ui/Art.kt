@@ -52,6 +52,9 @@ class FileArtFetcher(private val art: FileArt, private val options: Options) : F
 /** What to draw for a song's art: the saved cover, the service's picture, or the file's own. */
 fun artModel(t: Track, px: Int = 226): Any? {
     Music.lib.items[t.id]?.art?.takeIf { it.isNotEmpty() && File(it).exists() }?.let { return File(it) }
+    org.omarchy.music.Pictures.cover(t.artist, t.album.ifEmpty { t.title }).takeIf { it.isNotEmpty() }?.let {   // one you picked
+        return if (it.startsWith("/")) File(it) else it
+    }
     if (t.thumb.isNotEmpty()) return sizedThumb(t.thumb, px)
     return t.file?.let { FileArt(it) }
 }

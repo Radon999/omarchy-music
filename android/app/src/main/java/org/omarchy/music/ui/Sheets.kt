@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -95,6 +96,7 @@ fun Sheets(ui: Ui) {
     ui.folderFor?.let { item -> FolderPicker(ui, item) }
     ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
     DeleteDialog(ui)
+    ui.coverFor?.let { albums -> CoverDialog(ui, albums) }
     ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
@@ -463,6 +465,48 @@ private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
             }
         },
         confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Cover…: covers of the first album left to pick from (Google's, Genius's, Wikipedia's), or a
+ *  picture of yours; then the next album. Unreleased songs often have none: skip, or pick a file. */
+@Composable
+private fun CoverDialog(ui: Ui, albums: List<List<org.omarchy.music.Track>>) {
+    val songs = albums[0]
+    val t = songs[0]
+    var choices by remember(songs) { mutableStateOf<List<org.omarchy.music.Pictures.Choice>?>(null) }
+    var busy by remember(songs) { mutableStateOf(false) }
+    val next = { ui.coverFor = albums.drop(1).ifEmpty { null } }
+    val use = { src: String -> busy = true; Music.setCover(songs, src) { next() } }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) use(uri.toString()) }
+    LaunchedEffect(songs) {
+        Music.bg({ org.omarchy.music.Pictures.coverChoices(t.artist.split(",")[0].trim(), t.album.ifEmpty { t.title }) }) { c, _ -> choices = c ?: emptyList() }
+    }
+    AlertDialog(onDismissRequest = { ui.coverFor = null }, containerColor = C.light,
+        title = { Text("Cover of “${t.album.ifEmpty { t.title }}”" + if (albums.size > 1) " · ${albums.size} left" else "", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            val c = choices
+            Column {
+                Text(when {
+                    busy -> "Putting it on the songs…"
+                    c == null -> "Looking on Google, Genius and Wikipedia…"
+                    c.isEmpty() -> "Nothing found: unreleased songs often have none. Pick a picture of yours, or skip it."
+                    else -> "${t.artist}${if (t.album.isNotEmpty()) " · goes on every song of the album" else ""}"
+                }, style = T.sub, modifier = Modifier.padding(bottom = 8.dp))
+                if (!c.isNullOrEmpty() && !busy) LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items((c.size + 2) / 3) { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
+                            for (ch in c.drop(row * 3).take(3)) Column(Modifier.clickable { use(ch.url) }) {
+                                ArtImage(ch.thumb, 84.dp)
+                                Text(ch.from, style = T.time)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton({ pick.launch(arrayOf("image/*")) }, enabled = !busy) { Text("Pick a picture…", color = C.accent) } },
+        dismissButton = { TextButton(next, enabled = !busy) { Text(if (albums.size > 1) "Skip" else "Cancel", color = C.muted) } })
 }
 
 /** Speed…: how fast the songs play, from half to twice their speed. */

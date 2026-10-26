@@ -69,6 +69,7 @@ import random
 import re
 import secrets
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -6314,6 +6315,18 @@ class MusicWindow(Adw.ApplicationWindow):
                 (r.add_css_class if r.track["id"] == cur else r.remove_css_class)("playing")
                 r.update_mark()
 
+    def redraw_art(self, ids):
+        """Songs ids got a new cover: forget the old one and show the new one on the rows there are."""
+        for v in ids:
+            self.art.textures.pop(v, None)
+            self.art.paths.pop(v, None)
+            self.art.none.discard(v)
+        for key in ("search", "account", "music", "artist", "queue"):
+            for r in self.rows(getattr(self, f"{key}_list", None)):
+                if r.track["id"] in ids and r.cell is not None and r.cell.row is r:
+                    r.cell.pic.clear()
+                    self.art.apply(r.cell.pic, r.track)
+
     def song_changed(self):
         """Another song plays: the marks move, and Up next starts from it."""
         self.mark_rows()
@@ -6973,6 +6986,101 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.connect("response", answered)
         dlg.present(self)
 
+    def cover_dialog(self, tracks):
+        """Cover…: a new cover for each album of tracks, one album at a time, from Google's,
+        Genius's and Wikipedia's pictures of it, or a file of yours."""
+        albums = {}
+        for t in tracks:
+            albums.setdefault(album_key(t), []).append(t)
+        groups = list(albums.values())
+        if self.selecting:
+            self.stop_selecting()
+        if groups:
+            self.cover_album(groups, 0)
+
+    def cover_album(self, groups, i):
+        a, songs = self.app, groups[i]
+        t = songs[0]
+        album = t.get("album") or ""
+        name = f"“{album}”" if album else f"“{t['title']}”"
+        dlg = Adw.Dialog(title="Cover", content_width=560, content_height=560)
+        page = Adw.ToolbarView()
+        page.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=14, margin_end=14, margin_bottom=14)
+        head = Gtk.Label(label=f"Cover of {name}" + (f" · {i + 1} of {len(groups)}" if len(groups) > 1 else ""),
+                         xalign=0, wrap=True)
+        head.add_css_class("title-4")
+        sub = Gtk.Label(label=f"{t['artist']} · goes on every song of the album here" if album else t["artist"], xalign=0, wrap=True)
+        sub.add_css_class("service")
+        status = Gtk.Label(label="Looking on Google, Genius and Wikipedia…", xalign=0, wrap=True)
+        status.add_css_class("service")
+        flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4, min_children_per_line=3,
+                           column_spacing=8, row_spacing=8, homogeneous=True, valign=Gtk.Align.START)
+        scroll = Gtk.ScrolledWindow(child=flow, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        busy = []
+
+        def next_album():
+            dlg.close()
+            if i + 1 < len(groups):
+                GLib.idle_add(lambda: (self.cover_album(groups, i + 1), False)[1])
+
+        def use(source):
+            if busy:
+                return
+            busy.append(1)
+            status.set_label("Putting it on the songs…")
+            a.set_cover_soon(songs, source, done=next_album)
+
+        def pick_file(_b):
+            filt = Gtk.FileFilter(name="Pictures")
+            filt.add_mime_type("image/*")
+            filters = Gio.ListStore.new(Gtk.FileFilter)
+            filters.append(filt)
+            fd = Gtk.FileDialog(title="Choose a cover", filters=filters, default_filter=filt)
+
+            def chosen(d, res):
+                try:
+                    f = d.open_finish(res)
+                except GLib.Error:
+                    return
+                if f and f.get_path():
+                    use(f.get_path())
+            fd.open(self, None, chosen)
+        for label, cb in (("Choose a file…", pick_file), ("Skip" if i + 1 < len(groups) else "Cancel", lambda _b: next_album())):
+            b = Gtk.Button(label=label)
+            b.connect("clicked", cb)
+            buttons.append(b)
+        for w in (head, sub, status, scroll, buttons):
+            box.append(w)
+        page.set_content(box)
+        dlg.set_child(page)
+
+        def tile(c):
+            pic = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, width_request=120, height_request=120)
+            pic.add_css_class("art")
+            lab = Gtk.Label(label=c["from"])
+            lab.add_css_class("service")
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            col.append(pic)
+            col.append(lab)
+            btn = Gtk.Button(child=col, tooltip_text=c["url"])
+            btn.add_css_class("flat")
+            btn.connect("clicked", lambda _b: use(c["url"]))
+            dest = CACHE / "covers" / (hashlib.sha1(c["thumb"].encode()).hexdigest()[:16] + ".jpg")
+            in_thread(lambda: dest.exists() or fetch_url(c["thumb"], dest),
+                      done=lambda _r, err: pic.set_paintable(load_texture(dest, 240)) if not err else btn.set_visible(False))
+            return btn
+
+        def found(choices, err):
+            choices = choices or []
+            for c in choices[:12]:
+                flow.append(tile(c))
+            status.set_label(f"Pick the right one ({len(choices[:12])} found), or choose a file." if choices else
+                             "Nothing found: unreleased songs often have none. Choose a file, or skip it.")
+        in_thread(a.pictures.cover_choices, t["artist"].split(",")[0].strip(), album or t["title"], done=found)
+        dlg.present(self)
+
     def speed_dialog(self, tracks):
         """Speed…: how fast tracks play, from half to twice their speed."""
         a = self.app
@@ -7356,6 +7464,7 @@ class MusicWindow(Adw.ApplicationWindow):
         bar.append(self.sel_download)
         self.sel_tags = icon_button("document-edit-symbolic", "ctl", "Edit tags", lambda: self.edit_tags_dialog(self.picked_tracks()))
         bar.append(self.sel_tags)
+        bar.append(icon_button("image-x-generic-symbolic", "ctl", "Cover", lambda: self.cover_dialog(self.picked_tracks())))
         bar.append(icon_button("power-profile-performance-symbolic", "ctl", "Speed", lambda: self.speed_dialog(self.picked_tracks())))
         self.sel_delete = icon_button("user-trash-symbolic", "ctl", "Delete", lambda: self.delete_songs_dialog(self.picked_tracks()))
         bar.append(self.sel_delete)
@@ -7653,6 +7762,7 @@ class MusicWindow(Adw.ApplicationWindow):
         if song_file(self.lib, t):
             item("Edit tags…", lambda: self.edit_tags_dialog([t]))
             item("Delete…", lambda: self.delete_songs_dialog([t]))
+        item("Cover…", lambda: self.cover_dialog([t]))
         speed = self.app.speeds.get(t)[0]
         item("Speed…" if speed == 1.0 else f"Speed ({speed:g}×)…", lambda: self.speed_dialog([t]))
         if row.group is not None:
@@ -9351,6 +9461,71 @@ def write_tags(path, changes):
     f.save()
 
 
+def cover_image(data):
+    """Picture bytes as a cover: (bytes, mime). A JPEG or PNG stays as it is; anything else
+    (WebP, GIF…) becomes a JPEG. ValueError if it isn't a picture."""
+    if data[:3] == b"\xff\xd8\xff":
+        return data, "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data, "image/png"
+    try:
+        from gi.repository import GdkPixbuf
+        loader = GdkPixbuf.PixbufLoader()
+        loader.write(data)
+        loader.close()
+        ok, buf = loader.get_pixbuf().save_to_bufferv("jpeg", ["quality"], ["92"])
+        if ok:
+            return bytes(buf), "image/jpeg"
+    except (GLib.Error, AttributeError):
+        pass
+    raise ValueError("that isn't a picture")
+
+
+def write_cover(path, data, mime):
+    """Put data in the audio file at path as its front cover, in place of the one it has. The
+    file is changed in a copy that then takes its place, so a song playing from it plays on."""
+    import mutagen
+    from mutagen.flac import Picture
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.cover")
+    shutil.copyfile(path, tmp)
+    try:
+        f = mutagen.File(tmp)
+        kind = type(f).__name__ if f is not None else ""
+        pic = Picture()
+        pic.type, pic.mime, pic.data = 3, mime, data   # 3: front cover
+        if kind == "FLAC":
+            f.clear_pictures()
+            f.add_picture(pic)
+        elif kind in ("MP3", "EasyMP3"):
+            from mutagen.id3 import APIC
+            if f.tags is None:
+                f.add_tags()
+            f.tags.delall("APIC")
+            f.tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+        elif kind == "MP4":
+            from mutagen.mp4 import MP4Cover
+            if f.tags is None:
+                f.add_tags()
+            f.tags["covr"] = [MP4Cover(data, MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG)]
+        elif kind in ("OggVorbis", "OggOpus"):
+            f["metadata_block_picture"] = [base64.b64encode(pic.write()).decode()]
+        else:
+            raise ValueError(f"{path.suffix or 'these'} files can't hold a cover")
+        f.save()
+        try:
+            os.replace(tmp, path)
+        except PermissionError:   # Windows, while it plays: in place after all
+            shutil.copyfile(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def album_key(t):
+    """Which album a song is from: its lead artist and album, tidied; a song without an album is one of its own."""
+    return norm((t.get("artist") or "").split(",")[0]), norm(bare_title(t.get("album") or "")) or "#" + t.get("id", "")
+
+
 def song_line(t):
     return f"{t['title']} · {t['artist']}"
 
@@ -10436,6 +10611,70 @@ class MusicApp(Adw.Application):
             write_atomic(LOCAL_INDEX, json.dumps({"files": self.local.files}))
             self.lists.save()
         return done, failed
+
+    # ---- album covers ----
+    def album_files(self, t):
+        """Every song on this computer from t's album: {its file: the ids it's known by}."""
+        key, out = album_key(t), {}
+        for v, e in list(self.lib.items.items()):
+            if album_key(dict(e, id=v)) == key and e.get("file"):
+                out.setdefault(e["file"], set()).add(v)
+        for e in list(self.local.files.values()):
+            if album_key(e["track"]) == key:
+                out.setdefault(e["track"]["file"], set()).add(e["track"]["id"])
+        path = song_file(self.lib, t)
+        if path:
+            out.setdefault(path, set()).add(t["id"])
+        return {p: ids for p, ids in out.items() if Path(p).exists()}
+
+    def set_cover(self, tracks, source):
+        """Make source (a picture's web address or file) the cover of tracks' album (blocking):
+        in every one of its songs' files here, and shown for them and for tracks.
+        Returns (the ids whose cover changed, how many files have it, what failed)."""
+        data = Path(source).read_bytes() if Path(source).is_file() else fetch_bytes(source)
+        data, mime = cover_image(data)
+        t = tracks[0]
+        files = self.album_files(t)
+        ids, failed, written = {x["id"] for x in tracks}, [], 0
+        for path, known in files.items():
+            try:
+                write_cover(path, data, mime)
+                written += 1
+                ids |= known
+            except Exception as e:  # noqa: BLE001 -- the next song
+                failed.append(f"{Path(path).name}: {e}")
+        with self.lib.lock:
+            for v in ids:
+                e = self.lib.items.get(v)
+                if e is not None:
+                    if not e.get("art"):
+                        e["art"] = str(ART / f"{safe_name(v)}.jpg")
+                    write_file(Path(e["art"]), data)
+        for v in ids:
+            if v not in self.lib.items:
+                write_file(THUMBS / f"{v}.jpg", data)
+        self.lib.save()
+        if t.get("album"):
+            self.pictures.choose_cover(t["artist"], t["album"], source if not Path(source).is_file() else Path(source).as_uri())
+        return ids, written, failed
+
+    def set_cover_soon(self, tracks, source, done=None):
+        def finished(res, err):
+            ids, written, failed = res or (set(), 0, [str(err)])
+            if err or failed:
+                self.toast(f"Couldn't use that cover: {str(err or failed[0])[:100]}"
+                           + (f" (and {len(failed) - 1} more)" if len(failed) > 1 else ""))
+            if res:
+                album = tracks[0].get("album")
+                self.toast(f"New cover for “{album or tracks[0]['title']}”"
+                           + (f" in {written} file{'s' if written != 1 else ''}" if written else ""))
+            if self.win:
+                self.win.redraw_art(ids)
+                self.win.refresh_all()
+                self.win.update_now_playing()
+            if done:
+                done()
+        in_thread(self.set_cover, tracks, source, done=finished)
 
     # ---- songs' speeds ----
     def speed_opts(self, t):

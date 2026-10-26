@@ -47,3 +47,33 @@ object Tags {
         return cr.openInputStream(Uri.parse(uri))!!.buffered().use { Flac.comments(Flac.readHeader(it)) }
     }
 }
+
+/** A new album cover (Cover…): written into the album's downloaded FLACs, and shown for every
+ *  song of the album, the phone's own and streamed ones too (those files are other apps', so
+ *  their own covers stay as they are). */
+object Covers {
+    /** Which album a song is from: its lead artist and album, tidied; a song without an album is one of its own. */
+    internal fun albumKey(t: Track): Pair<String, String> =
+        norm(t.artist.split(",")[0]) to norm(bareTitle(t.album)).ifEmpty { "#" + t.id }
+
+    internal fun isJpeg(b: ByteArray) = b.size > 3 && b[0] == 0xff.toByte() && b[1] == 0xd8.toByte() && b[2] == 0xff.toByte()
+
+    /** Picture bytes as a JPEG (FLAC covers here are JPEGs). */
+    fun jpeg(b: ByteArray): ByteArray {
+        if (isJpeg(b)) return b
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size) ?: error("that isn't a picture")
+        return java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) }.toByteArray()
+    }
+
+    /** Put jpeg in the FLAC at uri (one the app made) as its cover, keeping its tags. */
+    fun write(ctx: Context, uri: String, jpeg: ByteArray) {
+        val cr = ctx.contentResolver
+        val tmp = File.createTempFile("cover", ".flac", ctx.cacheDir)
+        try {
+            cr.openInputStream(Uri.parse(uri))!!.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+            cr.openOutputStream(Uri.parse(uri), "wt")!!.buffered().use { Flac.retag(tmp, it, emptyMap(), jpeg, keepOther = true) }
+        } finally {
+            tmp.delete()
+        }
+    }
+}

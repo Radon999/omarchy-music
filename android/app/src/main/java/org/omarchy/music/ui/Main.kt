@@ -217,6 +217,7 @@ private fun SelectBar(ui: Ui, bar: Color) {
             Pill("Download", quiet = true) { Music.download(picked()); ui.stopSelecting() }
             if (picked().any { org.omarchy.music.Tags.editable(it) != null }) Pill("Tags", quiet = true) { ui.editTagsFor = picked() }
             if (picked().any { Music.deletable(it) }) Pill("Delete", quiet = true) { ui.deleteFor = picked() }
+            Pill("Cover", quiet = true) { ui.pickCovers(picked()); ui.stopSelecting() }
             Pill("Speed", quiet = true) { ui.speedFor = picked() }
             Pill("All", quiet = true) { ui.selected.clear(); ui.selected.addAll(ui.selectPool.map { it.id }.distinct()) }
         }

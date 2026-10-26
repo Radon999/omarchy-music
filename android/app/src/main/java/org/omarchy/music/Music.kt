@@ -600,6 +600,41 @@ object Music {
 
     fun saveCurrent() { current()?.let { download(listOf(it)) } }
 
+    /** Make source (a picture's web address, or a content:// one you picked) the cover of tracks' album:
+     *  into its downloaded FLACs (all but the playing one's), and shown for all of its songs. */
+    fun setCover(tracks: List<Track>, source: String, done: () -> Unit = {}) {
+        val t = tracks.firstOrNull() ?: return
+        val playing = current()?.id
+        bg({
+            val raw = if (source.startsWith("content://")) ctx.contentResolver.openInputStream(android.net.Uri.parse(source))!!.use { it.readBytes() }
+                else httpBytes(source)
+            val jpeg = Covers.jpeg(raw)
+            val key = Covers.albumKey(t)
+            val saved = File(File(ctx.filesDir, "covers").apply { mkdirs() }, "${randomHex(8)}.jpg").apply { writeBytes(jpeg) }
+            val album = lib.items.values.filter { Covers.albumKey(it.track()) == key || it.id in tracks.map { x -> x.id } }
+            var written = 0
+            val failed = ArrayList<String>()
+            for (e in album.distinctBy { it.file }) {
+                if (e.id == playing || e.format != "flac" || !e.file.startsWith("content://")) continue
+                try { Covers.write(ctx, e.file, jpeg); written++ } catch (x: Exception) { failed += "${e.title}: ${x.message}" }
+            }
+            for (e in album) {   // a new file each time: the old picture stays in the image cache under the old name
+                val art = File(lib.artDir, "${safeName(e.id)}-${randomHex(4)}.jpg").apply { writeBytes(jpeg) }
+                val old = e.art
+                lib.update(e.id) { it.copy(art = art.path) }
+                if (old.isNotEmpty() && lib.items.values.none { it.art == old }) File(old).delete()
+            }
+            if (t.album.isNotEmpty()) Pictures.chooseCover(t.artist, t.album, saved.path)
+            else for (x in tracks) Pictures.chooseCover(x.artist, x.title, saved.path)
+            written to failed
+        }) { res, err ->
+            if (err != null || res?.second?.isNotEmpty() == true) toast("Couldn't use that cover: ${(err?.message ?: res!!.second[0]).take(100)}")
+            if (res != null) toast("New cover for “${t.album.ifEmpty { t.title }}”" + if (res.first > 0) " in ${res.first} file${if (res.first != 1) "s" else ""}" else "")
+            savedVersion++; musicVersion++
+            done()
+        }
+    }
+
     private fun playbackOf(t: Track) = speeds.get(t).let { s ->
         androidx.media3.common.PlaybackParameters(s.speed.toFloat(), if (s.pitch) s.speed.toFloat() else 1f)
     }
