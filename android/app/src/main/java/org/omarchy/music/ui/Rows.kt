@@ -72,6 +72,7 @@ class Ui {
     var sheet by mutableStateOf<String?>(null)          // "accounts", "eq", "tidal-login", "spotify-login"…
     var pickPlaylistFor by mutableStateOf<List<Track>?>(null)
     var editTagsFor by mutableStateOf<List<Track>?>(null)
+    var deleteFor by mutableStateOf<List<Track>?>(null)
     var askName by mutableStateOf<Triple<String, String, (String) -> Unit>?>(null)
     var confirm by mutableStateOf<Pair<String, () -> Unit>?>(null)
     var playlistsBySource = mutableStateListOf<Pair<String, List<Album>?>>()
@@ -190,6 +191,7 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
         if (Music.lib.has(t.id)) item("Remove download") {
             ui.confirm = "Delete the downloaded FLAC of “${t.title}”?" to { Music.removeDownload(t.id) }
         }()
+        else if (Music.phoneFile(t) != null) item("Delete…") { ui.deleteFor = listOf(t) }()
         if (org.omarchy.music.Tags.editable(t) != null) item("Edit tags…") { ui.editTagsFor = listOf(t) }()
         item("Select…") { ui.startSelecting(place.group, place, t) }()
     }

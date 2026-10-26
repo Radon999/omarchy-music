@@ -94,6 +94,7 @@ fun Sheets(ui: Ui) {
     ui.pickPlaylistFor?.let { tracks -> PlaylistPicker(ui, tracks) }
     ui.folderFor?.let { item -> FolderPicker(ui, item) }
     ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
+    DeleteDialog(ui)
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -461,6 +462,50 @@ private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
             }
         },
         confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Delete: are you sure? Downloads go at once; the phone's own songs (other apps' files) only once
+ *  Android asks too and you say yes there. */
+@Composable
+private fun DeleteDialog(ui: Ui) {
+    var phone by remember { mutableStateOf<List<org.omarchy.music.Track>>(emptyList()) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        if (r.resultCode == android.app.Activity.RESULT_OK) Music.phoneFilesDeleted(phone)
+        phone = emptyList()
+    }
+    val tracks = ui.deleteFor ?: return
+    val ctx = LocalContext.current
+    val downloads = tracks.filter { Music.lib.has(it.id) }
+    val files = tracks.filter { Music.phoneFile(it) != null }
+    val n = downloads.size + files.size
+    val close = { ui.deleteFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (n == 1) "Delete “${(downloads + files)[0].title}”?" else "Delete $n songs?", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Text(listOfNotNull(
+                if (downloads.isNotEmpty()) "${if (n == 1) "Its" else "${downloads.size}"} downloaded FLAC${if (downloads.size > 1) "s" else ""} will be deleted for good (you can download them again)." else null,
+                if (files.isNotEmpty()) "${if (n == 1) "Its file" else "${files.size} files"} on the phone will be deleted: Android asks you once more." else null,
+                (tracks.size - n).takeIf { it > 0 }?.let { left ->
+                    if (left == 1) "1 of the songs you picked has no file here: it stays." else "$left of the songs you picked have no file here: they stay."
+                },
+            ).joinToString("\n\n"), style = T.body)
+        },
+        confirmButton = {
+            TextButton({
+                close(); ui.stopSelecting()
+                Music.deleteDownloads(downloads)
+                val playing = Music.current()?.id
+                val todo = files.filter { it.id != playing }
+                if (todo.size < files.size) Music.toast("The playing song is left as it is: skip it first")
+                if (todo.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= 30) {
+                    phone = todo
+                    val req = android.provider.MediaStore.createDeleteRequest(ctx.contentResolver, todo.map { android.net.Uri.parse(Music.phoneFile(it)) })
+                    ask.launch(androidx.activity.result.IntentSenderRequest.Builder(req.intentSender).build())
+                }
+            }, enabled = n > 0) { Text("Delete", color = C.red) }
+        },
+        dismissButton = { TextButton(close) { Text("Cancel", color = C.muted) } })
 }
 
 /** Edit tags…: the downloaded FLACs' tags. With several songs, a field they disagree on is left

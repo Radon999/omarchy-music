@@ -6938,6 +6938,41 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.connect("response", answered)
         dlg.present(self)
 
+    def delete_songs_dialog(self, tracks):
+        """Are you sure? before deleting the files of tracks."""
+        a = self.app
+        on_disk = [t for t in tracks if song_file(a.lib, t)]
+        if not on_disk:
+            self.toast("None of these songs has a file on this computer to delete")
+            return
+        downloads = sum(1 for t in on_disk if t["id"] in a.lib.items)
+        mine = len(on_disk) - downloads
+        what = f"“{on_disk[0]['title']}”" if len(on_disk) == 1 else f"{len(on_disk)} songs"
+        body = []
+        if downloads:
+            body.append(f"{'Its' if len(on_disk) == 1 else str(downloads)} downloaded FLAC{'s' if downloads > 1 else ''}"
+                        " will be deleted for good (you can download them again).")
+        if mine:
+            body.append(f"{'Its file' if len(on_disk) == 1 else f'{mine} file' + ('s' if mine > 1 else '')} in your folders"
+                        " will go to the trash.")
+        if len(on_disk) < len(tracks):
+            left = len(tracks) - len(on_disk)
+            body.append(f"{left} of the songs you picked {'has' if left == 1 else 'have'} no file here: {'it stays' if left == 1 else 'they stay'}.")
+        dlg = Adw.AlertDialog(heading=f"Delete {what}?", body="\n".join(body))
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def answered(_d, r):
+            if r == "delete":
+                a.delete_songs(on_disk)
+                if self.selecting:
+                    self.stop_selecting()
+        dlg.connect("response", answered)
+        dlg.present(self)
+
     def delete_folder(self, f):
         dlg = Adw.AlertDialog(heading=f"Delete the folder “{f['name']}”?",
                               body="Only the folder goes: its playlists stay where they are.")
@@ -7242,6 +7277,8 @@ class MusicWindow(Adw.ApplicationWindow):
         bar.append(self.sel_download)
         self.sel_tags = icon_button("document-edit-symbolic", "ctl", "Edit tags", lambda: self.edit_tags_dialog(self.picked_tracks()))
         bar.append(self.sel_tags)
+        self.sel_delete = icon_button("user-trash-symbolic", "ctl", "Delete", lambda: self.delete_songs_dialog(self.picked_tracks()))
+        bar.append(self.sel_delete)
         bar.append(icon_button("edit-select-all-symbolic", "ctl", "Select all (Ctrl+A)", self.select_all))
         bar.append(icon_button("window-close-symbolic", "ctl", "Done (Esc)", self.stop_selecting))
         self.selectbar = Gtk.Revealer(child=bar, reveal_child=False, transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
@@ -7306,6 +7343,7 @@ class MusicWindow(Adw.ApplicationWindow):
             w.set_sensitive(n > 0)
         self.sel_download.set_visible(any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in self.selected.values()))
         self.sel_tags.set_visible(any(song_file(self.lib, t) for t in self.selected.values()))
+        self.sel_delete.set_visible(self.sel_tags.get_visible())
 
     def selection_do(self, what):
         tracks = self.picked_tracks()
@@ -7534,6 +7572,7 @@ class MusicWindow(Adw.ApplicationWindow):
             item("Download", lambda: self.download_only(t))
         if song_file(self.lib, t):
             item("Edit tags…", lambda: self.edit_tags_dialog([t]))
+            item("Delete…", lambda: self.delete_songs_dialog([t]))
         if row.group is not None:
             item("Select…", lambda: self.start_selecting(row))
         pop.connect("closed", lambda p: GLib.idle_add(lambda: (p.unparent(), False)[1]))
@@ -7772,8 +7811,9 @@ class MusicWindow(Adw.ApplicationWindow):
         if cur and cur["id"] == vid:
             self.toast("That song is playing; skip it first")
             return
-        self.lib.remove(vid)
-        self.refresh_all()
+        e = self.lib.items.get(vid)
+        if e:
+            self.delete_songs_dialog([dict(e, id=vid)])
 
     def toast(self, text):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=3))
@@ -10312,6 +10352,56 @@ class MusicApp(Adw.Application):
             write_atomic(LOCAL_INDEX, json.dumps({"files": self.local.files}))
             self.lists.save()
         return done, failed
+
+    # ---- deleting songs ----
+    def delete_files(self, tracks):
+        """Delete tracks' files: a download for good (it can be downloaded again), a
+        song in your folders to the trash. Returns (the ids whose file went, what failed)."""
+        gone, failed = set(), []
+        for t in tracks:
+            path = song_file(self.lib, t)
+            if not path:
+                continue
+            ids = {v for v, e in self.lib.items.items() if e.get("file") == path}
+            try:
+                if ids:
+                    for v in ids:
+                        self.lib.remove(v)
+                else:
+                    Gio.File.new_for_path(path).trash(None)
+                    self.local.files.pop(str(Path(path).resolve()), None)
+            except Exception as e:  # noqa: BLE001 -- the next song
+                failed.append(f"{Path(path).name}: {e}")
+                continue
+            gone |= ids | {t["id"]}
+        if gone:
+            write_atomic(LOCAL_INDEX, json.dumps({"files": self.local.files}))
+        return gone, failed
+
+    def delete_songs(self, tracks):
+        """Delete the files of tracks, all but the playing song's, and take the songs that were
+        only files out of the queue and your playlists."""
+        cur = self.current_track()
+        todo = [t for t in tracks if not cur or t["id"] != cur["id"]]
+        if len(todo) < len(tracks):
+            self.toast("The playing song is left as it is: skip it first")
+        # Here, not in a thread: the library changes under the rows being drawn otherwise. A
+        # delete (or a move to the trash) takes a moment each.
+        gone, failed = self.delete_files(todo)
+        if failed:
+            self.toast(f"Couldn't delete {failed[0][:100]}" + (f" (and {len(failed) - 1} more)" if len(failed) > 1 else ""))
+        files = {t["id"] for t in todo if t["id"] in gone and source_of(t) == "file"}
+        if files:
+            self.unqueue_many([i for i, t in enumerate(self.queue) if t["id"] in files])
+            for pl in self.lists.items:
+                if any(t["id"] in files for t in pl["tracks"]):
+                    self.lists.remove(pl["id"], files)
+        n = len({t["id"] for t in todo} & gone)
+        if n:
+            self.toast(f"Deleted {n} song{'s' if n != 1 else ''}")
+        if self.win:
+            self.win.refresh_all()
+        return n
 
     def edit_tags_soon(self, tracks, changes):
         n = len(tracks)
