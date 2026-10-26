@@ -7519,7 +7519,7 @@ class MusicWindow(Adw.ApplicationWindow):
         line("Folders", "Reading your folders…" if a.local.scanning else
              f"{n} song{'s' if n != 1 else ''} in your folders, in the Music tab" if a.folders else
              "Add the folders your own music is in", bool(n), pill("Add", self.add_folder))
-        if n:
+        if a.folders or a.upgrading:
             up = a.upgrading
             line("Upgrade", f"Upgrading · {up['n']} of {up['total']} songs" if up else
                  "Swap your songs for Tidal's FLAC where it's better: MP3s and other lossy files, and 16-bit "
@@ -8458,12 +8458,17 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.connect("response", answered)
         dlg.present(self)
 
-    def confirm_upgrade(self):
+    def confirm_upgrade(self, tracks=None):
+        """Upgrade…: every song in your folders, or tracks (right-click, or the songs picked)."""
         a = self.app
-        n = len(a.local.files)
+        if tracks is not None and not tracks:
+            return
+        n = len(tracks) if tracks is not None else len(a.local.files)
+        what = (f"“{tracks[0]['title']}”" if tracks and n == 1 else f"these {n:,} songs" if tracks
+                else f"your {n:,} songs")
         dlg = Adw.AlertDialog(
-            heading=f"Upgrade your {n:,} songs?",
-            body="Each song in your folders is looked up on Tidal. Where Tidal has it better, the FLAC is downloaded "
+            heading=f"Upgrade {what}?",
+            body=("Each song is" if n != 1 else "The song is") + " looked up on Tidal. Where Tidal has it better, the FLAC is downloaded "
                  "and takes the old file's place: in your playlists, the queue, your plays and favorites.\n\n"
                  "• MP3, AAC and other lossy files: replaced with FLAC\n"
                  "• 16-bit FLAC/WAV: replaced only when Tidal has it in 24-bit\n"
@@ -8478,7 +8483,8 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.add_response("go", "Upgrade")
         dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
         dlg.set_close_response("cancel")
-        dlg.connect("response", lambda _d, r: r == "go" and a.upgrade_songs(force=every.get_active()))
+        dlg.connect("response", lambda _d, r: r == "go" and (a.upgrade_songs(tracks, force=every.get_active()),
+                                                            self.selecting and self.stop_selecting()))
         dlg.present(self)
 
     def confirm_upgrade_kept(self, kept):
@@ -9583,6 +9589,8 @@ class MusicWindow(Adw.ApplicationWindow):
         bar.append(self.sel_download)
         self.sel_tags = icon_button("document-edit-symbolic", "ctl", "Edit tags", lambda: self.edit_tags_dialog(self.picked_tracks()))
         bar.append(self.sel_tags)
+        self.sel_upgrade = pill("Upgrade", "Swap these songs for Tidal's FLAC where it's better",
+                                lambda: self.confirm_upgrade([t for t in self.picked_tracks() if upgradable(t)]))
         bar.append(icon_button("image-x-generic-symbolic", "ctl", "Cover", lambda: self.cover_dialog(self.picked_tracks())))
         bar.append(icon_button("power-profile-performance-symbolic", "ctl", "Speed", lambda: self.speed_dialog(self.picked_tracks())))
         bar.append(icon_button("audio-volume-high-symbolic", "ctl", "Volume", lambda: self.volume_dialog(self.picked_tracks())))
@@ -9655,6 +9663,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.sel_download.set_visible(any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in self.selected.values()))
         self.sel_tags.set_visible(any(song_file(self.lib, t) for t in self.selected.values()))
         self.sel_delete.set_visible(self.sel_tags.get_visible())
+        self.sel_upgrade.set_visible(not self.app.upgrading and any(upgradable(t) for t in self.selected.values()))
 
     def selection_do(self, what):
         tracks = self.picked_tracks()
@@ -9884,6 +9893,8 @@ class MusicWindow(Adw.ApplicationWindow):
             item("Download", lambda: self.download_only(t))
         if song_file(self.lib, t):
             item("Edit tags…", lambda: self.edit_tags_dialog([t]))
+            if upgradable(t) and not self.app.upgrading:
+                item("Upgrade to FLAC…", lambda: self.confirm_upgrade([t]))
             item("Delete…", lambda: self.delete_songs_dialog([t]))
         item("Unfavorite" if self.app.favorites.has(t) else "Favorite", lambda: self.app.set_favorite([t]))
         item("Moods…", lambda: self.moods_dialog([t]))
@@ -14439,6 +14450,11 @@ def maybe_same(a, b):
                                   for x in aa for y in ab)
     album = bool(squash(a.get("album"))) and squash(a.get("album")) == squash(b.get("album"))
     return (artist and (title >= 0.85 or ta in tb or tb in ta)) or (album and title >= 0.75)
+
+
+def upgradable(t):
+    """Whether Upgrade can swap t: a file of yours on this computer (not a download, not the phone's)."""
+    return source_of(t) == "file" and not is_phone_song(t) and bool(t.get("file")) and Path(t["file"]).exists()
 
 
 def song_key(t):
