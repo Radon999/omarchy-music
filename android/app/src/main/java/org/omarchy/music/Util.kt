@@ -4,6 +4,7 @@ import java.security.SecureRandom
 import java.text.Normalizer
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.random.asKotlinRandom
 
 // Helpers shared by every part of the app, ported from the desktop omarchy-music so
 // both agree on what counts as the same song.
@@ -149,6 +150,20 @@ fun similar(a: String, b: String): Double {
 }
 
 /** The item whose name is name, or near enough; null if none is. */
+/** Shuffle: every order equally likely (Fisher-Yates), from the system's secure random source,
+ *  so no order of even a long playlist is out of reach the way it can be with a seeded one. */
+val SHUFFLE_RANDOM: kotlin.random.Random = SecureRandom().asKotlinRandom()
+
+/** tracks in a new random order; after (the song that just played) isn't first. */
+fun shuffleSongs(tracks: List<Track>, after: Track? = null, rng: kotlin.random.Random = SHUFFLE_RANDOM): List<Track> {
+    val out = tracks.shuffled(rng).toMutableList()
+    if (after != null && out.size > 1 && songKey(out[0]) == songKey(after)) {
+        val j = rng.nextInt(1, out.size)
+        out[0] = out[j].also { out[j] = out[0] }
+    }
+    return out
+}
+
 fun <T> bestNamed(items: List<T>, name: String, get: (T) -> String): T? {
     val best = items.maxByOrNull { similar(norm(get(it)), norm(name)) } ?: return null
     return if (similar(norm(get(best)), norm(name)) >= 0.8) best else null

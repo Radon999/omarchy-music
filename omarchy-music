@@ -925,6 +925,21 @@ def similar(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+# Shuffle: every order equally likely (Fisher-Yates), from the system's random source, so
+# no order of even a long playlist is out of reach the way it can be with a seeded one.
+SHUFFLE_RANDOM = random.SystemRandom()
+
+
+def shuffle_songs(tracks, after=None, rng=SHUFFLE_RANDOM):
+    """tracks in a new random order; after (the song that just played) isn't first."""
+    out = list(tracks)
+    rng.shuffle(out)
+    if after and len(out) > 1 and song_key(out[0]) == song_key(after):
+        j = rng.randrange(1, len(out))
+        out[0], out[j] = out[j], out[0]
+    return out
+
+
 def best_named(items, name, get):
     """The item whose name (get(item)) is name, or near enough; None if none is."""
     scored = sorted(items, key=lambda x: -similar(norm(get(x)), norm(name)))
@@ -8924,6 +8939,7 @@ class MusicApp(Adw.Application):
         self.dj = dj if isinstance(dj, dict) and isinstance(dj.get("sets"), dict) else {"on": False, "sets": {}, "shown": None}
         self.djs, self.dj_busy = DJ(self), None
         self.repeat = state.get("repeat") if state.get("repeat") in ("off", "all", "one") else "off"
+        self.shuffled = bool(state.get("shuffled"))   # the queue was shuffled: repeat-all shuffles it again
         self.volume = max(0.0, min(100.0, float(state.get("volume", 100))))
         self.muted = bool(state.get("muted", False))
         self.source = state.get("source") if state.get("source") in SOURCES else "ytm"
@@ -9017,7 +9033,7 @@ class MusicApp(Adw.Application):
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
                                        "music_sort": self.music_sort, "search_in": self.search_in,
                                        "remote": self.remote_on, "remote_tokens": self.remote_tokens,
-                                       "api_keys": self.api_keys}))
+                                       "api_keys": self.api_keys, "shuffled": self.shuffled}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -9858,11 +9874,10 @@ class MusicApp(Adw.Application):
             self.win.refresh_music()
 
     def play_list(self, tracks, shuffled=False):
-        tracks = list(tracks)
-        if shuffled:
-            random.shuffle(tracks)
+        tracks = shuffle_songs(tracks) if shuffled else list(tracks)
         if tracks:
             self.play_from(tracks, 0, radio=False)
+            self.shuffled = shuffled
 
     def download(self, tracks):
         """Download the songs you picked, in FLAC, one after another."""
@@ -10170,6 +10185,7 @@ class MusicApp(Adw.Application):
         self.queue = tracks[:i + 1] + queued + tracks[i + 1:]
         self.index = i
         self.radio_from = None
+        self.shuffled = False
         if self.dj["on"]:   # you picked other songs: the DJ stops
             self.dj["on"] = False
             self.dj_changed()
@@ -10265,6 +10281,9 @@ class MusicApp(Adw.Application):
             self.index += 1
             self.load_current()
         elif self.repeat == "all" and self.queue:
+            if self.shuffled:   # round again in a new order, not the last one again
+                self.queue = shuffle_songs(self.queue, after=self.current_track())
+                self.after_queue_change()
             self.index = 0
             self.load_current()
         else:
@@ -10328,9 +10347,9 @@ class MusicApp(Adw.Application):
     def shuffle(self):
         """Shuffle what's coming up; the songs you queued stay first, in your order."""
         rest = self.queue[self.index + 1:]
-        others = [t for t in rest if not t.get("queued")]
-        random.shuffle(others)
+        others = shuffle_songs(t for t in rest if not t.get("queued"))
         self.queue = self.queue[:self.index + 1] + [t for t in rest if t.get("queued")] + others
+        self.shuffled = True
         self.after_queue_change()
 
     def after_queue_change(self):

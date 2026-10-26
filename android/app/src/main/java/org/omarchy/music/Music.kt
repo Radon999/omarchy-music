@@ -68,6 +68,7 @@ object Music {
     var musicSort by mutableStateOf("title")   // how the Music tab's All is sorted: title, artist, album, added
     var searchIn by mutableStateOf("tidal")    // where the search bar searches: tidal, ytm, local
     var apiKeys by mutableStateOf(mapOf<String, String>())   // Settings: keys of yours (see API_KEYS)
+    var shuffled = false   // the queue was shuffled: repeat-all shuffles it again
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
@@ -143,7 +144,7 @@ object Music {
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
         val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
-        val api_keys: Map<String, String> = emptyMap(),
+        val api_keys: Map<String, String> = emptyMap(), val shuffled: Boolean = false,
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -165,6 +166,7 @@ object Music {
         searchIn = st.search_in.takeIf { it in SEARCH_IN } ?: "tidal"
         dj = st.dj
         apiKeys = st.api_keys.filterKeys { it in API_KEYS }
+        shuffled = st.shuffled
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -173,7 +175,7 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -532,8 +534,8 @@ object Music {
     }
 
     fun playList(tracks: List<Track>, shuffled: Boolean = false) {
-        val t = if (shuffled) tracks.shuffled() else tracks
-        if (t.isNotEmpty()) playFrom(t, 0, radio = false)
+        val t = if (shuffled) shuffleSongs(tracks) else tracks
+        if (t.isNotEmpty()) { playFrom(t, 0, radio = false); this.shuffled = shuffled }
     }
 
     // ---- downloads ----
@@ -680,6 +682,7 @@ object Music {
         queue = tracks.take(i + 1) + queued + tracks.drop(i + 1)
         index = i
         radioFrom = null
+        shuffled = false
         if (dj.on) dj = dj.copy(on = false)   // you picked other songs: the DJ stops
         context++
         loadCurrent()
@@ -751,7 +754,10 @@ object Music {
         if (Remote.active) { Remote.cmd("next"); return }
         when {
             index + 1 < queue.size -> { index++; loadCurrent() }
-            repeat == "all" && queue.isNotEmpty() -> { index = 0; loadCurrent() }
+            repeat == "all" && queue.isNotEmpty() -> {
+                if (shuffled) { queue = shuffleSongs(queue, after = current()); afterQueueChange() }   // round again in a new order
+                index = 0; loadCurrent()
+            }
             else -> { ended = true; player?.pause() }
         }
     }
@@ -780,7 +786,8 @@ object Music {
     fun shuffle() {
         if (Remote.active) { Remote.cmd("shuffle"); return }
         val rest = queue.drop(index + 1)
-        queue = queue.take(index + 1) + rest.filter { it.queued } + rest.filter { !it.queued }.shuffled()
+        queue = queue.take(index + 1) + rest.filter { it.queued } + shuffleSongs(rest.filter { !it.queued })
+        shuffled = true
         afterQueueChange()
     }
 
