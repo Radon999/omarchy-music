@@ -4,6 +4,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.text.BasicTextField
@@ -558,36 +560,108 @@ fun PageScreen(ui: Ui, page: Ui.Page) {
     }
 }
 
+/** An artist's picture: one picked or found (Google, Genius, Wikipedia), else what a service has. */
+private fun artistArt(name: String, fallback: String = ""): Any? =
+    org.omarchy.music.Pictures.known(name)?.image?.takeIf { it.isNotEmpty() }?.let { if (it.startsWith("/")) java.io.File(it) else it }
+        ?: fallback.ifEmpty { null }
+
+@Composable
+private fun RoundArt(model: Any?, size: androidx.compose.ui.unit.Dp) {
+    Box(Modifier.size(size).clip(androidx.compose.foundation.shape.CircleShape).background(C.light), contentAlignment = Alignment.Center) {
+        if (model != null) coil.compose.AsyncImage(model = model, contentDescription = null,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.size(size))
+        else Text("♪", style = T.title.copy(color = C.muted))
+    }
+}
+
+/** Artists: the ones you listen to most, from every play added up ([org.omarchy.music.Stats]). */
+@Composable
+fun ArtistsTab(ui: Ui) {
+    LaunchedEffect(Unit) { org.omarchy.music.Stats.refresh() }
+    val top = org.omarchy.music.Stats.artists.take(120)
+    @Suppress("UNUSED_VARIABLE") val v = Music.artistsVersion   // redraw as pictures come in
+    LaunchedEffect(top) { Music.lookUpArtists(top.map { it.name }) }
+    if (top.isEmpty()) {
+        Empty(if (org.omarchy.music.Stats.busy) "Working your plays out…" else "No plays yet",
+            "Connect Last.fm, import your Spotify history, or play a few songs: your most played artists show here.")
+        return
+    }
+    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(androidx.compose.foundation.lazy.grid.GridCells.Adaptive(108.dp),
+        Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+            Section((listOf("YOUR TOP ARTISTS") + org.omarchy.music.Stats.sources.joinToString(" + ").uppercase().ifEmpty { null })
+                .filterNotNull().joinToString(" · "))
+        }
+        items(top.size) { i ->
+            val a = top[i]
+            Column(Modifier.clickable { ui.pages += Ui.Page.Artist(a.name) }.padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                RoundArt(artistArt(a.name, a.thumb), 88.dp)
+                Text(a.name, style = T.body, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp))
+                Text("%,d play%s".format(a.plays, if (a.plays != 1) "s" else ""), style = T.time)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ArtistPage(ui: Ui, page: Ui.Page.Artist) {
     var info by remember(page) { mutableStateOf<ArtistInfo?>(null) }
     var failed by remember(page) { mutableStateOf<String?>(null) }
+    var down by remember(page) { mutableStateOf(true) }
+    var morePics by remember(page) { mutableStateOf(false) }
     LaunchedEffect(page) {
+        Music.lookUpArtists(listOf(page.name))
         Music.bg({ Music.artistInfo(page.name, page.prefer) }) { res, err ->
             info = res
             failed = err?.message ?: if (res == null) "No service knows ${page.name}" else null
         }
     }
-    val mine = remember(page) { Music.songsBy(page.name) }
+    val v = Music.artistsVersion
+    val pics = remember(page, v) { org.omarchy.music.Pictures.known(page.name) }
+    val all = remember(page, Music.musicVersion) { Music.artistSongs(page.name) }
+    val mine = if (down) all.sortedByDescending { it.plays } else all.sortedBy { it.plays }
+    val links = androidx.compose.ui.platform.LocalUriHandler.current
     LazyColumn(Modifier.fillMaxSize()) {
         item { BackRow(page.name) { ui.pages.removeAt(ui.pages.lastIndex) } }
         val i = info
-        if (i != null) item {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                ArtImage(i.thumb.ifEmpty { null }, 72.dp)
-                Column(Modifier.padding(start = 12.dp)) {
-                    Text(i.name, style = T.title.copy(fontSize = T.title.fontSize * 1.3f))
-                    Text("from ${SOURCES[i.source]}", style = T.sub)
+        item {
+            Row(Modifier.padding(12.dp)) {
+                RoundArt(artistArt(page.name, i?.thumb ?: ""), 112.dp)
+                Column(Modifier.padding(start = 14.dp).weight(1f)) {
+                    Text(i?.name ?: page.name, style = T.title.copy(fontSize = T.title.fontSize * 1.3f))
+                    val st = org.omarchy.music.Stats.artist(page.name)
+                    Text(listOfNotNull(st?.plays?.takeIf { it > 0 }?.let { "%,d plays".format(it) },
+                        all.size.takeIf { it > 0 }?.let { "$it song${if (it != 1) "s" else ""}" },
+                        i?.let { "from ${SOURCES[it.source]}" } ?: if (failed == null) "looking them up…" else null).joinToString(" · "), style = T.sub)
+                    val bio = pics?.bio.orEmpty()
+                    if (bio.isNotEmpty()) {
+                        Text(bio, style = T.sub, maxLines = if (morePics) Int.MAX_VALUE else 9, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp).clickable { morePics = !morePics })
+                        if (pics!!.bioUrl.isNotEmpty()) Text("More on ${pics.bioFrom.ifEmpty { "the web" }}", style = T.sub.copy(color = C.accent),
+                            modifier = Modifier.padding(top = 4.dp).clickable { links.openUri(pics.bioUrl) })
+                    } else if (pics == null) Text("Looking for their bio…", style = T.sub, modifier = Modifier.padding(top = 6.dp))
                 }
             }
         }
+        item {
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (mine.isNotEmpty()) {
+                    Pill("Play") { Music.playFrom(mine, 0, false) }
+                    Pill("Shuffle") { Music.playFrom(org.omarchy.music.shuffleSongs(mine), 0, false) }
+                    Pill(if (down) "Most played first" else "Least played first", quiet = true) { down = !down }
+                }
+                Pill("Change picture…", quiet = true) { ui.artistPictureFor = page.name }
+            }
+        }
         if (mine.isNotEmpty()) {
-            item { Section("YOUR SONGS") }
-            tracks(mine, ui, "artist")
+            item { Section("YOUR SONGS · BY PLAYS " + if (down) "↓" else "↑") }
+            tracks(mine, ui, "artist") { t -> "${t.plays} play${if (t.plays != 1) "s" else ""}" }
         }
         when {
             i == null && failed == null -> item { Section("LOADING…") }
-            i == null -> item { Empty("Couldn't find them", failed!!) }
+            i == null -> if (mine.isEmpty()) item { Empty("Couldn't find them", failed!!) }
             else -> {
                 if (i.top.isNotEmpty()) {
                     item { Section("TOP SONGS" + if (i.topSource != i.source) " · ${SOURCES[i.topSource]?.uppercase()}" else "") }

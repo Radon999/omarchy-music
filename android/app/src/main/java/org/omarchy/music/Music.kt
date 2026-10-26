@@ -221,6 +221,52 @@ object Music {
         }
     }
 
+    /** The artist's songs you played or have, each with how often you played it (every play added
+     *  up: see [Stats]): the counted ones, then the rest of yours. */
+    fun artistSongs(name: String): List<Track> {
+        val mine = songIndex()
+        val seen = HashSet<Pair<String, String>>()
+        val out = ArrayList<Track>()
+        for (s in Stats.artistSongs(name)) {
+            val t = fmSong(s.title, s.artist, s.thumb, mine).copy(plays = s.plays)
+            if (seen.add(songKey(t))) out += t
+        }
+        val here = plays.items.values.associate { songKey(it.track) to it.plays }
+        for (t in songsBy(name)) if (seen.add(songKey(t))) out += t.copy(plays = here[songKey(t)] ?: 0)
+        return out
+    }
+
+    var artistsVersion by mutableStateOf(0)   // bumps when an artist's picture or bio comes in
+        private set
+    private val lookingUp = HashSet<String>()
+
+    /** Look up the pictures and bios of the artists named, one after another off the main thread. */
+    fun lookUpArtists(names: List<String>) {
+        val todo = names.filter { Pictures.known(it) == null && synchronized(lookingUp) { lookingUp.add(norm(it)) } }
+        if (todo.isEmpty()) return
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            for (n in todo) {
+                runCatching { Pictures.artist(n) }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { artistsVersion++ }
+            }
+        }
+    }
+
+    /** Keep source (a picture's web address, or a content:// one you picked) as the artist's picture. */
+    fun setArtistPicture(name: String, source: String) {
+        bg({
+            val url = if (source.startsWith("content://")) {
+                val f = File(File(ctx.filesDir, "artists").apply { mkdirs() }, "${randomHex(8)}.jpg")
+                ctx.contentResolver.openInputStream(android.net.Uri.parse(source))!!.use { input -> f.outputStream().use { input.copyTo(it) } }
+                f.path
+            } else source
+            Pictures.chooseArtist(name, url)
+        }) { _, err ->
+            toast(if (err != null) "Couldn't use it: ${err.message?.take(100)}" else "New picture for $name")
+            artistsVersion++
+        }
+    }
+
     /** (blocking) The artist's page from the first service that knows them. */
     fun artistInfo(name: String, prefer: String?): ArtistInfo? {
         var info: ArtistInfo? = null

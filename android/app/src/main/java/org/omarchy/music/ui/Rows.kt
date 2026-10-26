@@ -75,6 +75,7 @@ class Ui {
     var deleteFor by mutableStateOf<List<Track>?>(null)
     var speedFor by mutableStateOf<List<Track>?>(null)
     var coverFor by mutableStateOf<List<List<Track>>?>(null)   // the albums still to pick a cover for
+    var artistPictureFor by mutableStateOf<String?>(null)
 
     /** Cover… for tracks: one album at a time. */
     fun pickCovers(tracks: List<Track>) {
@@ -85,7 +86,7 @@ class Ui {
     var playlistsBySource = mutableStateListOf<Pair<String, List<Album>?>>()
 
     sealed class Page {
-        data class Artist(val name: String, val prefer: String?) : Page()
+        data class Artist(val name: String, val prefer: String? = null) : Page()
         data class AlbumPage(val album: Album, val source: String, val tracks: List<Track>? = null) : Page()
     }
 

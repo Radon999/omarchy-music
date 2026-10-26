@@ -143,5 +143,22 @@ class StatsTest(unittest.TestCase):
         self.assertEqual([s["title"] for s in stats.artist_songs("joji")], ["A", "C"])
 
 
+class ArtistSongsTest(unittest.TestCase):
+    def test_counted_songs_then_the_rest_of_yours(self):
+        import types
+        mine = {"id": "f1", "source": "file", "file": "/m/a.flac", "title": "Hit", "artist": "Joji"}
+        quiet = {"id": "yt9", "title": "B-side", "artist": "Joji"}
+        app = types.SimpleNamespace(
+            stats=types.SimpleNamespace(artist_songs=lambda n: [{"title": "Hit", "artist": "Joji", "plays": 40},
+                                                                {"title": "Gone", "artist": "Joji", "plays": 3}]),
+            song_index=lambda: {om.song_key(mine): mine}, fm_song=om.MusicApp.fm_song,
+            plays=types.SimpleNamespace(items={"yt9": {"plays": 2, "track": quiet}}),
+            songs_by=lambda n: [mine, quiet])
+        got = om.MusicApp.artist_songs(app, "Joji")
+        self.assertEqual([(t["title"], t["plays"]) for t in got], [("Hit", 40), ("Gone", 3), ("B-side", 2)])
+        self.assertEqual(got[0]["id"], "f1")             # yours plays from your file
+        self.assertEqual(got[1]["source"], "lastfm")     # one you don't have is found when it plays
+
+
 if __name__ == "__main__":
     unittest.main()

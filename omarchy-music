@@ -420,6 +420,12 @@ checkbutton.pick {{ padding: 0; margin: 0 2px 0 0; }}
 .page-head {{ padding: 6px 8px 8px 8px; }}
 .page-title {{ font-weight: 800; font-size: 1.25em; color: {fg}; }}
 .round {{ border-radius: 999px; }}
+.artist-grid {{ padding: 0 10px 10px 10px; }}
+.artist-grid > flowboxchild {{ padding: 0; border-radius: {R}px; }}
+.artist-tile {{ padding: 6px 2px; border-radius: {R}px; }}
+.artist-tile .name {{ font-weight: 600; }}
+.bio {{ color: {muted}; font-size: 0.92em; }}
+.bio-link {{ padding: 0; min-height: 0; }}
 .actions {{ padding: 2px 8px 6px 8px; }}
 scale.tone {{ padding: 4px 0; }}
 scale.tone > trough > slider {{ opacity: 1; }}
@@ -5087,6 +5093,29 @@ def icon_button(icon, css, tip, cb):
     return b
 
 
+def artist_picture(name, url):
+    """An artist's picture as the cover cache takes one: a new picture is a new name, so the old one isn't shown."""
+    return {"id": "pic-" + hashlib.sha1(f"{norm(name)}|{url}".encode()).hexdigest()[:16], "thumb": url}
+
+
+def scroll_sideways(row):
+    """row in a strip that scrolls sideways (the mouse wheel too) when the window is too
+    narrow for all of it, with no scrollbar."""
+    sw = Gtk.ScrolledWindow(child=row, hscrollbar_policy=Gtk.PolicyType.EXTERNAL, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                            propagate_natural_height=True)
+    wheel = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+
+    def scrolled(_c, _dx, dy):
+        adj = sw.get_hadjustment()
+        if adj.get_upper() - adj.get_page_size() <= 0:
+            return False
+        adj.set_value(adj.get_value() + dy * 40)
+        return True
+    wheel.connect("scroll", scrolled)
+    sw.add_controller(wheel)
+    return sw
+
+
 def art_widget(px):
     # Gtk.Image draws at exactly pixel_size; a Picture grows to the texture.
     pic = Gtk.Image(pixel_size=px)
@@ -5747,7 +5776,8 @@ class MusicWindow(Adw.ApplicationWindow):
                                transition_duration=120, vexpand=True)
         self.tab_buttons = {}
         first = None
-        for key, label in (("search", "Search"), ("account", "Library"), ("music", "Music"), ("queue", "Up next")):
+        for key, label in (("search", "Search"), ("account", "Library"), ("music", "Music"), ("artists", "Artists"),
+                           ("queue", "Up next")):
             b = Gtk.ToggleButton(label=label, group=first)
             first = first or b
             b.connect("toggled", lambda btn, k=key: btn.get_active() and self.show_tab(k))
@@ -5755,6 +5785,9 @@ class MusicWindow(Adw.ApplicationWindow):
                       and self.show_tab(k))   # back from an artist's page
             tabs.append(b)
             self.tab_buttons[key] = b
+            if key == "artists":
+                self.stack.add_named(self.artists_page(), key)
+                continue
             lst = self.track_list(key)
             sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=lst, vexpand=True)
             if key == "music":   # all your songs, your playlists, recent, added, most played
@@ -5774,7 +5807,7 @@ class MusicWindow(Adw.ApplicationWindow):
         # Artist and album pages have no tab of their own: they open over the tab you were on.
         self.track_list("artist")
         self.stack.add_named(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.artist_list), "artist")
-        root.append(tabs)
+        root.append(scroll_sideways(tabs))
         root.append(self.stack)
         root.append(self.select_bar())
 
@@ -6344,6 +6377,8 @@ class MusicWindow(Adw.ApplicationWindow):
             self.lyrics.show_for(self.app.current_track())
         elif key == "music":
             self.app.rescan_soon()
+        elif key == "artists":
+            self.refresh_artists()
 
     def set_empty(self, lst, title, body):
         lst.remove_all()
@@ -7003,15 +7038,28 @@ class MusicWindow(Adw.ApplicationWindow):
         t = songs[0]
         album = t.get("album") or ""
         name = f"“{album}”" if album else f"“{t['title']}”"
-        dlg = Adw.Dialog(title="Cover", content_width=560, content_height=560)
+
+        def next_album():
+            if i + 1 < len(groups):
+                GLib.idle_add(lambda: (self.cover_album(groups, i + 1), False)[1])
+        self.pick_picture("Cover", f"Cover of {name}" + (f" · {i + 1} of {len(groups)}" if len(groups) > 1 else ""),
+                          f"{t['artist']} · goes on every song of the album here" if album else t["artist"],
+                          lambda: a.pictures.cover_choices(t["artist"].split(",")[0].strip(), album or t["title"]),
+                          lambda src, done: a.set_cover_soon(songs, src, done=done),
+                          "Skip" if i + 1 < len(groups) else "Cancel", next_album)
+
+    def pick_picture(self, title, heading, sub, find, use, skip_label="Cancel", after=None):
+        """A dialog of pictures to pick one from: find() (blocking) gives [{"url", "thumb", "from"}];
+        use(url or file, done) puts the one picked to use and calls done when it has. after() runs
+        once the dialog is through (picked or skipped)."""
+        dlg = Adw.Dialog(title=title, content_width=560, content_height=560)
         page = Adw.ToolbarView()
         page.add_top_bar(Adw.HeaderBar())
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=14, margin_end=14, margin_bottom=14)
-        head = Gtk.Label(label=f"Cover of {name}" + (f" · {i + 1} of {len(groups)}" if len(groups) > 1 else ""),
-                         xalign=0, wrap=True)
+        head = Gtk.Label(label=heading, xalign=0, wrap=True)
         head.add_css_class("title-4")
-        sub = Gtk.Label(label=f"{t['artist']} · goes on every song of the album here" if album else t["artist"], xalign=0, wrap=True)
-        sub.add_css_class("service")
+        subl = Gtk.Label(label=sub, xalign=0, wrap=True)
+        subl.add_css_class("service")
         status = Gtk.Label(label="Looking on Google, Genius and Wikipedia…", xalign=0, wrap=True)
         status.add_css_class("service")
         flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4, min_children_per_line=3,
@@ -7020,24 +7068,24 @@ class MusicWindow(Adw.ApplicationWindow):
         buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
         busy = []
 
-        def next_album():
+        def through():
             dlg.close()
-            if i + 1 < len(groups):
-                GLib.idle_add(lambda: (self.cover_album(groups, i + 1), False)[1])
+            if after:
+                after()
 
-        def use(source):
+        def picked(source):
             if busy:
                 return
             busy.append(1)
-            status.set_label("Putting it on the songs…")
-            a.set_cover_soon(songs, source, done=next_album)
+            status.set_label("Putting it to use…")
+            use(source, through)
 
         def pick_file(_b):
             filt = Gtk.FileFilter(name="Pictures")
             filt.add_mime_type("image/*")
             filters = Gio.ListStore.new(Gtk.FileFilter)
             filters.append(filt)
-            fd = Gtk.FileDialog(title="Choose a cover", filters=filters, default_filter=filt)
+            fd = Gtk.FileDialog(title="Choose a picture", filters=filters, default_filter=filt)
 
             def chosen(d, res):
                 try:
@@ -7045,13 +7093,13 @@ class MusicWindow(Adw.ApplicationWindow):
                 except GLib.Error:
                     return
                 if f and f.get_path():
-                    use(f.get_path())
+                    picked(f.get_path())
             fd.open(self, None, chosen)
-        for label, cb in (("Choose a file…", pick_file), ("Skip" if i + 1 < len(groups) else "Cancel", lambda _b: next_album())):
+        for label, cb in (("Choose a file…", pick_file), (skip_label, lambda _b: through())):
             b = Gtk.Button(label=label)
             b.connect("clicked", cb)
             buttons.append(b)
-        for w in (head, sub, status, scroll, buttons):
+        for w in (head, subl, status, scroll, buttons):
             box.append(w)
         page.set_content(box)
         dlg.set_child(page)
@@ -7066,7 +7114,7 @@ class MusicWindow(Adw.ApplicationWindow):
             col.append(lab)
             btn = Gtk.Button(child=col, tooltip_text=c["url"])
             btn.add_css_class("flat")
-            btn.connect("clicked", lambda _b: use(c["url"]))
+            btn.connect("clicked", lambda _b: picked(c["url"]))
             dest = CACHE / "covers" / (hashlib.sha1(c["thumb"].encode()).hexdigest()[:16] + ".jpg")
             in_thread(lambda: dest.exists() or fetch_url(c["thumb"], dest),
                       done=lambda _r, err: pic.set_paintable(load_texture(dest, 240)) if not err else btn.set_visible(False))
@@ -7078,7 +7126,7 @@ class MusicWindow(Adw.ApplicationWindow):
                 flow.append(tile(c))
             status.set_label(f"Pick the right one ({len(choices[:12])} found), or choose a file." if choices else
                              "Nothing found: unreleased songs often have none. Choose a file, or skip it.")
-        in_thread(a.pictures.cover_choices, t["artist"].split(",")[0].strip(), album or t["title"], done=found)
+        in_thread(find, done=found)
         dlg.present(self)
 
     def speed_dialog(self, tracks):
@@ -7331,13 +7379,88 @@ class MusicWindow(Adw.ApplicationWindow):
         pop.connect("closed", lambda p: GLib.idle_add(lambda: (p.unparent(), False)[1]))
         pop.popup()
 
+    # ---- Artists: the ones you listen to most, from every play added up (Stats) ----
+    ARTISTS_SHOWN = 120
+    _artists_sig = None
+
+    def artists_page(self):
+        self.artists_note = Gtk.Label(xalign=0, wrap=True)
+        self.artists_note.add_css_class("section")
+        self.artists_flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, min_children_per_line=3,
+                                        max_children_per_line=10, column_spacing=4, row_spacing=6, valign=Gtk.Align.START)
+        self.artists_flow.add_css_class("artist-grid")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(self.artists_note)
+        box.append(self.artists_flow)
+        self.artist_tiles = {}   # norm(name) -> its picture
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=box, vexpand=True)
+
+    def refresh_artists(self):
+        a = self.app
+        a.stats.refresh()
+        top = a.stats.artists[:self.ARTISTS_SHOWN]
+        sig = (tuple((x["name"], x["plays"]) for x in top), a.stats.busy)
+        if sig == self._artists_sig:
+            return
+        self._artists_sig = sig
+        self.artists_flow.remove_all()
+        self.artist_tiles = {}
+        if not top:
+            self.artists_note.set_label("WORKING YOUR PLAYS OUT…" if a.stats.busy else
+                                        "NO PLAYS YET: CONNECT LAST.FM, IMPORT YOUR SPOTIFY HISTORY, OR PLAY A FEW SONGS")
+            return
+        self.artists_note.set_label(" · ".join(["YOUR TOP ARTISTS"] + [" + ".join(s.upper() for s in a.stats.sources)] * bool(a.stats.sources)))
+        for x in top:
+            self.artists_flow.append(self.artist_tile(x))
+        a.look_up_artists([x["name"] for x in top], self.artist_found)
+
+    def artist_tile(self, x):
+        frame, pic = art_widget(88)
+        frame.add_css_class("round")
+        known = self.app.pictures.artists.get(norm(x["name"])) or {}
+        if known.get("image"):
+            self.art.apply(pic, artist_picture(x["name"], known["image"]), 320)
+        elif x.get("thumb"):
+            self.art.apply(pic, {"id": "ar-" + norm(x["name"]), "thumb": x["thumb"]}, 320)
+        else:
+            pic.set_from_icon_name("avatar-default-symbolic")
+            pic.set_pixel_size(30)
+            pic.set_hexpand(True)
+        self.artist_tiles[norm(x["name"])] = pic
+        name = Gtk.Label(label=x["name"], ellipsize=Pango.EllipsizeMode.END, max_width_chars=12)
+        name.add_css_class("name")
+        plays = Gtk.Label(label=f"{x['plays']:,} play{'s' if x['plays'] != 1 else ''}")
+        plays.add_css_class("sub")
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        for w in (frame, name, plays):
+            col.append(w)
+        b = Gtk.Button(child=col, tooltip_text=x["name"])
+        b.add_css_class("flat")
+        b.add_css_class("artist-tile")
+        b.connect("clicked", lambda _b: self.open_artist(x["name"]))
+        return b
+
+    def artist_found(self, name, info):
+        """An artist's picture came in: on their tile, and on their page if it's open."""
+        pic = self.artist_tiles.get(norm(name))
+        if pic is not None and info.get("image"):
+            pic.set_pixel_size(88)   # (the stand-in icon is smaller)
+            pic.set_hexpand(False)
+            self.art.apply(pic, artist_picture(name, info["image"]), 320)
+        page = self.artist_pages[-1] if getattr(self, "artist_pages", None) else None
+        if page and page["kind"] == "artist" and norm(page["name"]) == norm(name) and page.get("pic") is None:
+            page["pic"] = info
+            self.render_artist()
+
     def open_artist(self, name, prefer=None):
-        """The artist's page: their songs in your music, their top songs and albums from a service."""
+        """The artist's page: their picture and bio, your songs of theirs by how often you played
+        them, and their albums from a service."""
         if self.selecting:
             self.stop_selecting()
         if self.stack.get_visible_child_name() != "artist":
             self.artist_from, self.artist_pages = self.stack.get_visible_child_name(), []
-        page = {"kind": "artist", "name": name, "info": None, "error": None, "mine": self.app.songs_by(name)}
+        page = {"kind": "artist", "name": name, "info": None, "error": None, "mine": self.app.artist_songs(name),
+                "pic": self.app.pictures.artists.get(norm(name))}
         self.artist_pages.append(page)
         self.stack.set_visible_child_name("artist")
         if not self.get_visible():
@@ -7349,6 +7472,54 @@ class MusicWindow(Adw.ApplicationWindow):
             if self.artist_pages and self.artist_pages[-1] is page:
                 self.render_artist()
         in_thread(self.app.artist_info, name, prefer, done=done)
+        if page["pic"] is None:
+            self.app.look_up_artists([name], self.artist_found)
+
+    def artist_head(self, lst, page):
+        """An artist's page's top: their picture, and beside it their name, plays and bio."""
+        name, info, pic_info = page["name"], page["info"], page["pic"] or {}
+        box = Gtk.Box(spacing=14)
+        box.add_css_class("page-head")
+        frame, pic = art_widget(112)
+        frame.add_css_class("round")
+        frame.set_valign(Gtk.Align.START)
+        if pic_info.get("image"):
+            self.art.apply(pic, artist_picture(name, pic_info["image"]), 320)
+        elif info and info.get("thumb"):
+            self.art.apply(pic, {"id": "ar-" + norm(name), "thumb": info["thumb"]}, 320)
+        else:
+            pic.set_from_icon_name("avatar-default-symbolic")
+            pic.set_pixel_size(40)
+            pic.set_hexpand(True)
+        box.append(frame)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+        t = Gtk.Label(label=info["name"] if info else name, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+        t.add_css_class("page-title")
+        text.append(t)
+        st = self.app.stats.artist(name)
+        bits = [f"{st['plays']:,} plays" if st and st.get("plays") else "",
+                f"{len(page['mine'])} song{'s' if len(page['mine']) != 1 else ''}" if page["mine"] else "",
+                f"From {SOURCES[info['source']]}" if info else "Looking them up…" if not page["error"] else ""]
+        sub = Gtk.Label(label=" · ".join(b for b in bits if b), xalign=0, wrap=True)
+        sub.add_css_class("sub")
+        text.append(sub)
+        bio = pic_info.get("bio") or ""
+        if bio:
+            short = bio if len(bio) <= 420 else bio[:420].rsplit(" ", 1)[0] + "…"
+            b = Gtk.Label(label=short, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True)
+            b.add_css_class("bio")
+            text.append(b)
+            if pic_info.get("bio_url"):
+                more = Gtk.LinkButton(uri=pic_info["bio_url"], label=f"More on {pic_info.get('bio_from') or 'the web'}",
+                                      halign=Gtk.Align.START)
+                more.add_css_class("bio-link")
+                text.append(more)
+        elif page["pic"] is None:
+            b = Gtk.Label(label="Looking for their bio…", xalign=0)
+            b.add_css_class("bio")
+            text.append(b)
+        box.append(text)
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
 
     def open_album_page(self, album):
         """An album from the search: its page on its own, Back goes to the search."""
@@ -7388,6 +7559,18 @@ class MusicWindow(Adw.ApplicationWindow):
         else:
             self.show_tab(self.artist_from if self.artist_from in self.tab_buttons else "music")
 
+    artist_order = "desc"   # an artist's songs: most played first, or least
+
+    def flip_artist_order(self):
+        self.artist_order = "asc" if self.artist_order == "desc" else "desc"
+        self.render_artist()
+
+    def pick_artist_picture(self, name):
+        a = self.app
+        self.pick_picture("Picture", f"A picture of {name}", "Kept for their tile and their page",
+                          lambda: a.pictures.artist_choices(name),
+                          lambda src, done: a.set_artist_picture(name, src, done))
+
     def render_artist(self):
         lst, pages = self.artist_list, self.artist_pages
         if not pages:
@@ -7414,16 +7597,21 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             self.scroll_top(lst)
             return
-        info, mine = page["info"], page["mine"]
-        thumb = {"id": "ar-" + norm(page["name"]), "thumb": info["thumb"]} if info and info.get("thumb") else None
-        sub = (f"From {SOURCES[info['source']]}" if info else "Couldn't find them" if page["error"] else "Looking them up…")
+        info = page["info"]
+        self.artist_head(lst, page)
+        down = self.artist_order == "desc"
+        mine = sorted(page["mine"], key=lambda t: t.get("plays", 0), reverse=down)
+        name = page["name"]
+        self.actions_row(lst, [("Play", lambda _b: self.app.play_list(mine), False),
+                               ("Shuffle", lambda _b: self.app.play_list(mine, shuffled=True), False),
+                               ("Most played first" if down else "Least played first", lambda _b: self.flip_artist_order(), True),
+                               ("Change picture…", lambda _b: self.pick_artist_picture(name), True)] if mine else
+                         [("Change picture…", lambda _b: self.pick_artist_picture(name), True)])
         if mine:
-            sub += f" · {len(mine)} song{'s' if len(mine) != 1 else ''} in your music"
-        self.head_row(lst, info["name"] if info else page["name"], sub, thumb, round_=True)
-        if mine:
-            self.section(lst, "IN YOUR MUSIC")
+            self.section(lst, f"YOUR SONGS · BY PLAYS {'↓' if down else '↑'}")
             for i, t in enumerate(mine):
-                self.add_track(lst, t, i, mine)
+                n = t.get("plays", 0)
+                self.add_track(lst, t, i, mine, extra=f"{n} play{'s' if n != 1 else ''}")
         if info is None and not page["error"]:
             self.section(lst, "LOADING…")
         elif info:
@@ -8121,7 +8309,7 @@ class MusicWindow(Adw.ApplicationWindow):
         if ctrl and keyval in (Gdk.KEY_f, Gdk.KEY_l):
             self.entry.grab_focus()
             return True
-        if state & Gdk.ModifierType.ALT_MASK and Gdk.KEY_1 <= keyval <= Gdk.KEY_5:
+        if state & Gdk.ModifierType.ALT_MASK and Gdk.KEY_1 <= keyval < Gdk.KEY_1 + len(self.tab_buttons):
             self.show_tab(list(self.tab_buttons)[keyval - Gdk.KEY_1])
             return True
         focus = self.get_focus()
@@ -10445,6 +10633,50 @@ class MusicApp(Adw.Application):
                 out.append(dict(t))
         return out
 
+    def artist_songs(self, name):
+        """The artist's songs you played or have, each with how often you played it (every play
+        added up: see Stats): the counted ones, then the rest of yours."""
+        mine, out, seen = self.song_index(), [], set()
+        for st in self.stats.artist_songs(name):
+            t = dict(self.fm_song(st["title"], st["artist"], st.get("thumb", ""), mine), plays=st["plays"])
+            if song_key(t) not in seen:
+                seen.add(song_key(t))
+                out.append(t)
+        here = {song_key(e["track"]): e.get("plays", 0) for e in self.plays.items.values()}
+        for t in self.songs_by(name):
+            if song_key(t) not in seen:
+                seen.add(song_key(t))
+                out.append(dict(t, plays=here.get(song_key(t), 0)))
+        return out
+
+    def look_up_artists(self, names, found):
+        """Look up the pictures and bios of the artists named (one after another, off the UI
+        thread), handing each found(name, info) on the UI thread; ones known already are skipped."""
+        todo = [n for n in names if norm(n) not in self.pictures.artists]
+        if not todo:
+            return
+
+        def work():
+            for n in todo:
+                info = self.pictures.artist(n)
+                GLib.idle_add(lambda n=n, info=info: (found(n, info), False)[1])
+        threading.Thread(target=work, daemon=True).start()
+
+    def set_artist_picture(self, name, source, done=None):
+        """Keep source (a picture's web address or a file) as the artist's picture."""
+        url = Path(source).as_uri() if Path(source).is_file() else source
+        self.pictures.choose_artist(name, url)
+        info = self.pictures.artists.get(norm(name)) or {}
+        if self.win:
+            self.win.artist_found(name, info)
+            page = self.win.artist_pages[-1] if self.win.artist_pages else None
+            if page and page["kind"] == "artist" and norm(page["name"]) == norm(name):
+                page["pic"] = info
+                self.win.render_artist()
+        self.toast(f"New picture for {name}")
+        if done:
+            done()
+
     def artist_info(self, name, prefer=None):
         """(blocking) The artist's page from the first service that knows them: the one the song you
         clicked is from, then the one you browse, then the rest. Top songs come from the next one
@@ -11097,6 +11329,7 @@ class MusicApp(Adw.Application):
     def stats_changed(self):
         """New counts are in: show them where they're shown."""
         if self.win:
+            self.win.when_shown("artists", self.win.refresh_artists)
             if self.win.music_view == "top" and not self.win.selecting:
                 self.win.refresh_music()
 

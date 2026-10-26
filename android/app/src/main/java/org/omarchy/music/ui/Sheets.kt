@@ -97,6 +97,7 @@ fun Sheets(ui: Ui) {
     ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
     DeleteDialog(ui)
     ui.coverFor?.let { albums -> CoverDialog(ui, albums) }
+    ui.artistPictureFor?.let { name -> ArtistPictureDialog(ui, name) }
     ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
@@ -507,6 +508,40 @@ private fun CoverDialog(ui: Ui, albums: List<List<org.omarchy.music.Track>>) {
         },
         confirmButton = { TextButton({ pick.launch(arrayOf("image/*")) }, enabled = !busy) { Text("Pick a picture…", color = C.accent) } },
         dismissButton = { TextButton(next, enabled = !busy) { Text(if (albums.size > 1) "Skip" else "Cancel", color = C.muted) } })
+}
+
+/** Change picture…: pictures of the artist to pick from (Google's, Genius's, Wikipedia's), or one of yours. */
+@Composable
+private fun ArtistPictureDialog(ui: Ui, name: String) {
+    var choices by remember(name) { mutableStateOf<List<org.omarchy.music.Pictures.Choice>?>(null) }
+    val close = { ui.artistPictureFor = null }
+    val use = { src: String -> close(); Music.setArtistPicture(name, src) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) use(uri.toString()) }
+    LaunchedEffect(name) { Music.bg({ org.omarchy.music.Pictures.artistChoices(name) }) { c, _ -> choices = c ?: emptyList() } }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text("A picture of $name", style = T.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            val c = choices
+            Column {
+                Text(when {
+                    c == null -> "Looking on Google, Genius and Wikipedia…"
+                    c.isEmpty() -> "Nothing found. Pick a picture of yours."
+                    else -> "Kept for their tile and their page"
+                }, style = T.sub, modifier = Modifier.padding(bottom = 8.dp))
+                if (!c.isNullOrEmpty()) LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items((c.size + 2) / 3) { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
+                            for (ch in c.drop(row * 3).take(3)) Column(Modifier.clickable { use(ch.url) }) {
+                                ArtImage(ch.thumb, 84.dp)
+                                Text(ch.from, style = T.time)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton({ pick.launch(arrayOf("image/*")) }) { Text("Pick a picture…", color = C.accent) } },
+        dismissButton = { TextButton(close) { Text("Cancel", color = C.muted) } })
 }
 
 /** Speed…: how fast the songs play, from half to twice their speed. */
