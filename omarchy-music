@@ -8368,8 +8368,9 @@ class MusicWindow(Adw.ApplicationWindow):
         if len(dupes) > 6:
             lines.append(f"…and {len(dupes) - 6} more")
         n = len(dupes)
-        dlg = Adw.AlertDialog(heading=f"You have {'this song' if n == 1 else f'{n} of these songs'} already",
-                              body="\n".join(lines) + "\n\nDownload anyway?")
+        dlg = Adw.AlertDialog(heading=f"You may have {'this song' if n == 1 else f'{n} of these songs'} already",
+                              body="\n".join(lines) + "\n\nThese look like the same song (the name, artist or album "
+                              "match closely). Download anyway?")
         dlg.add_response("cancel", "Cancel")
         if len(new) > n:
             dlg.add_response("skip", "Only the new ones")
@@ -13206,10 +13207,10 @@ class MusicApp(Adw.Application):
         self.save_state()
 
     def copies_of(self, t, mine=None):
-        """Your songs on disk that are t (the same name and lead artist), t itself left out."""
-        key = song_key(t)
+        """Your songs on disk that are likely t (see maybe_same: close is enough, it's asked about),
+        t itself left out."""
         return [m for m in (mine if mine is not None else self.my_songs())
-                if song_key(m) == key and m["id"] != t["id"] and song_file(self.lib, m)]
+                if m["id"] != t["id"] and maybe_same(t, m) and song_file(self.lib, m)]
 
     def download(self, tracks, checked=False):
         """Download the songs you picked, in FLAC, one after another. A song you have already
@@ -13327,7 +13328,7 @@ class MusicApp(Adw.Application):
         groups = {}
         for t in self.my_songs():
             if not is_phone_song(t):
-                groups.setdefault(song_key(t), []).append(t)
+                groups.setdefault(loose_key(t), []).append(t)
         out = []
         for key, ts in groups.items():
             if len(ts) < 2 or not key[0]:
@@ -14177,6 +14178,40 @@ class MusicApp(Adw.Application):
                 self.track_ended()
         elif ev == "end-file" and msg.get("reason") == "error":
             self.stream_broke()
+
+
+def squash(s):
+    """Letters and digits only, run together: "That’s All I Need" and "Thats all I need" are one."""
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower())
+
+
+def loose_artists(t):
+    """Each artist of t, squashed, without a leading "the"."""
+    return {re.sub(r"^the", "", squash(a)) for a in re.split(r",|&|\bfeat\.?\b|\bft\.?\b|\bx\b|\band\b",
+                                                            t.get("artist") or "", flags=re.I)} - {""}
+
+
+def loose_key(t):
+    """t's song for finding duplicates: its title and lead artist, squashed (punctuation, accents,
+    "the", feat. credits and (Remastered)-type notes don't count)."""
+    return squash(clean_title(t.get("title") or "")), re.sub(r"^the", "", squash((t.get("artist") or "").split(",")[0]))
+
+
+def maybe_same(a, b):
+    """Whether a and b are likely the same song, to ask about: the same or nearly the same title,
+    by an artist they share (or nearly the same name), or nearly the same title on the same album.
+    Lengths and other tags aren't looked at: they differ between copies of one song."""
+    ta, tb = squash(clean_title(a.get("title") or "")), squash(clean_title(b.get("title") or ""))
+    if not ta or not tb:
+        return False
+    title = 1.0 if ta == tb else similar(ta, tb)
+    if title < 0.75 and not (min(len(ta), len(tb)) >= 4 and (ta in tb or tb in ta)):
+        return False
+    aa, ab = loose_artists(a), loose_artists(b)
+    artist = bool(aa & ab) or any(similar(x, y) >= 0.85 or (len(x) >= 4 and len(y) >= 4 and (x in y or y in x))
+                                  for x in aa for y in ab)
+    album = bool(squash(a.get("album"))) and squash(a.get("album")) == squash(b.get("album"))
+    return (artist and (title >= 0.85 or ta in tb or tb in ta)) or (album and title >= 0.75)
 
 
 def song_key(t):
