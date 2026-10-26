@@ -1,0 +1,153 @@
++ adb shell settings put global window_animation_scale 0.5
++ adb install -r app/android/app/build/outputs/apk/release/app-release.apk
+Performing Streamed Install
+Success
++ python3 -
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 1.wav' /sdcard/Music/
+/tmp/Test Song 1.wav: 1 file pushed, 0 skipped. 8.5 MB/s (882044 bytes in 0.098s)
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 2.wav' /sdcard/Music/
+/tmp/Test Song 2.wav: 1 file pushed, 0 skipped. 254.4 MB/s (882044 bytes in 0.003s)
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 3.wav' /sdcard/Music/
+/tmp/Test Song 3.wav: 1 file pushed, 0 skipped. 581.7 MB/s (882044 bytes in 0.001s)
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 4.wav' /sdcard/Music/
+/tmp/Test Song 4.wav: 1 file pushed, 0 skipped. 708.6 MB/s (882044 bytes in 0.001s)
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 5.wav' /sdcard/Music/
+/tmp/Test Song 5.wav: 1 file pushed, 0 skipped. 752.3 MB/s (882044 bytes in 0.001s)
++ for i in 1 2 3 4 5 6
++ adb push '/tmp/Test Song 6.wav' /sdcard/Music/
+/tmp/Test Song 6.wav: 1 file pushed, 0 skipped. 711.6 MB/s (882044 bytes in 0.001s)
++ adb shell content call --method scan_volume --uri content://media --arg external_primary
+Result: Bundle[{}]
++ sleep 3
++ for p in android.permission.READ_MEDIA_AUDIO android.permission.POST_NOTIFICATIONS android.permission.RECORD_AUDIO
++ adb shell pm grant org.omarchy.music.test android.permission.READ_MEDIA_AUDIO
++ for p in android.permission.READ_MEDIA_AUDIO android.permission.POST_NOTIFICATIONS android.permission.RECORD_AUDIO
++ adb shell pm grant org.omarchy.music.test android.permission.POST_NOTIFICATIONS
++ for p in android.permission.READ_MEDIA_AUDIO android.permission.POST_NOTIFICATIONS android.permission.RECORD_AUDIO
++ adb shell pm grant org.omarchy.music.test android.permission.RECORD_AUDIO
++ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
+  bash arg: -p
+  bash arg: org.omarchy.music.test
+  bash arg: -c
+  bash arg: android.intent.category.LAUNCHER
+  bash arg: 1
+args: [-p, org.omarchy.music.test, -c, android.intent.category.LAUNCHER, 1]
+ arg: "-p"
+ arg: "org.omarchy.music.test"
+ arg: "-c"
+ arg: "android.intent.category.LAUNCHER"
+ arg: "1"
+data="org.omarchy.music.test"
+data="android.intent.category.LAUNCHER"
+Events injected: 1
+## Network stats: elapsed time=150ms (0ms mobile, 0ms wifi, 150ms not connected)
++ sleep 12
++ shot 01-home
++ adb exec-out screencap -p
++ tap 'All songs'
++ python3 work/ci/tap.py 'All songs'
+tap All songs 281 853
++ sleep 3
++ shot 02-all-songs
++ adb exec-out screencap -p
++ tap 'Test Song 1'
++ python3 work/ci/tap.py 'Test Song 1'
+tap Test Song 1 304 606
++ sleep 3
++ WAIT=4
++ tap 'Test Song 2'
++ python3 work/ci/tap.py 'Test Song 2'
+tap Test Song 2 304 770
++ sleep 4
++ shot 03-playing-list
++ adb exec-out screencap -p
++ tap --last 'Test Song 2'
++ python3 work/ci/tap.py --last 'Test Song 2'
+tap Test Song 2 289 2235
++ sleep 3
++ shot 04-player
++ adb exec-out screencap -p
++ tap Lyrics
++ python3 work/ci/tap.py Lyrics
+tap Lyrics 516 2290
++ sleep 3
++ shot 05-player-lyrics
++ adb exec-out screencap -p
++ tap 'Up next'
++ python3 work/ci/tap.py 'Up next'
+tap Up next 919 2290
++ sleep 3
++ shot 06-player-queue
++ adb exec-out screencap -p
++ tap Visualizer
++ python3 work/ci/tap.py Visualizer
+tap Visualizer 712 2290
++ sleep 3
++ shot 07-player-vis
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ shot 08-back-to-list
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ tap Favorites
++ python3 work/ci/tap.py Favorites
+tap Favorites 281 1673
++ sleep 3
++ shot 09-favorites
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ tap --desc menu
++ python3 work/ci/tap.py --desc menu
+tap menu 1007 209
++ sleep 3
++ shot 10-menu
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ tap Equalizer
++ python3 work/ci/tap.py Equalizer
+not found: Equalizer
++ sleep 3
++ shot 11-eq
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ tap Artists
++ python3 work/ci/tap.py Artists
+not found: Artists
++ sleep 3
++ shot 12-artists
++ adb exec-out screencap -p
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ adb shell input swipe 500 1500 500 400 300
++ sleep 2
++ shot 13-home-scrolled
++ adb exec-out screencap -p
++ ls -la /home/runner/work/omarchy-music/omarchy-music/shots
+total 3348
+drwxr-xr-x 2 runner runner    4096 Oct 26 14:55 .
+drwxr-xr-x 5 runner runner    4096 Oct 26 14:52 ..
+-rw-r--r-- 1 runner runner  151900 Oct 26 14:53 01-home.png
+-rw-r--r-- 1 runner runner  146525 Oct 26 14:53 02-all-songs.png
+-rw-r--r-- 1 runner runner  143047 Oct 26 14:54 03-playing-list.png
+-rw-r--r-- 1 runner runner  151726 Oct 26 14:54 04-player.png
+-rw-r--r-- 1 runner runner  149845 Oct 26 14:54 05-player-lyrics.png
+-rw-r--r-- 1 runner runner  193040 Oct 26 14:54 06-player-queue.png
+-rw-r--r-- 1 runner runner  174252 Oct 26 14:54 07-player-vis.png
+-rw-r--r-- 1 runner runner  143249 Oct 26 14:54 08-back-to-list.png
+-rw-r--r-- 1 runner runner   64798 Oct 26 14:54 09-favorites.png
+-rw-r--r-- 1 runner runner  261169 Oct 26 14:54 10-menu.png
+-rw-r--r-- 1 runner runner  146953 Oct 26 14:54 11-eq.png
+-rw-r--r-- 1 runner runner 1380802 Oct 26 14:55 12-artists.png
+-rw-r--r-- 1 runner runner  287050 Oct 26 14:55 13-home-scrolled.png
