@@ -150,6 +150,24 @@ fun similar(a: String, b: String): Double {
 }
 
 /** The item whose name is name, or near enough; null if none is. */
+/** How a playlist's songs can be listed: in the playlist's own order, or sorted. */
+val PLAYLIST_SORTS = linkedMapOf("order" to "Order", "title" to "Title", "artist" to "Artist", "album" to "Album",
+    "plays" to "Most played", "length" to "Length")
+
+/** tracks sorted by sort (one of PLAYLIST_SORTS; "order" leaves them be). plays: song key -> plays. */
+fun sortSongs(tracks: List<Track>, sort: String, plays: Map<Pair<String, String>, Int> = emptyMap()): List<Track> {
+    val lead = { t: Track -> norm(t.artist.split(",")[0]).ifEmpty { "~" } }   // no artist: last
+    val tie = compareBy<Track> { norm(it.title) }
+    return when (sort) {
+        "title" -> tracks.sortedWith(compareBy<Track>({ norm(it.title) }, { lead(it) }))
+        "artist" -> tracks.sortedWith(compareBy<Track>({ lead(it) }, { norm(it.album).ifEmpty { "~" } }).then(tie))
+        "album" -> tracks.sortedWith(compareBy<Track>({ norm(it.album).ifEmpty { "~" } }, { lead(it) }).then(tie))
+        "plays" -> tracks.sortedByDescending { plays[songKey(it)] ?: 0 }
+        "length" -> tracks.sortedByDescending { it.duration }
+        else -> tracks
+    }
+}
+
 /** Shuffle: every order equally likely (Fisher-Yates), from the system's secure random source,
  *  so no order of even a long playlist is out of reach the way it can be with a seeded one. */
 val SHUFFLE_RANDOM: kotlin.random.Random = SecureRandom().asKotlinRandom()

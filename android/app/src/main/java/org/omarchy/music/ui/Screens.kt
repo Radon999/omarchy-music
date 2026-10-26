@@ -40,6 +40,7 @@ import org.omarchy.music.ArtistInfo
 import org.omarchy.music.Dj
 import org.omarchy.music.LastFm
 import org.omarchy.music.Moods
+import org.omarchy.music.PLAYLIST_SORTS
 import org.omarchy.music.SpotifyHistory
 import org.omarchy.music.Stats
 import org.omarchy.music.Found
@@ -151,10 +152,11 @@ fun LibraryTab(ui: Ui) {
             }
             open != null -> {
                 item { BackRow(open.first.title) { ui.openList = null } }
-                val tracks = open.second
+                val tracks = open.second?.let { Music.sortedPlaylist(it) }
                 if (tracks == null) item { Section("LOADING…") }
                 else {
                     item { ListActions(tracks, onDj = { ui.djFrom(Dj.From("songs", name = open.first.title, songs = tracks)) }) }
+                    if (tracks.isNotEmpty()) item { PlaylistSortChips() }
                     tracks(tracks, ui, "list")
                 }
             }
@@ -412,6 +414,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.grouped(list: List<Tr
     }
 }
 
+/** Chips to sort a playlist's songs by (PLAYLIST_SORTS), the same for every playlist. */
+@Composable
+private fun PlaylistSortChips() {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("SORT", style = T.section, modifier = Modifier.padding(end = 2.dp))
+        PLAYLIST_SORTS.forEach { (k, l) -> Chip(l, Music.playlistSort == k) { Music.pickPlaylistSort(k) } }
+    }
+}
+
 private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, import: () -> Unit) {
     val open = ui.openMine?.let { Music.lists.get(it) }
     if (open == null) {
@@ -437,14 +449,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, i
         return
     }
     item { BackRow(open.name) { ui.openMine = null } }
+    val sorted = Music.sortedPlaylist(open.tracks)
     item {
-        ListActions(open.tracks, onDj = { ui.djFrom(Dj.From("playlist", id = open.id)) }, extra = listOf(
+        ListActions(sorted, onDj = { ui.djFrom(Dj.From("playlist", id = open.id)) }, extra = listOf(
             "Rename" to { ui.askName = Triple("Rename playlist", open.name) { n -> Music.renamePlaylist(open.id, n) } },
             "Delete" to { ui.confirm = "Delete the playlist “${open.name}”? The songs stay where they are." to { Music.deletePlaylist(open.id); ui.openMine = null } },
         ))
     }
     if (open.tracks.isEmpty()) item { Empty("No songs in it yet", "Long-press a song anywhere and pick Add to playlist.") }
-    else tracks(open.tracks, ui, "mine", playlistId = open.id)
+    else { item { PlaylistSortChips() }; tracks(sorted, ui, "mine", playlistId = open.id) }
 }
 
 @Composable

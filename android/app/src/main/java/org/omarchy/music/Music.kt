@@ -69,6 +69,7 @@ object Music {
     var searchIn by mutableStateOf("tidal")    // where the search bar searches: tidal, ytm, local
     var apiKeys by mutableStateOf(mapOf<String, String>())   // Settings: keys of yours (see API_KEYS)
     var shuffled = false   // the queue was shuffled: repeat-all shuffles it again
+    var playlistSort by mutableStateOf("order")   // how a playlist's songs are listed (PLAYLIST_SORTS)
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
@@ -144,7 +145,7 @@ object Music {
         val sync_sources: Map<String, Boolean> = emptyMap(), val lyrics_mode: String = "genius",
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
         val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
-        val api_keys: Map<String, String> = emptyMap(), val shuffled: Boolean = false,
+        val api_keys: Map<String, String> = emptyMap(), val shuffled: Boolean = false, val playlist_sort: String = "order",
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -167,6 +168,7 @@ object Music {
         dj = st.dj
         apiKeys = st.api_keys.filterKeys { it in API_KEYS }
         shuffled = st.shuffled
+        playlistSort = st.playlist_sort.takeIf { it in PLAYLIST_SORTS } ?: "order"
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -175,7 +177,7 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled, playlistSort)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -930,4 +932,16 @@ object Music {
     fun setLyricsMode(mode: String) { lyricsMode = mode; saveState() }
     @JvmName("chooseMusicSort")
     fun setMusicSort(sort: String) { musicSort = sort; saveState() }
+    fun pickPlaylistSort(sort: String) { playlistSort = sort; saveState() }
+
+    /** song key -> how often you played it: the stats (Last.fm and Spotify too), else the plays here. */
+    fun playCounts(): Map<Pair<String, String>, Int> {
+        val out = HashMap<Pair<String, String>, Int>()
+        plays.items.values.forEach { out[songKey(it.track)] = it.plays }
+        Stats.songs.forEach { s -> out.merge(songKey(Track("", title = s.title, artist = s.artist)), s.plays) { a, b -> maxOf(a, b) } }
+        return out
+    }
+
+    /** A playlist's songs as the sort chips say. */
+    fun sortedPlaylist(tracks: List<Track>) = sortSongs(tracks, playlistSort, if (playlistSort == "plays") playCounts() else emptyMap())
 }

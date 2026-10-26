@@ -925,6 +925,23 @@ def similar(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+# How a playlist's songs can be listed: in the playlist's own order, or sorted.
+PLAYLIST_SORTS = (("order", "Order"), ("title", "Title"), ("artist", "Artist"), ("album", "Album"),
+                  ("plays", "Most played"), ("length", "Length"))
+
+
+def sort_songs(tracks, sort, plays=None):
+    """tracks sorted by sort (one of PLAYLIST_SORTS; "order" leaves them be). plays: song key -> plays."""
+    tracks = list(tracks)
+    lead = lambda t: norm((t.get("artist") or "").split(",")[0]) or "~"   # noqa: E731 -- no artist: last
+    key = {"title": lambda t: (norm(t.get("title")), lead(t)),
+           "artist": lambda t: (lead(t), norm(t.get("album")) or "~", norm(t.get("title"))),
+           "album": lambda t: (norm(t.get("album")) or "~", lead(t), norm(t.get("title"))),
+           "plays": lambda t: -(plays or {}).get(song_key(t), 0),
+           "length": lambda t: -(t.get("duration") or 0)}.get(sort)
+    return sorted(tracks, key=key) if key else tracks
+
+
 # Shuffle: every order equally likely (Fisher-Yates), from the system's random source, so
 # no order of even a long playlist is out of reach the way it can be with a seeded one.
 SHUFFLE_RANDOM = random.SystemRandom()
@@ -6638,23 +6655,35 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.dj_from({"kind": "folder", "path": f.get_path()})
         dlg.select_folder(self, None, chosen)
 
-    def sort_chips(self):
+    def sort_chips(self, sorts=None, attr="music_sort", refresh=None, lst=None):
+        """Chips to sort a list by: sorts [(name, label)], kept in the app's attr; refresh() redraws it."""
+        refresh, lst = refresh or self.refresh_music, lst or self.music_list
         group = Adw.ToggleGroup(halign=Gtk.Align.START)
         group.add_css_class("sources")
-        for name, label in self.MUSIC_SORTS:
-            group.add(Adw.Toggle(label=label, name=name, tooltip=f"Sort by {label.lower()}"))
-        group.set_active_name(self.app.music_sort)
+        for name, label in sorts or self.MUSIC_SORTS:
+            group.add(Adw.Toggle(label=label, name=name, tooltip="As the playlist has them" if name == "order"
+                                 else f"Sort by {label.lower()}"))
+        group.set_active_name(getattr(self.app, attr))
 
         def picked(g, _p):
-            if g.get_active_name() and g.get_active_name() != self.app.music_sort:
-                self.app.music_sort = g.get_active_name()
+            if g.get_active_name() and g.get_active_name() != getattr(self.app, attr):
+                setattr(self.app, attr, g.get_active_name())
                 self.app.save_soon()
-                GLib.idle_add(lambda: (self.refresh_music(), self.scroll_top(self.music_list), False)[2])
+                GLib.idle_add(lambda: (refresh(), self.scroll_top(lst), False)[2])
         group.connect("notify::active-name", picked)
         box = Gtk.Box()
         box.add_css_class("chips")
         box.append(group)
         return box
+
+    def playlist_sort_row(self, lst, refresh):
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=self.sort_chips(
+            PLAYLIST_SORTS, "playlist_sort", refresh, lst)))
+
+    def sorted_playlist(self, tracks):
+        """A playlist's songs as its sort chips say."""
+        sort = self.app.playlist_sort
+        return sort_songs(tracks, sort, self.app.play_counts() if sort == "plays" else None)
 
     def group_head(self, lst, title, sub=None):
         """A heading in All sorted by artist (click it for the artist's page) or by album;
@@ -6710,7 +6739,7 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         lst.remove_all()
         lst.append(self.action_row(f"‹  {pl['name']}", "mine-back"))
-        tracks = [dict(t) for t in pl["tracks"]]
+        tracks = self.sorted_playlist(dict(t) for t in pl["tracks"])
         buttons = [("Play", lambda _b: self.app.play_list(tracks), False),
                    ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
                    ("DJ", lambda _b, pid=pl["id"]: self.dj_from({"kind": "playlist", "id": pid}), True),
@@ -6722,6 +6751,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.section(lst, "EMPTY: RIGHT-CLICK A SONG › ADD TO PLAYLIST")
             return
         self.section(lst, f"{len(tracks)} SONG{'S' if len(tracks) != 1 else ''} · {fmt_total(tracks)}")
+        self.playlist_sort_row(lst, self.refresh_music)
         self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
 
     def rename_mine(self):
@@ -7090,11 +7120,13 @@ class MusicWindow(Adw.ApplicationWindow):
             if tracks is None:
                 self.section(lst, "LOADING…")
                 return
+            tracks = self.sorted_playlist(tracks)
             if tracks:
                 self.actions_row(lst, [("Play", lambda _b: self.app.play_list(tracks), False),
                                        ("Shuffle", lambda _b: self.app.play_list(tracks, shuffled=True), False),
                                        ("DJ", lambda _b: self.dj_from({"kind": "songs", "name": pl["title"], "songs": tracks}), True)]
                                  + self.download_button(tracks))
+                self.playlist_sort_row(lst, self.refresh_account)
             self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
             return
         if key not in self.playlists:
@@ -8952,6 +8984,7 @@ class MusicApp(Adw.Application):
         self.art_colors = bool(state.get("art_colors", True))
         self.keep_played = bool(state.get("keep_played", False))
         self.music_sort = state.get("music_sort") if state.get("music_sort") in ("title", "artist", "album", "added") else "title"
+        self.playlist_sort = state.get("playlist_sort") if state.get("playlist_sort") in dict(PLAYLIST_SORTS) else "order"
         self.search_in = state.get("search_in") if state.get("search_in") in SEARCH_IN else "tidal"
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
         self.remote_tokens = {k: v for k, v in (state.get("remote_tokens") or {}).items() if isinstance(v, dict)}
@@ -9033,7 +9066,8 @@ class MusicApp(Adw.Application):
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
                                        "music_sort": self.music_sort, "search_in": self.search_in,
                                        "remote": self.remote_on, "remote_tokens": self.remote_tokens,
-                                       "api_keys": self.api_keys, "shuffled": self.shuffled}))
+                                       "api_keys": self.api_keys, "shuffled": self.shuffled,
+                                       "playlist_sort": self.playlist_sort}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -10116,6 +10150,14 @@ class MusicApp(Adw.Application):
         self.spotify_history.clear()
         self.stats.refresh(force=True)
         self.refresh_accounts_soon()
+
+    def play_counts(self):
+        """song key -> how often you played it: the stats (Last.fm and Spotify too), else the plays here."""
+        counts = {song_key(e["track"]): e.get("plays", 0) for e in self.plays.items.values()}
+        for st in self.stats.songs:
+            k = song_key(st)
+            counts[k] = max(counts.get(k, 0), st.get("plays", 0))
+        return counts
 
     def scan_moods(self, again=False):
         """Find the moods of the songs that have none yet (again: and look again at the guessed ones), in the background."""
