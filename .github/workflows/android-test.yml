@@ -69,7 +69,8 @@ jobs:
             if [ -f ../app/android/app/build/outputs/apk/release/app-release.apk ]; then echo "BUILD OK"; else echo "BUILD FAILED"; fi; \
             grep -E "^e: |^w: .*(unused|deprecated)? *$|error:|What went wrong" -A2 "$RUNNER_TEMP/build.log" | grep -v "^w: " | head -150; \
             tail -25 "$RUNNER_TEMP/build.log"; } > ci/result.txt || true
-          git add ci/result.txt
+          cp ../app/android/app/build/outputs/apk/release/app-release.apk ci/VarMusic-Test.apk || true
+          git add ci/result.txt ci/VarMusic-Test.apk || git add ci/result.txt
           git -c user.name=Radon999 -c user.email=radon721690@gmail.com commit -qm "ci: result" || true
           git push origin HEAD:android-work || true
       - uses: actions/upload-artifact@v6
