@@ -17,6 +17,7 @@ class MusicApp : Application(), ImageLoaderFactory {
         SpotifyHistory.init(this)
         Stats.init(this)
         Pictures.init(this)
+        Moods.init(this)
         PhoneShare.init(this)
         Services.start(this)
         Updater.init(this)

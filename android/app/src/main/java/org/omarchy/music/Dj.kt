@@ -13,12 +13,12 @@ import kotlin.random.Random
  *  blocks (run it in [Music.bg]); [Music] plays them. */
 object Dj {
     const val SET = 6   // songs in a set
-    val ORDER = listOf("repeat", "fresh", "throwback", "deep", "fresh", "genre", "like")
+    val ORDER = listOf("repeat", "fresh", "mood", "throwback", "deep", "fresh", "genre", "like")
     /** Playing from songs you picked (a playlist, a folder, an album): sets of only those. */
-    val FROM_ORDER = listOf("loved", "unplayed", "artist", "throwback", "mix")
+    val FROM_ORDER = listOf("loved", "unplayed", "mood", "artist", "throwback", "mix")
     val KINDS = mapOf("repeat" to "On repeat", "fresh" to "New for you", "throwback" to "Throwback", "deep" to "Deep cuts",
         "genre" to "Your genre", "like" to "More like this", "ask" to "You asked", "loved" to "Your favourites",
-        "unplayed" to "Not played yet", "artist" to "One artist", "mix" to "Mix")
+        "unplayed" to "Not played yet", "artist" to "One artist", "mix" to "Mix", "mood" to "Your mood")
     /** Words in a request and the Last.fm tags they mean. */
     val MOODS = mapOf(
         "chill" to listOf("chill", "chillout"), "chilled" to listOf("chill", "chillout"), "relax" to listOf("chill", "relaxing"),
@@ -207,6 +207,19 @@ object Dj {
         return songs to "Some $tag, since you've been playing ${lead[0]} so much."
     }
 
+    /** Songs of yours in the mood of what's playing, or of what you've played lately. */
+    private fun setMood(taste: Taste, first: Boolean): Pair<List<Track>, String>? {
+        var want = Music.current()?.let { Moods.of(it).take(1) } ?: emptyList()
+        if (want.isEmpty()) want = taste.recent.take(30).mapNotNull { Moods.of(it).firstOrNull() }
+            .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(2).map { it.key }
+        for (mood in want) {
+            val songs = pick(Moods.songsIn(mood), SET, used)
+            if (songs.size >= 3) return songs to (if (first) "${greeting()}, I'm your DJ. You're in a $mood mood, so let's start with “${songs[0].title}”."
+                else "Something $mood now, like “${songs[0].title}” by ${names(songs.take(1))}.")
+        }
+        return null
+    }
+
     /** Radio of what's playing (or, when no service has one of it, of a song you play a lot). */
     private fun setLike(taste: Taste): Pair<List<Track>, String>? {
         val seeds = listOfNotNull(Music.current()) + taste.recent.take(5)
@@ -264,6 +277,15 @@ object Dj {
                     .shuffled().take(n)
                 if (songs.isNotEmpty()) line = "From $name, a few you haven't played in a while, like “${songs[0].title}”."
             }
+            "mood" -> {
+                val count = fresh.mapNotNull { Moods.of(it).firstOrNull() }.groupingBy { it }.eachCount().filter { it.value >= least }
+                if (count.size > 1) {   // all of one mood: nothing to pick between
+                    var r = Random.nextInt(count.values.sum())
+                    val mood = count.entries.first { r -= it.value; r < 0 }.key
+                    songs = Moods.songsIn(mood, fresh).shuffled().take(n)
+                    line = "The $mood ones from $name, starting with “${songs[0].title}”."
+                }
+            }
             "artist" -> {
                 val lead = { s: Track -> s.artist.split(",")[0].trim() }
                 val count = fresh.groupingBy(lead).eachCount().filter { it.key.isNotEmpty() && it.value >= least }
@@ -290,6 +312,7 @@ object Dj {
         val words = WORD.findAll(text).map { it.value }.filter { it.lowercase() !in FILLER }.map { norm(it) }.filter { it.isNotEmpty() }.toList()
         if (words.isEmpty()) return null
         val hits = pool.filter { t -> val all = norm("${t.title} ${t.artist} ${t.album}"); words.all { it in all } }
+            .ifEmpty { Moods.requestMoods(text).firstNotNullOfOrNull { m -> Moods.songsIn(m, pool).ifEmpty { null } } ?: emptyList() }
         val songs = pick(hits.filter { songKey(it) !in used }.shuffled() + hits.shuffled(), SET, emptySet())
         if (songs.isEmpty()) return null
         return Built("ask", songs, "From $name, you asked for ${text.trim()}: “${songs[0].title}” by ${names(songs.take(1))} first.")
@@ -324,6 +347,10 @@ object Dj {
             val songs = pick(pick(theirs, 2, used) + (info?.top ?: emptyList()), SET, used)
             if (songs.isNotEmpty()) return Built("ask", songs, "${info?.name?.ifEmpty { null } ?: who}, coming up: some you know, and some you might not.")
         }
+        for (mood in Moods.requestMoods(asked)) {   // your songs in that mood, when the scan found some
+            val songs = pick(Moods.songsIn(mood), SET, used)
+            if (songs.size >= 3) return Built("ask", songs, "You asked for $asked: $mood songs of yours, starting with “${songs[0].title}” by ${names(songs.take(1))}.")
+        }
         val tags = tags(asked)
         for (tag in tags) {
             val songs = tagSongs(tag, taste)
@@ -355,6 +382,7 @@ object Dj {
                 "deep" -> setDeep(taste)
                 "genre" -> setGenre(taste)
                 "like" -> setLike(taste)
+                "mood" -> setMood(taste, first)
                 else -> null
             }) ?: continue
             if (kind == null) step = spot + 1

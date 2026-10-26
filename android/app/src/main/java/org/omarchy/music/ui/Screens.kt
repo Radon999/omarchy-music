@@ -38,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
 import org.omarchy.music.Dj
+import org.omarchy.music.LastFm
+import org.omarchy.music.Moods
 import org.omarchy.music.SpotifyHistory
 import org.omarchy.music.Stats
 import org.omarchy.music.Found
@@ -226,7 +228,7 @@ fun MusicTab(ui: Ui) {
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played", "dj" to "DJ").forEach { (k, l) ->
+            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played", "moods" to "Moods", "dj" to "DJ").forEach { (k, l) ->
                 Chip(l, ui.musicView == k) { ui.musicView = k; ui.openMine = null; ui.stopSelecting() }
             }
         }
@@ -243,6 +245,7 @@ fun MusicTab(ui: Ui) {
             when (ui.musicView) {
                 "playlists" -> myPlaylists(ui) { importer.launch(arrayOf("*/*")) }
                 "dj" -> djView(ui, ask) { ask = it }
+                "moods" -> moodsView(ui)
                 else -> {
                     val tracks = when (ui.musicView) {
                         "all" -> sorted(Music.mySongs(), Music.musicSort)
@@ -276,6 +279,38 @@ fun MusicTab(ui: Ui) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** Moods: a playlist of each mood your songs are in, made by itself from the mood scan. */
+private fun androidx.compose.foundation.lazy.LazyListScope.moodsView(ui: Ui) {
+    Moods.version
+    val pool = Moods.pool()
+    val todo = Moods.todo(pool).size
+    val counts = Moods.counts(pool)
+    item(key = "moods-head") {
+        if (Moods.scanning) {
+            Section(Moods.status.uppercase())
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) { Pill("Stop", quiet = true) { Moods.stop = true } }
+        } else {
+            val where = if (Music.apiKeys["chartmetric"] != null) "Chartmetric, then Last.fm"
+                else if (LastFm.key.isNotEmpty()) "Last.fm's tags" else "the songs' genres (connect Last.fm for better ones)"
+            Section((if (todo > 0) "$todo SONG${if (todo != 1) "S" else ""} NOT SCANNED YET" else "ALL ${pool.size} SONGS SCANNED") +
+                " · MOODS FROM ${where.uppercase()}")
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (todo > 0) Pill("Scan") { Moods.scanSoon() }
+                Pill("Look again", quiet = true) { Moods.scanSoon(again = true) }
+            }
+        }
+        if (counts.isNotEmpty()) Section("YOUR MOODS")
+    }
+    items(counts.size, key = { "mood-${counts[it].first}" }) { i ->
+        val (mood, n) = counts[i]
+        val songs = Moods.songsIn(mood, pool)
+        val al = Album("mood-$mood", mood.replaceFirstChar { it.uppercase() }, "Mood · $n song${if (n != 1) "s" else ""}", "", "")
+        PlaylistRow(al, songs.firstOrNull { it.thumb.isNotEmpty() || it.isFile }?.let { artModel(it) }) {
+            ui.pages += Ui.Page.AlbumPage(al, "", songs)
         }
     }
 }

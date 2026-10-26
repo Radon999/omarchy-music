@@ -3810,6 +3810,279 @@ class Stats:
 
 
 # =============================================================================
+# Moods: each of your songs' moods, from Chartmetric (with a token of yours, in
+# Settings), else Last.fm's tags of the song (or of its artist), else guessed from
+# its genre, its artist's genres on MusicBrainz, or its title. A scan reads only the songs it hasn't yet, a few a
+# second, and keeps what it found: the DJ and the mood playlists use it.
+# =============================================================================
+MOODS_FILE = CACHE / f"moods{SUFFIX}.json"
+# Each mood and the tags (Last.fm's, Chartmetric's moods and activities) that mean it.
+MOODS = {
+    "happy": ("happy", "feel good", "feelgood", "upbeat", "fun", "cheerful", "joyful", "uplifting", "summer", "sunny",
+              "positive", "optimistic", "carefree", "playful", "bright"),
+    "sad": ("sad", "melancholic", "melancholy", "depressing", "depressed", "heartbreak", "heartbroken", "lonely",
+            "sorrow", "breakup", "crying", "grief", "longing", "bittersweet", "emotional", "tearjerker"),
+    "chill": ("chill", "chillout", "chill out", "relaxing", "relax", "calm", "mellow", "lo-fi", "lofi", "easy listening",
+              "laid back", "laid-back", "smooth", "downtempo", "peaceful", "soothing", "sleep", "rainy day"),
+    "energetic": ("energetic", "energy", "hype", "workout", "gym", "running", "powerful", "intense", "fast", "exciting",
+                  "driving", "adrenaline", "pump up", "motivation", "motivational"),
+    "romantic": ("romantic", "love", "love songs", "love song", "sensual", "sexy", "slow jams", "tender", "passionate",
+                 "intimate", "seductive"),
+    "dark": ("dark", "haunting", "gothic", "ominous", "eerie", "creepy", "brooding", "sinister", "menacing", "noir",
+             "mysterious"),
+    "angry": ("aggressive", "angry", "rage", "furious", "hate", "brutal", "violent", "anger"),
+    "dreamy": ("dreamy", "ethereal", "dream pop", "dreampop", "shoegaze", "atmospheric", "hypnotic", "spacey", "trippy",
+               "psychedelic", "floating"),
+    "party": ("party", "dance", "club", "banger", "dancefloor", "dance floor", "clubbing", "groovy", "celebration"),
+    "focus": ("focus", "study", "studying", "concentration", "instrumental", "work", "reading", "coding"),
+}
+MOOD_NAMES = {m: m.title() for m in MOODS}
+# A genre (in a song's tags or Last.fm's) and the moods it usually means.
+GENRE_MOODS = {
+    "metal": ("angry", "energetic"), "metalcore": ("angry", "energetic"), "punk": ("energetic", "angry"),
+    "hardcore": ("angry", "energetic"), "grunge": ("dark", "angry"), "drum and bass": ("energetic", "party"),
+    "dnb": ("energetic", "party"), "dubstep": ("energetic", "dark"), "edm": ("party", "energetic"),
+    "house": ("party",), "techno": ("party", "energetic"), "trance": ("energetic", "dreamy"), "disco": ("party", "happy"),
+    "funk": ("party", "happy"), "dance": ("party",), "electropop": ("party", "happy"), "k-pop": ("happy", "party"),
+    "pop": ("happy",), "hip hop": ("energetic",), "hip-hop": ("energetic",), "rap": ("energetic",),
+    "trap": ("energetic", "dark"), "drill": ("dark", "energetic"), "r&b": ("romantic", "chill"), "rnb": ("romantic", "chill"),
+    "soul": ("romantic", "chill"), "neo-soul": ("chill", "romantic"), "jazz": ("chill",), "blues": ("sad",),
+    "ambient": ("focus", "dreamy"), "classical": ("focus",), "piano": ("focus", "chill"), "lo-fi": ("chill", "focus"),
+    "folk": ("chill",), "acoustic": ("chill",), "singer-songwriter": ("chill", "sad"), "shoegaze": ("dreamy",),
+    "dream pop": ("dreamy",), "post-rock": ("focus", "dreamy"), "emo": ("sad",), "darkwave": ("dark",),
+    "gothic": ("dark",), "industrial": ("dark", "angry"), "reggae": ("chill", "happy"), "reggaeton": ("party",),
+    "latin": ("party", "happy"), "gospel": ("happy",), "soundtrack": ("focus",), "synthwave": ("dreamy", "energetic"),
+    "vaporwave": ("dreamy",), "chillwave": ("chill", "dreamy"), "psychedelic": ("dreamy",), "ballad": ("sad", "romantic"),
+    "rock": ("energetic",), "art rock": ("dreamy",), "experimental": ("dark",), "experimental rock": ("dark", "dreamy"),
+    "idm": ("focus", "dreamy"), "trip hop": ("chill", "dark"), "trip-hop": ("chill", "dark"), "art pop": ("dreamy",),
+    "electronic": ("focus",), "electronica": ("focus", "dreamy"), "hauntology": ("dark", "dreamy"), "indie": ("dreamy",),
+    "indie pop": ("happy", "dreamy"), "folktronica": ("chill",), "new wave": ("happy", "party"), "synth-pop": ("happy", "party"),
+    "synthpop": ("happy", "party"), "bossa nova": ("chill", "romantic"), "country": ("happy",), "doom metal": ("dark", "sad"),
+    "black metal": ("dark", "angry"), "death metal": ("angry",), "noise": ("angry", "dark"),
+}
+# Words in a title that hint at a mood (the weakest guess there is).
+TITLE_MOODS = {
+    "love": "romantic", "lover": "romantic", "kiss": "romantic", "heart": "romantic", "baby": "romantic",
+    "cry": "sad", "crying": "sad", "tears": "sad", "alone": "sad", "lonely": "sad", "goodbye": "sad", "sorry": "sad",
+    "miss": "sad", "broken": "sad", "party": "party", "dance": "party", "dancing": "party", "club": "party",
+    "happy": "happy", "sunshine": "happy", "sun": "happy", "summer": "happy", "dream": "dreamy", "dreams": "dreamy",
+    "night": "dark", "dark": "dark", "devil": "dark", "ghost": "dark", "fire": "energetic", "run": "energetic",
+    "rage": "angry", "hate": "angry", "sleep": "chill", "rain": "chill", "slow": "chill",
+}
+MOOD_SCAN_PACE = 0.25   # seconds between Last.fm requests (it allows five a second)
+MB_PACE = 1.1           # and between MusicBrainz's (one a second)
+
+
+def mood_name(tag):
+    return str(tag.get("name") if isinstance(tag, dict) else tag or "").lower().strip()
+
+
+def moods_of(tags, n=3):
+    """The moods weighted tags [(tag, weight)] mean, the strongest first, at most n
+    (none weaker than a third of the strongest)."""
+    score = Counter()
+    for tag, w in tags:
+        t = mood_name(tag)
+        for mood, words in MOODS.items():
+            if t in words:
+                score[mood] += w
+        genre = t if t in GENRE_MOODS else " ".join(t.split()[-2:]) if " ".join(t.split()[-2:]) in GENRE_MOODS \
+            else t.split()[-1] if t.split() else ""   # "british alternative rock": alternative rock, else rock
+        for mood in GENRE_MOODS.get(genre, ()):
+            score[mood] += w * (0.5 if genre == t else 0.3)   # a genre says less than a mood tag
+    best = score.most_common()
+    return [m for m, s in best[:n] if s >= best[0][1] / 3] if best else []
+
+
+def genre_moods(track):
+    """Moods from the genre in the song's tags."""
+    genres = track.get("genre") or []
+    genres = [genres] if isinstance(genres, str) else genres
+    return moods_of([(g.strip(), 100) for genre in genres for g in re.split(r"[;/,]", str(genre)) if g.strip()], 2)
+
+
+def title_moods(track):
+    """Moods from words in the song's title (the weakest guess there is)."""
+    words = re.findall(r"[a-z']+", clean_title(track.get("title") or "").lower())
+    return list(dict.fromkeys(TITLE_MOODS[w] for w in words if w in TITLE_MOODS))[:2]
+
+
+def guess_moods(track):
+    """Moods from what the song's tags say: its genre, else words in its title."""
+    return genre_moods(track) or title_moods(track)
+
+
+def musicbrainz_tags(artist):
+    """The tags MusicBrainz's listeners gave the artist (mostly genres): [(tag, votes)]."""
+    url = "https://musicbrainz.org/ws/2/artist/?" + urllib.parse.urlencode({"query": f'artist:"{artist}"', "limit": 3, "fmt": "json"})
+    for wait in (2, 5, 0):
+        try:
+            res = http_json(url, {"User-Agent": APP_UA}, timeout=10)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 503 or not wait:   # 503: asked too often, so wait and ask again
+                raise
+            time.sleep(wait)
+    found = sorted(res.get("artists") or [], key=lambda a: -len(a.get("tags") or []))   # namesakes have no tags
+    best = best_named(found, artist, lambda a: a.get("name") or "")
+    return [(t["name"], int(t.get("count") or 0)) for t in (best or {}).get("tags") or [] if int(t.get("count") or 0) > 0]
+
+
+class Chartmetric:
+    """Chartmetric's API with your refresh token (Settings): a track's moods and activities."""
+    BASE = "https://api.chartmetric.com/api"
+
+    def __init__(self, refresh_token):
+        self.refresh_token, self.token, self.until = refresh_token, "", 0
+
+    def get(self, path, **params):
+        if not self.token or time.time() > self.until:
+            res = http_json(self.BASE + "/token", {"Content-Type": "application/json"},
+                            json.dumps({"refreshtoken": self.refresh_token}).encode(), "POST", timeout=15)
+            self.token, self.until = res.get("token") or "", time.time() + int(res.get("expires_in") or 3600) - 60
+            if not self.token:
+                raise RuntimeError("Chartmetric didn't take the token")
+        for _ in range(3):
+            try:
+                return http_json(self.BASE + path + "?" + urllib.parse.urlencode(params),
+                                 {"Authorization": f"Bearer {self.token}"}, timeout=15)
+            except urllib.error.HTTPError as e:
+                if e.code != 429:
+                    raise
+                time.sleep(min(30, int(e.headers.get("Retry-After") or 2)))   # it allows a request or two a second
+        raise RuntimeError("Chartmetric is busy")
+
+    def moods(self, artist, title):
+        """The track's mood and activity tags [(tag, weight)], [] if Chartmetric hasn't got it."""
+        lead = artist.split(",")[0].strip()
+        found = ((self.get("/search", q=f"{lead} {clean_title(title)}", type="tracks", limit=5).get("obj") or {})
+                 .get("tracks") or [])
+        best = best_named([t for t in found if similar(norm(" ".join(t.get("artist_names") or [])), norm(lead)) > 0.6
+                           or norm(lead) in norm(" ".join(t.get("artist_names") or []))],
+                          clean_title(title), lambda t: clean_title(t.get("name") or ""))
+        if not best:
+            return []
+        obj = self.get(f"/track/{best['id']}").get("obj") or {}
+        tags = []
+        for k in ("moods", "mood", "activities", "activity", "tags", "genres"):
+            v = obj.get(k) or []
+            for x in v if isinstance(v, list) else [v]:
+                if mood_name(x):
+                    tags.append((mood_name(x), 50 if k in ("tags", "genres") else 100))
+        return tags
+
+
+class Moods:
+    """Your songs' moods: {song key: {"moods": [...], "from": "chartmetric" | "lastfm" | "guess", "t"}}.
+    scan() (blocking) reads the songs it hasn't; of() and songs_in() answer from what it kept."""
+
+    def __init__(self, app):
+        self.app = app
+        self.lock = threading.Lock()
+        self.songs = read_json(MOODS_FILE, {}).get("songs") or {}
+        self.scanning, self.status, self.stop = False, "", False
+        self.artist_tags, self.mb_tags = {}, {}   # an artist's Last.fm and MusicBrainz tags, asked once a scan
+
+    @staticmethod
+    def key(t):
+        return "|".join(song_key(t))
+
+    def of(self, t):
+        return (self.songs.get(self.key(t)) or {}).get("moods") or []
+
+    def pool(self):
+        """The songs that have moods: yours, in your playlists, and the ones you play most."""
+        a, seen, out = self.app, set(), []
+        for t in a.my_songs() + [t for pl in a.lists.all() for t in pl["tracks"]] + a.most_played()[:300]:
+            k = self.key(t)
+            if k not in seen and t.get("title") and t.get("artist"):
+                seen.add(k)
+                out.append(t)
+        return out
+
+    def todo(self, pool, again=False):
+        """The songs of pool a scan reads: the new ones (again: and the guessed ones)."""
+        return [t for t in pool if self.key(t) not in self.songs or (again and self.songs[self.key(t)].get("from") == "guess")]
+
+    def find(self, t, fm, cm):
+        """(moods, where from) for one song: Chartmetric, Last.fm's song tags, its artist's, then a guess."""
+        if cm:
+            try:
+                got = moods_of(cm.moods(t["artist"], t["title"]))
+                if got:
+                    return got, "chartmetric"
+            except Exception as e:  # noqa: BLE001 -- Last.fm, then
+                print(f"omarchy-music: moods: chartmetric: {e}", file=sys.stderr)
+        if fm and fm.key:
+            lead = t["artist"].split(",")[0].strip()
+            try:
+                title = re.sub(r"\s*(?:[(\[]| - ).*$", "", t["title"]) or t["title"]   # as written, without "(Remastered)"
+                res = fm.call("track.getTopTags", artist=lead, track=title, autocorrect=1)
+                time.sleep(MOOD_SCAN_PACE)
+                tags = [(x["name"], int(x.get("count") or 0)) for x in ((res.get("toptags") or {}).get("tag") or [])[:15]
+                        if isinstance(x, dict)]
+                got = moods_of(tags)
+                if got:
+                    return got, "lastfm"
+                if norm(lead) not in self.artist_tags:
+                    self.artist_tags[norm(lead)] = fm.artist_tags(lead)
+                    time.sleep(MOOD_SCAN_PACE)
+                got = moods_of(self.artist_tags[norm(lead)], 2)
+                if got:
+                    return got, "lastfm"
+            except Exception as e:  # noqa: BLE001 -- a guess, then
+                print(f"omarchy-music: moods: last.fm: {e}", file=sys.stderr)
+        got = genre_moods(t)
+        if got:
+            return got, "guess"
+        lead = t["artist"].split(",")[0].strip()
+        if norm(lead) not in self.mb_tags:
+            try:
+                self.mb_tags[norm(lead)] = musicbrainz_tags(lead)
+            except Exception as e:  # noqa: BLE001 -- its title, then
+                print(f"omarchy-music: moods: musicbrainz: {e}", file=sys.stderr)
+                self.mb_tags[norm(lead)] = []
+            time.sleep(MB_PACE)
+        return moods_of(self.mb_tags[norm(lead)], 2) or title_moods(t), "guess"
+
+    def scan(self, again=False, progress=None):
+        """(blocking) Find the moods of the songs that have none yet; how many it read."""
+        todo = self.todo(self.pool(), again)
+        token = self.app.api_keys.get("chartmetric")
+        cm = Chartmetric(token) if token else None
+        fm = self.app.lastfm
+        self.stop, self.artist_tags, self.mb_tags = False, {}, {}
+        for i, t in enumerate(todo):
+            if self.stop:
+                break
+            if progress and i % 5 == 0:
+                progress(f"Finding your songs' moods · {i} of {len(todo)}")
+            moods, src = self.find(t, fm, cm)
+            with self.lock:
+                self.songs[self.key(t)] = {"moods": moods, "from": src, "t": time.time()}
+            if i % 25 == 24:
+                self.save()
+        self.save()
+        return len(todo)
+
+    def save(self):
+        with self.lock:
+            text = json.dumps({"songs": self.songs})
+        write_atomic(MOODS_FILE, text)
+
+    def songs_in(self, mood, pool=None):
+        """The songs of pool (all that have moods) in mood, the ones it's their strongest mood of first."""
+        hits = [(self.of(t).index(mood), i, t) for i, t in enumerate(pool if pool is not None else self.pool())
+                if mood in self.of(t)]
+        return [t for _r, _i, t in sorted(hits, key=lambda x: (x[0], x[1]))]
+
+    def counts(self, pool=None):
+        """How many songs are in each mood (the moods with none left out), most first."""
+        c = Counter(m for t in (pool if pool is not None else self.pool()) for m in self.of(t))
+        return [(m, n) for m, n in c.most_common() if m in MOODS]
+
+
+# =============================================================================
 # DJ, like Spotify's: what you play most, songs you haven't heard in a while and
 # new ones, in sets of a few songs, each begun with a line from the DJ. Your
 # history is Last.fm (when it's connected) and what you play here; the new songs
@@ -3817,12 +4090,12 @@ class Stats:
 # kind of set, and you can ask for one: a mood, a decade, a genre or an artist.
 # =============================================================================
 DJ_SET = 6   # songs in a set
-DJ_ORDER = ("repeat", "fresh", "throwback", "deep", "fresh", "genre", "like")
+DJ_ORDER = ("repeat", "fresh", "mood", "throwback", "deep", "fresh", "genre", "like")
 # Playing from songs you picked (a playlist, a folder, an album): sets of only those.
-DJ_FROM_ORDER = ("loved", "unplayed", "artist", "throwback", "mix")
+DJ_FROM_ORDER = ("loved", "unplayed", "mood", "artist", "throwback", "mix")
 DJ_KINDS = {"repeat": "On repeat", "fresh": "New for you", "throwback": "Throwback", "deep": "Deep cuts",
             "genre": "Your genre", "like": "More like this", "ask": "You asked", "loved": "Your favourites",
-            "unplayed": "Not played yet", "artist": "One artist", "mix": "Mix"}
+            "unplayed": "Not played yet", "artist": "One artist", "mix": "Mix", "mood": "Your mood"}
 # Words in a request and the Last.fm tags they mean.
 DJ_MOODS = {
     "chill": ("chill", "chillout"), "chilled": ("chill", "chillout"), "relax": ("chill", "relaxing"),
@@ -3859,6 +4132,14 @@ def dj_tags(text):
     if not tags and every:
         tags.append(" ".join(every))
     return list(dict.fromkeys(tags))
+
+
+def request_moods(text):
+    """The moods (of MOODS) a request's words mean: "something to chill to" is chill."""
+    out = []
+    for w in re.findall(r"[\w'-]+", text.lower()):
+        out += moods_of([(c, 1) for c in {w, *DJ_MOODS.get(w, ())} if any(c in words for words in MOODS.values())], 1)
+    return list(dict.fromkeys(out))
 
 
 def dj_pick(pool, n, used, rng=random):
@@ -4020,6 +4301,21 @@ class DJ:
             return None
         return songs, f"Some {tag}, since you've been playing {dj_names([{'artist': lead[0]}])} so much."
 
+    def set_mood(self, taste, first):
+        """Songs of yours in the mood of what's playing, or of what you've played lately."""
+        moods = self.app.moods
+        cur = self.app.current_track()
+        want = moods.of(cur)[:1] if cur else []
+        if not want:
+            count = Counter(m for t in taste["recent"][:30] for m in moods.of(t)[:1])
+            want = [m for m, _n in count.most_common(2)]
+        for mood in want:
+            songs = dj_pick(moods.songs_in(mood), DJ_SET, self.used)
+            if len(songs) >= 3:
+                return songs, (f"Something {mood} now, like “{songs[0]['title']}” by {dj_names(songs[:1])}." if not first else
+                               f"{greeting()}, I'm your DJ. You're in a {mood} mood, so let's start with “{songs[0]['title']}”.")
+        return None
+
     def set_like(self, taste, first):
         """Radio of what's playing (or, when no service has one of it, of a song you play a lot)."""
         seeds = [t for t in [self.app.current_track()] + taste["recent"][:5] if t]
@@ -4084,6 +4380,14 @@ class DJ:
             songs = random.sample(old, min(n, len(old)))
             if songs:
                 line = f"From {name}, a few you haven't played in a while, like “{songs[0]['title']}”."
+        elif kind == "mood":
+            count = Counter(m for t in fresh for m in self.app.moods.of(t)[:1])
+            who = [m for m, c in count.items() if c >= least]
+            if len(who) > 1:   # all of one mood: nothing to pick between
+                mood = random.choices(who, weights=[count[m] for m in who])[0]
+                theirs = self.app.moods.songs_in(mood, fresh)
+                songs = random.sample(theirs, min(n, len(theirs)))
+                line = f"The {mood} ones from {name}, starting with “{songs[0]['title']}”."
         elif kind == "artist":
             count = Counter((t.get("artist") or "").split(",")[0].strip() for t in fresh)
             who = [a for a, c in count.items() if a and c >= least]
@@ -4109,6 +4413,10 @@ class DJ:
             return None
         hits = [t for t in pool if all(w in norm(" ".join(str(t.get(k) or "") for k in ("title", "artist", "album", "genre")))
                                        for w in words)]
+        for mood in request_moods(text) if not hits else ():
+            hits = self.app.moods.songs_in(mood, pool)
+            if hits:
+                break
         unplayed = [t for t in hits if song_key(t) not in self.used]
         songs = dj_pick(random.sample(unplayed, len(unplayed)) + random.sample(hits, len(hits)), DJ_SET, set())
         if not songs:
@@ -4148,6 +4456,11 @@ class DJ:
             songs = dj_pick(pool, DJ_SET, self.used)
             if songs:
                 return "ask", songs, f"{info.get('name') or who}, coming up: some you know, and some you might not."
+        for mood in request_moods(text):   # your songs in that mood, when the scan found some
+            songs = dj_pick(self.app.moods.songs_in(mood), DJ_SET, self.used)
+            if len(songs) >= 3:
+                return "ask", songs, (f"You asked for {text.strip()}: {mood} songs of yours, starting with "
+                                      f"“{songs[0]['title']}” by {dj_names(songs[:1])}.")
         for tag in dj_tags(text):
             songs = self.tag_songs(tag, taste)
             if len(songs) >= 3:
@@ -6034,6 +6347,7 @@ class MusicWindow(Adw.ApplicationWindow):
                    ("playlists", "Playlists", "The playlists you make here"),
                    ("recent", "Recent", "Recently played"),
                    ("top", "Most played", "The songs you play most"),
+                   ("moods", "Moods", "Playlists that make themselves: your songs by mood"),
                    ("dj", "DJ", "Your DJ: songs you love, ones you haven't heard in a while and new ones, in sets"))
     # How All is sorted: by title, by artist or album (in groups), or newest first.
     MUSIC_SORTS = (("title", "Title"), ("artist", "Artist"), ("album", "Album"), ("added", "Added"))
@@ -6098,6 +6412,9 @@ class MusicWindow(Adw.ApplicationWindow):
         if view == "dj":
             self.refresh_dj()
             return
+        if view == "moods":
+            self.refresh_moods()
+            return
         sort = a.music_sort
         if view == "all":
             tracks = a.my_songs()
@@ -6159,6 +6476,35 @@ class MusicWindow(Adw.ApplicationWindow):
         if keep:   # the same list with a song more or less: stay where you were in it
             lst.flush()
             GLib.idle_add(lambda: (sw.get_vadjustment().set_value(keep), False)[1])
+
+    def refresh_moods(self):
+        """Moods: a playlist of each mood your songs are in, kept up to date by itself."""
+        lst, m = self.music_list, self.app.moods
+        self._music_sig = None
+        pool = m.pool()
+        todo = len(m.todo(pool))
+        counts = m.counts(pool)
+        lst.remove_all()
+        if m.scanning:
+            self.section(lst, m.status.upper())
+            self.actions_row(lst, [("Stop", lambda _b: setattr(m, "stop", True), True)])
+        else:
+            where = ("Chartmetric, then Last.fm" if self.app.api_keys.get("chartmetric") else
+                     "Last.fm's tags" if self.app.lastfm.key else "the songs' genres (connect Last.fm for better ones)")
+            self.section(lst, (f"{todo} SONG{'S' if todo != 1 else ''} NOT SCANNED YET" if todo else
+                               f"ALL {len(pool)} SONGS SCANNED") + f" · MOODS FROM {where.upper()}")
+            buttons = [("Scan", lambda _b: self.app.scan_moods(), False)] if todo else []
+            buttons.append(("Look again", lambda _b: self.app.scan_moods(again=True), True))
+            self.actions_row(lst, buttons)
+        if not counts:
+            return
+        self.section(lst, "YOUR MOODS")
+        for mood, n in counts:
+            songs = m.songs_in(mood, pool)
+            lst.append(PlaylistRow(self, {"kind": "album", "id": f"mood-{mood}", "title": MOOD_NAMES[mood], "thumb": "",
+                                          "sub": f"Mood · {n} song{'s' if n != 1 else ''}", "tracks": songs},
+                                   cover=next((t for t in songs if t.get("thumb") or source_of(t) == "file"), None),
+                                   icon="emblem-music-symbolic"))
 
     def refresh_dj(self):
         """The DJ: what it said last, Start or Switch it up, a box to ask it for something, and its songs to come."""
@@ -8540,6 +8886,7 @@ class MusicApp(Adw.Application):
         self.spotify_history = SpotifyHistory()
         self.stats = Stats(self)   # every play added up: Most played, the Artists tab, artist pages
         self.pictures = Pictures(lambda: self.api_keys)   # artists' pictures and bios, album covers
+        self.moods = Moods(self)   # your songs' moods: the DJ and the mood playlists
         self.stats.watchers.append(self.stats_changed)
         self.streaming = False     # what's playing comes from Tidal's stream, not a file
         self.stream_retry = -1     # the load_seq whose broken stream was picked up again already
@@ -9754,6 +10101,27 @@ class MusicApp(Adw.Application):
         self.spotify_history.clear()
         self.stats.refresh(force=True)
         self.refresh_accounts_soon()
+
+    def scan_moods(self, again=False):
+        """Find the moods of the songs that have none yet (again: and look again at the guessed ones), in the background."""
+        m = self.moods
+        if m.scanning:
+            return
+        m.scanning, m.status = True, "Finding your songs' moods…"
+
+        def progress(text):
+            m.status = text
+            GLib.idle_add(lambda: (self.win and self.win.music_view == "moods" and self.win.refresh_music(), False)[1])
+
+        def done(n, err):
+            m.scanning, m.status = False, ""
+            if err:
+                self.toast(f"Couldn't finish the mood scan: {str(err)[:80]}")
+            elif n:
+                self.toast(f"Moods found for {n} song{'s' if n != 1 else ''}")
+            if self.win:
+                self.win.refresh_music()
+        in_thread(lambda: m.scan(again, progress), done=done)
 
     def set_api_keys(self, keys):
         self.api_keys = {k: v for k, v in keys.items() if k in API_KEYS and v}
