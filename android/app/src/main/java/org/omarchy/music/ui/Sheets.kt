@@ -96,6 +96,7 @@ fun Sheets(ui: Ui) {
     ui.folderFor?.let { item -> FolderPicker(ui, item) }
     ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
     DeleteDialog(ui)
+    Music.importReport?.let { ImportReportDialog(it) }
     ui.coverFor?.let { albums -> CoverDialog(ui, albums) }
     ui.artistPictureFor?.let { name -> ArtistPictureDialog(ui, name) }
     ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }

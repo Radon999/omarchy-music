@@ -813,15 +813,16 @@ class Playlists:
         self.items = [p for p in self.items if p["id"] != pid]
         self.save()
 
-    def add(self, pid, tracks):
-        """Add tracks to the end; returns how many weren't in it already."""
+    def add(self, pid, tracks, at=None):
+        """Add tracks to the end (or at index at); returns how many weren't in it already."""
         pl = self.get(pid)
         if not pl:
             return 0
         have = {t["id"] for t in pl["tracks"]}
         new = [slim(t) for t in tracks if t["id"] not in have and not have.add(t["id"])]
         if new:
-            pl["tracks"] += new
+            at = len(pl["tracks"]) if at is None else max(0, min(at, len(pl["tracks"])))
+            pl["tracks"][at:at] = new
             pl["updated"] = time.time()
             self.save()
         return len(new)
@@ -6652,6 +6653,170 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.app.import_playlist(f.get_path())
         dlg.open(self, None, chosen)
 
+    def import_report(self, pid, name, missed):
+        """What an imported playlist's songs weren't found (import_m3u's missed): look for each on
+        another service, and add the right one to the playlist where it was, or download it too."""
+        a = self.app
+        sources = a.report_sources()
+        left, placed = list(missed), []
+        dlg = Adw.Dialog(title="Not found", content_width=600, content_height=640)
+        page = Adw.ToolbarView()
+        page.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=14, margin_end=14, margin_bottom=14)
+        head = Gtk.Label(xalign=0, wrap=True)
+        head.add_css_class("title-4")
+        sub = Gtk.Label(label="Look for them on another service, then pick the right one: it goes into the playlist "
+                              "where it was.", xalign=0, wrap=True)
+        sub.add_css_class("service")
+        bar = Gtk.Box(spacing=8)
+        bar.append(Gtk.Label(label="Look on"))
+        pick = Gtk.DropDown.new_from_strings([n for _k, n in sources] or ["YouTube Music"])
+        bar.append(pick)
+        try_all = Gtk.Button(label="Try them all")
+        bar.append(try_all)
+        status = Gtk.Label(xalign=0, wrap=True)
+        status.add_css_class("service")
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scroll = Gtk.ScrolledWindow(child=rows, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        copy, done = Gtk.Button(label="Copy the list"), Gtk.Button(label="Done")
+        done.add_css_class("suggested-action")
+        buttons.append(copy)
+        buttons.append(done)
+        for w in (head, sub, bar, status, scroll, buttons):
+            box.append(w)
+        page.set_content(box)
+        dlg.set_child(page)
+        can_download = bool(a.dl.tidal and a.dl.tidal.connected)
+
+        def counted():
+            head.set_label(f"{len(left)} of {len(missed)} songs in “{name}” weren't found" if left else
+                           f"Every song in “{name}” is in it now")
+            try_all.set_sensitive(bool(left) and bool(sources))
+
+        def source():
+            k, n = sources[pick.get_selected()] if sources else ("ytm", "YouTube Music")
+            return k, n, a.sources.get(k)
+
+        def add(item, parts, track, download):
+            if not a.place_missed(pid, item, track, placed):
+                status.set_label("That one's in the playlist already")
+                return
+            left.remove(item)
+            parts["name"].set_label(f"Added: {track['title']}")
+            parts["about"].set_label(track["artist"] + (" · downloading" if download else ""))
+            parts["find"].set_visible(False)
+            parts["hits"].set_visible(False)
+            if download:
+                a.download([track])
+            counted()
+
+        def show_hits(item, parts, found, err, n):
+            hits = parts["hits"]
+            while c := hits.get_first_child():
+                hits.remove(c)
+            best, all_ = found or (None, [])
+            all_ = ([best] if best else []) + [h for h in all_ if h is not best]
+            if err or not all_:
+                note = Gtk.Label(label=f"{n} didn't answer: {str(err)[:80]}" if err else f"Nothing on {n}",
+                                 xalign=0, wrap=True)
+                note.add_css_class("service")
+                hits.append(note)
+            for h in all_[:6]:
+                line = Gtk.Box(spacing=6)
+                lab = Gtk.Label(label=f"{h['title']} · {h['artist']}" + (f" · {fmt_time(h['duration'])}" if h.get("duration") else ""),
+                                xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, tooltip_text=h.get("album") or None)
+                if h is best:
+                    lab.add_css_class("accent")
+                line.append(lab)
+                b = Gtk.Button(label="Add", valign=Gtk.Align.CENTER)
+                b.connect("clicked", lambda _b, h=h: add(item, parts, h, False))
+                line.append(b)
+                if can_download:
+                    d = Gtk.Button(icon_name="folder-download-symbolic", valign=Gtk.Align.CENTER,
+                                   tooltip_text="Add it and download it")
+                    d.connect("clicked", lambda _b, h=h: add(item, parts, h, True))
+                    line.append(d)
+                hits.append(line)
+            hits.set_visible(True)
+
+        def find(item, parts):
+            k, n, src = source()
+            if not src:
+                status.set_label(f"{n} isn't connected")
+                return
+            parts["find"].set_sensitive(False)
+            status.set_label(f"Looking for “{item['title']}” on {n}…")
+
+            def found(res, err):
+                parts["find"].set_sensitive(True)
+                status.set_label("")
+                show_hits(item, parts, res, err, n)
+            in_thread(a.match_song, src, item["artist"], item["title"], item["secs"], done=found)
+
+        parts_of = {}
+        for item in missed:
+            row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            top = Gtk.Box(spacing=8)
+            words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+            nm = Gtk.Label(label=item["title"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            nm.add_css_class("heading")
+            about = Gtk.Label(label=" · ".join(x for x in (item["artist"], item["why"]) if x), xalign=0,
+                              ellipsize=Pango.EllipsizeMode.END, tooltip_text=item["loc"])
+            about.add_css_class("service")
+            words.append(nm)
+            words.append(about)
+            top.append(words)
+            fb = Gtk.Button(label="Find", valign=Gtk.Align.CENTER, sensitive=bool(item["title"]))
+            top.append(fb)
+            hits = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_start=12, visible=False)
+            row.append(top)
+            row.append(hits)
+            rows.append(row)
+            parts = {"name": nm, "about": about, "find": fb, "hits": hits}
+            parts_of[item["n"]] = parts
+            fb.connect("clicked", lambda _b, item=item, parts=parts: find(item, parts))
+
+        def all_of_them(_b):
+            k, n, src = source()
+            if not src:
+                status.set_label(f"{n} isn't connected")
+                return
+            todo = list(left)
+            try_all.set_sensitive(False)
+            status.set_label(f"Looking for {len(todo)} song{'s' if len(todo) != 1 else ''} on {n}…")
+
+            def work():
+                out = []
+                for item in todo:
+                    try:
+                        out.append((item, a.match_song(src, item["artist"], item["title"], item["secs"]), None))
+                    except Exception as e:  # noqa: BLE001 -- that one says why
+                        out.append((item, None, e))
+                return out
+
+            def finished(res, _err):
+                got = 0
+                for item, found, err in res or []:
+                    if item not in left:
+                        continue   # picked by hand meanwhile
+                    if found and found[0] and item["artist"]:   # (a title alone, "track07", is anyone's)
+                        add(item, parts_of[item["n"]], found[0], False)
+                        got += 1
+                    else:
+                        show_hits(item, parts_of[item["n"]], found, err, n)
+                status.set_label(f"Found {got} of {len(todo)} on {n}" + (": the rest show what came closest." if got < len(todo) else "."))
+                counted()
+            in_thread(work, done=finished)
+        try_all.connect("clicked", all_of_them)
+        copy.connect("clicked", lambda _b: (self.get_clipboard().set_content(Gdk.ContentProvider.new_for_value(
+            "\n".join(missed_name(m) for m in left))), status.set_label("Copied the list of what's still missing")))
+        done.connect("clicked", lambda _b: dlg.close())
+        if not sources:
+            status.set_label("Connect a service in the accounts menu to look for these.")
+        counted()
+        dlg.present(self)
+
     def pick_spotify_history(self):
         """Pick the zip Spotify's privacy page gave you (or one of its .json files)."""
         filt = Gtk.FileFilter(name="Spotify's data download (.zip, .json)")
@@ -10147,6 +10312,11 @@ def album_key(t):
     return norm((t.get("artist") or "").split(",")[0]), norm(bare_title(t.get("album") or "")) or "#" + t.get("id", "")
 
 
+def missed_name(m):
+    """A song an import didn't find, as "Artist - Title"."""
+    return f"{m['artist']} - {m['title']}" if m.get("artist") else m["title"]
+
+
 def song_line(t):
     return f"{t['title']} · {t['artist']}"
 
@@ -10993,9 +11163,11 @@ class MusicApp(Adw.Application):
 
     # ---- importing an .m3u8 playlist ----
     def import_m3u(self, path, progress=lambda i, n: None):
-        """(blocking) The songs of the .m3u/.m3u8 playlist at path: (name, songs, names not found).
+        """(blocking) The songs of the .m3u/.m3u8 playlist at path: (name, songs, missed).
         Each is a file of yours (where the playlist says, else the same file name in your folders),
-        else the same song in your music, else the best match on Tidal (YouTube Music without it)."""
+        else the same song in your music, else the best match on Tidal (YouTube Music without it).
+        missed: the songs that weren't found, each {"n" (its line), "at" (where in songs it goes),
+        "artist", "title", "secs", "loc", "why"} (see the import report)."""
         path = Path(path)
         entries = read_m3u(path)
         mine = self.my_songs()
@@ -11012,12 +11184,12 @@ class MusicApp(Adw.Application):
         out, missed = [], []
         for i, (loc, artist, title, secs) in enumerate(entries):
             progress(i, len(entries))
-            t = None
+            t, why = None, "not found"
             if re.match(r"https?://", loc):
                 try:
                     t = (self.resolve_query(loc) or [None])[0] if link_source(loc) else None
-                except Exception:  # noqa: BLE001 -- by its name, then
-                    t = None
+                except Exception as e:  # noqa: BLE001 -- by its name, then
+                    t, why = None, f"its link didn't open ({str(e)[:60]})"
             else:
                 where = urllib.parse.unquote(loc[7:]) if loc.startswith("file://") else loc
                 where = where.replace("\\", "/")
@@ -11035,29 +11207,52 @@ class MusicApp(Adw.Application):
                 t = by_key.get(song_key({"title": title, "artist": artist}))
             if t is None and title and src:
                 try:
-                    hits = src.search(f"{artist} {bare_title(title)}".strip())[:8]
-                except Exception:  # noqa: BLE001 -- not found, then
-                    hits = []
-                best, best_score = None, 0.0
-                for h in hits:
-                    if secs and h.get("duration") and abs(h["duration"] - secs) > 8:
-                        continue
-                    score = similar(clean_title(title), clean_title(h["title"]))
-                    if artist:
-                        lead = max((similar(x, y) for x in artist_names([artist]) for y in artist_names(h["artist"].split(","))),
-                                   default=0.0)
-                        if lead < 0.6:
-                            continue
-                        score = 0.6 * score + 0.4 * lead
-                    if score >= 0.7 and score > best_score:
-                        best, best_score = h, score
-                t = best
+                    t = self.match_song(src, artist, title, secs)[0]
+                except Exception as e:  # noqa: BLE001 -- not found, then: the report says why
+                    why = f"{'Tidal' if src is tidal else 'YouTube Music'} didn't answer ({str(e)[:60]})"
             if t is not None:
                 out.append(t)
             else:
-                missed.append(f"{artist} - {title}" if artist else title or loc)
+                missed.append({"n": i, "at": len(out), "artist": artist, "title": title or Path(loc).stem or loc,
+                               "secs": secs, "loc": loc, "why": why if title else "the playlist doesn't name it"})
         progress(len(entries), len(entries))
         return path.stem, out, missed
+
+    @staticmethod
+    def match_song(src, artist, title, secs=0):
+        """(blocking) The song on src, the service: (its best match or None, what the search
+        found). A match is near enough in title, by the same lead artist (when there's one),
+        and as long give or take 8 s (when that's known). Raises when src can't be reached."""
+        hits = src.search(f"{artist} {bare_title(title)}".strip())[:8]
+        best, best_score = None, 0.0
+        for h in hits:
+            if secs and h.get("duration") and abs(h["duration"] - secs) > 8:
+                continue
+            score = similar(clean_title(title), clean_title(h["title"]))
+            if artist:
+                lead = max((similar(x, y) for x in artist_names([artist]) for y in artist_names(h["artist"].split(","))),
+                           default=0.0)
+                if lead < 0.6:
+                    continue
+                score = 0.6 * score + 0.4 * lead
+            if score >= 0.7 and score > best_score:
+                best, best_score = h, score
+        return best, hits
+
+    def report_sources(self):
+        """[(key, name)] of the services a song that wasn't found can be looked for on."""
+        return [(k, SOURCES[k]) for k in ("ytm", "tidal", "apple", "spotify")
+                if k in self.sources and (k != "tidal" or self.sources[k].signed_in)]
+
+    def place_missed(self, pid, item, track, placed):
+        """Put track, found for item (one import_m3u missed), where it was in the playlist;
+        placed: the items put back already (it's added to them)."""
+        at = item["at"] + sum(1 for o in placed if o["n"] < item["n"])
+        if self.lists.add(pid, [track], at=at):
+            placed.append(item)
+            self.playlists_changed()
+            return True
+        return False
 
     def songs_by(self, name):
         """Your songs by the artist called name: downloaded, in your folders or playlists, or played."""
@@ -11195,8 +11390,8 @@ class MusicApp(Adw.Application):
                 self.toast(f"Couldn't import it: {str(err)[:100]}")
                 return
             name, tracks, missed = res
-            if not tracks:
-                self.toast(f"None of the {len(missed)} songs in {Path(path).name} were found")
+            if not tracks and not missed:
+                self.toast(f"There are no songs in {Path(path).name}")
                 return
             pid = self.new_playlist(name)
             self.lists.add(pid, tracks)
@@ -11204,7 +11399,9 @@ class MusicApp(Adw.Application):
             self.toast(f"Imported {len(tracks)} song{'s' if len(tracks) != 1 else ''} into “{name}”"
                        + (f" · {len(missed)} not found" if missed else ""))
             if missed:
-                print(f"{Path(path).name}: not found: " + "; ".join(missed[:50]), file=sys.stderr)
+                print(f"{Path(path).name}: not found: " + "; ".join(missed_name(m) for m in missed[:50]), file=sys.stderr)
+                if self.win:
+                    self.win.import_report(pid, name, missed)
         in_thread(self.import_m3u, path, progress, done=done)
 
     def new_playlist(self, name, show=True):

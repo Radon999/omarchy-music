@@ -56,4 +56,15 @@ class ImportTest {
         assertEquals(listOf("3"), localMatches(songs, "abbey road").songs.map { it.id })
         assertEquals(true, localMatches(songs, "  ").isEmpty)
     }
+
+    @Test fun missedSongsGoBackWhereTheyWere() {
+        fun m(n: Int, at: Int) = Missed(n, at, "", "x$n", 0, "", "not found")
+        // a b [1] c [3] [4] e: songs found a, b, c, e; missed lines 2, 4, 5 (at 2, 3, 3)
+        val two = m(2, 2); val four = m(4, 3); val five = m(5, 3)
+        val list = mutableListOf("a", "b", "c", "e")
+        val placed = ArrayList<Missed>()
+        for (x in listOf(five, two, four)) { list.add(missedAt(x, placed), x.title); placed += x }
+        assertEquals(listOf("a", "b", "x2", "c", "x4", "x5", "e"), list)
+        assertEquals("Nobody - Lost", Missed(0, 0, "Nobody", "Lost", 0, "", "").name)
+    }
 }

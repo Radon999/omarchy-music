@@ -75,6 +75,7 @@ object Music {
     var browseLocal by mutableStateOf(false)   // Local picked in the source bar: your own songs, no Library tab
     private var searchBeforeLocal = "tidal"     // where the search looked before
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
+    var importReport by mutableStateOf<ImportReport?>(null)   // what the last one didn't find, to look for
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
     var syncing by mutableStateOf(false)
@@ -463,11 +464,11 @@ object Music {
     }
 
     // ---- importing an .m3u8 playlist ----
-    /** (blocking) The songs of the .m3u/.m3u8 playlist at uri: (name, songs, names not found).
+    /** (blocking) The songs of the .m3u/.m3u8 playlist at uri: (name, songs, those not found).
      *  Each is a file on the phone (where the playlist says, else one by the same name in the
      *  same folder), else the same song in your music, else the best match on Tidal (YouTube
      *  Music without it). */
-    fun importM3u(uri: android.net.Uri): Triple<String, List<Track>, List<String>> {
+    fun importM3u(uri: android.net.Uri): Triple<String, List<Track>, List<Missed>> {
         val cr = ctx.contentResolver
         val fileName = runCatching {
             cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
@@ -492,15 +493,18 @@ object Music {
         for (t in phone.values + mine) byKey.putIfAbsent(songKey(t), t)
         val src = sources["tidal"]?.takeIf { it.signedIn } ?: sources["ytm"]
         val out = ArrayList<Track>()
-        val missed = ArrayList<String>()
+        val missed = ArrayList<Missed>()
         for ((i, e) in entries.withIndex()) {
             importing = "Finding the songs of $fileName… ${i + 1} of ${entries.size}"
             var t: Track? = null
+            var why = "not found"
             var artist = e.artist
             var title = e.title
             if (Regex("^https?://").containsMatchIn(e.loc)) {
                 val from = linkSource(e.loc)?.let { sources[it] }
-                if (from != null) t = runCatching { from.search(e.loc).firstOrNull() }.getOrNull()
+                if (from != null) t = try { from.search(e.loc).firstOrNull() } catch (x: Exception) {
+                    why = "its link didn't open (${x.message?.take(60)})"; null
+                }
             } else {
                 var where = (if (e.loc.startsWith("file://")) android.net.Uri.decode(e.loc.substring(7)) else e.loc).replace('\\', '/')
                 where = where.replace(Regex("^(/storage/emulated/\\d+|/sdcard|/storage/self/primary)/"), "")
@@ -515,12 +519,36 @@ object Music {
             }
             if (t == null && title.isNotEmpty()) t = byKey[songKey(Track("", title = title, artist = artist))]
             if (t == null && title.isNotEmpty() && src != null) {
-                val hits = runCatching { src.search("$artist ${bareTitle(title)}".trim()).take(8) }.getOrDefault(emptyList())
-                t = bestMatch(hits, artist, title, e.seconds)
+                t = try { matchSong(src, artist, title, e.seconds).first } catch (x: Exception) {
+                    why = "${src.name} didn't answer (${x.message?.take(60)})"; null
+                }
             }
-            if (t != null) out += t.slim() else missed += if (artist.isNotEmpty()) "$artist - $title" else title.ifEmpty { e.loc }
+            if (t != null) out += t.slim()
+            else missed += Missed(i, out.size, artist, title.ifEmpty { e.loc.substringAfterLast('/').substringBeforeLast('.').ifEmpty { e.loc } },
+                e.seconds, e.loc, if (title.isNotEmpty()) why else "the playlist doesn't name it")
         }
         return Triple(fileName.substringBeforeLast('.'), out, missed)
+    }
+
+    /** What an import didn't find, into the playlist id (see ImportReportDialog). */
+    data class ImportReport(val id: String, val name: String, val missed: List<Missed>)
+
+    /** (blocking) The song on src: (its best match or null, what the search found). Throws when src can't be reached. */
+    fun matchSong(src: Source, artist: String, title: String, seconds: Int): Pair<Track?, List<Track>> {
+        val hits = src.search("$artist ${bareTitle(title)}".trim()).take(8)
+        return bestMatch(hits, artist, title, seconds) to hits
+    }
+
+    /** The services a song an import didn't find can be looked for on: [(key, name)]. */
+    fun reportSources(): List<Pair<String, String>> =
+        SOURCES.filter { (k, _) -> sources[k]?.let { k != "tidal" || it.signedIn } == true }.toList()
+
+    /** Put t, found for m, back where m was in the playlist id; placed: the ones put back already (m joins them). */
+    fun placeMissed(id: String, m: Missed, t: Track, placed: MutableList<Missed>): Boolean {
+        if (lists.add(id, listOf(t), at = missedAt(m, placed)) == 0) return false
+        placed += m
+        musicVersion++
+        return true
     }
 
     /** Make a playlist of yours from the .m3u8 at uri, named after the file. */
@@ -531,12 +559,12 @@ object Music {
             importing = null
             if (res == null) { toast("Couldn't import it: ${err?.message?.take(100)}"); return@bg }
             val (name, tracks, missed) = res
-            if (tracks.isEmpty()) { toast("None of the ${missed.size} songs in “$name” were found"); return@bg }
             val id = lists.create(name).id
             lists.add(id, tracks)
             musicVersion++
-            missed.forEach { android.util.Log.i("omarchy-music", "import $name: not found: $it") }
+            missed.forEach { android.util.Log.i("omarchy-music", "import $name: not found: ${it.name} (${it.why})") }
             toast("Imported “$name”: ${tracks.size} songs" + if (missed.isNotEmpty()) " (${missed.size} not found)" else "")
+            if (missed.isNotEmpty()) importReport = ImportReport(id, name, missed)
         }
     }
 

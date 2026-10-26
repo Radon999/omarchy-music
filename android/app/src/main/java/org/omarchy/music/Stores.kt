@@ -258,13 +258,16 @@ class Playlists(ctx: Context) {
         save()
     }
 
-    /** Add tracks to the end; returns how many weren't in it already. */
+    /** Add tracks to the end (or at index at); returns how many weren't in it already. */
     @Synchronized
-    fun add(id: String, tracks: List<Track>): Int {
+    fun add(id: String, tracks: List<Track>, at: Int? = null): Int {
         val pl = get(id) ?: return 0
         val have = pl.tracks.map { it.id }.toMutableSet()
         val new = tracks.filter { have.add(it.id) }.map { it.slim() }
-        if (new.isNotEmpty()) edit(id) { it.copy(tracks = it.tracks + new, updated = now()) }
+        if (new.isNotEmpty()) edit(id) {
+            val i = (at ?: it.tracks.size).coerceIn(0, it.tracks.size)
+            it.copy(tracks = it.tracks.take(i) + new + it.tracks.drop(i), updated = now())
+        }
         return new.size
     }
 

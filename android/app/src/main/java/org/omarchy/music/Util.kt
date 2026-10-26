@@ -243,6 +243,15 @@ fun readM3u(raw: ByteArray): List<M3uEntry> {
     return out
 }
 
+/** A song an imported playlist's import didn't find: its line in the file (n), where among the
+ *  songs that were found it goes (at), and why it wasn't found. */
+data class Missed(val n: Int, val at: Int, val artist: String, val title: String, val seconds: Int, val loc: String, val why: String) {
+    val name get() = if (artist.isNotEmpty()) "$artist - $title" else title
+}
+
+/** Where m goes back in its playlist: its place, after the ones of placed (put back already) that were before it. */
+fun missedAt(m: Missed, placed: List<Missed>) = m.at + placed.count { it.n < m.n }
+
 /** (artist, title) from a song file's name: "Artist - Title.flac", "01 Title.flac". */
 fun namesFromFile(path: String): Pair<String, String> {
     val stem = Regex("^\\d{1,3}[\\s.\\-_]+").replace(path.substringAfterLast('/').substringBeforeLast('.'), "")
