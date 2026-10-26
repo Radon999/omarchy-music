@@ -5126,13 +5126,14 @@ class TrackCell(Gtk.Box):
         menu = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)   # right-click: play next, add to queue…
         menu.connect("pressed", lambda _g, _n, x, y: self.row and win.track_menu(self.row, x, y))
         self.add_controller(menu)
-        ctrl = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)     # Ctrl+click: select it
+        ctrl = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)     # Ctrl+click: select it; Shift+click: up to it
+        ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)   # before the tick box takes a Shift+click on it
         ctrl.connect("pressed", self.on_press)
         self.add_controller(ctrl)
         box = Gtk.Box(spacing=10)
         self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=False)
         self.check.add_css_class("pick")
-        self.check.connect("toggled", lambda c: not self.binding and self.row and self.row.check.set_active(c.get_active()))
+        self.check.connect("toggled", self.on_check)
         box.append(self.check)
         frame, self.pic = art_widget(42)
         box.append(frame)
@@ -5223,6 +5224,14 @@ class TrackCell(Gtk.Box):
         else:
             mark = None
         return mark
+
+    def on_check(self, c):
+        """Its tick box ticked by hand: picked, and where a Shift+click picks from."""
+        if self.binding or not self.row:
+            return
+        self.row.check.set_active(c.get_active())
+        if c.get_active():
+            self.win.anchor = self.row.index
 
     def on_press(self, gesture, _n, _x, _y):
         row = self.row
