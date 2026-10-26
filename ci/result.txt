@@ -1,118 +1,54 @@
-run 40289360937 · Mon Oct 26 08:03:30 UTC 2026
+run 40290563500 · Mon Oct 26 08:14:10 UTC 2026
 BUILD FAILED
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:76:26 Unresolved reference 'WebLogin'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:76:61 Unresolved reference 'it'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:76:96 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:77:73 Argument type mismatch: actual type is 'kotlin.Any', but 'kotlin.String' was expected.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:79:24 Unresolved reference 'WebLogin'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:81:15 Unresolved reference 'it'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:81:93 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:84:26 Unresolved reference 'WebLogin'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:84:120 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:87:28 Unresolved reference 'WebLogin'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:87:67 Unresolved reference 'it'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:87:122 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:88:76 Argument type mismatch: actual type is 'kotlin.Any', but 'kotlin.String' was expected.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:90:27 Unresolved reference 'WebLogin'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:90:72 Unresolved reference 'it'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:90:81 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:97:37 Unresolved reference 'TagsDialog'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:98:5 Unresolved reference 'DeleteDialog'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:107:45 Unresolved reference 'DupeDownloadDialog'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:108:5 Unresolved reference 'Trasher'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:109:5 Unresolved reference 'Exporter'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:110:47 Unresolved reference 'NameDialog'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:110:121 Unresolved reference 'it'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:745:17 None of the following candidates is applicable:
-@Composable() @ComposableTarget(...) fun Text(text: AnnotatedString, modifier: Modifier = ..., color: Color = ..., fontSize: TextUnit = ..., fontStyle: FontStyle? = ..., fontWeight: FontWeight? = ..., fontFamily: FontFamily? = ..., letterSpacing: TextUnit = ..., textDecoration: TextDecoration? = ..., textAlign: TextAlign? = ..., lineHeight: TextUnit = ..., overflow: TextOverflow = ..., softWrap: Boolean = ..., maxLines: Int = ..., minLines: Int = ..., inlineContent: Map<String, InlineTextContent> = ..., onTextLayout: (TextLayoutResult) -> Unit = ..., style: TextStyle = ...): Unit
-@Composable() @ComposableTarget(...) fun Text(text: String, modifier: Modifier = ..., color: Color = ..., fontSize: TextUnit = ..., fontStyle: FontStyle? = ..., fontWeight: FontWeight? = ..., fontFamily: FontFamily? = ..., letterSpacing: TextUnit = ..., textDecoration: TextDecoration? = ..., textAlign: TextAlign? = ..., lineHeight: TextUnit = ..., overflow: TextOverflow = ..., softWrap: Boolean = ..., maxLines: Int = ..., minLines: Int = ..., onTextLayout: ((TextLayoutResult) -> Unit)? = ..., style: TextStyle = ...): Unit
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:746:82 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:746:82 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:746:82 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:748:4 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:748:4 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:748:4 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:749:74 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:749:74 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:749:74 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:750:4 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:750:4 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:750:4 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:751:82 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:751:82 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:751:82 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:752:4 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:752:4 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:752:4 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:753:147 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:753:147 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:753:147 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:755:4 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:755:4 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:755:4 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:774:5 None of the following candidates is applicable:
-@Deprecated(...) @ExperimentalMaterial3Api() @Composable() @ComposableInferredTarget(...) fun AlertDialog(onDismissRequest: () -> Unit, modifier: Modifier = ..., properties: DialogProperties = ..., content: @Composable() ComposableFunction0<Unit>): Unit
-@Composable() @ComposableInferredTarget(...) fun AlertDialog(onDismissRequest: () -> Unit, confirmButton: @Composable() ComposableFunction0<Unit>, modifier: Modifier = ..., dismissButton: @Composable() ComposableFunction0<Unit>? = ..., icon: @Composable() ComposableFunction0<Unit>? = ..., title: @Composable() ComposableFunction0<Unit>? = ..., text: @Composable() ComposableFunction0<Unit>? = ..., shape: Shape = ..., containerColor: Color = ..., iconContentColor: Color = ..., titleContentColor: Color = ..., textContentColor: Color = ..., tonalElevation: Dp = ..., properties: DialogProperties = ...): Unit
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:775:19 @Composable invocations can only happen from the context of a @Composable function
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:777:13 @Composable invocations can only happen from the context of a @Composable function
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:777:44 @Composable invocations can only happen from the context of a @Composable function
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:780:84 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:780:84 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:781:4 Syntax error: Expecting ')'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:781:8 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:786:10 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:787:9 Unresolved reference 'confirmButton'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:787:27 @Composable invocations can only happen from the context of a @Composable function
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:787:151 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:788:9 Unresolved reference 'dismissButton'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:788:27 @Composable invocations can only happen from the context of a @Composable function
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:788:85 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:789:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:792:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:793:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:803:25 None of the following candidates is applicable:
-@Composable() @ComposableTarget(...) fun Text(text: AnnotatedString, modifier: Modifier = ..., color: Color = ..., fontSize: TextUnit = ..., fontStyle: FontStyle? = ..., fontWeight: FontWeight? = ..., fontFamily: FontFamily? = ..., letterSpacing: TextUnit = ..., textDecoration: TextDecoration? = ..., textAlign: TextAlign? = ..., lineHeight: TextUnit = ..., overflow: TextOverflow = ..., softWrap: Boolean = ..., maxLines: Int = ..., minLines: Int = ..., inlineContent: Map<String, InlineTextContent> = ..., onTextLayout: (TextLayoutResult) -> Unit = ..., style: TextStyle = ...): Unit
-@Composable() @ComposableTarget(...) fun Text(text: String, modifier: Modifier = ..., color: Color = ..., fontSize: TextUnit = ..., fontStyle: FontStyle? = ..., fontWeight: FontWeight? = ..., fontFamily: FontFamily? = ..., letterSpacing: TextUnit = ..., textDecoration: TextDecoration? = ..., textAlign: TextAlign? = ..., lineHeight: TextUnit = ..., overflow: TextOverflow = ..., softWrap: Boolean = ..., maxLines: Int = ..., minLines: Int = ..., onTextLayout: ((TextLayoutResult) -> Unit)? = ..., style: TextStyle = ...): Unit
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:804:30 Syntax error: Expecting '"'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:804:30 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:804:30 Syntax error: Incorrect template entry: .
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:805:133 Syntax error: Expecting ')'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:805:135 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:806:29 Unresolved reference 'style'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:806:42 Syntax error: Unexpected tokens (use ';' to separate expressions on the same line).
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:822:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:825:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:826:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:843:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:846:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:847:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:861:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:865:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:866:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:905:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:909:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:910:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:941:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:943:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:944:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:950:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:953:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:986:2 Syntax error: Expecting ')'.
-
-FAILURE: Build failed with an exception.
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:79:5 Platform declaration clash: The following declarations have the same JVM signature (setLook(Ljava/lang/String;)V):
+    fun `<set-look>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setLook(l: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:80:5 Platform declaration clash: The following declarations have the same JVM signature (setVisPreset(Ljava/lang/String;)V):
+    fun `<set-visPreset>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setVisPreset(p: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:81:5 Platform declaration clash: The following declarations have the same JVM signature (setWrappedStyle(Ljava/lang/String;)V):
+    fun `<set-wrappedStyle>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setWrappedStyle(s: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:82:5 Platform declaration clash: The following declarations have the same JVM signature (setSkipOrder(Ljava/lang/String;)V):
+    fun `<set-skipOrder>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setSkipOrder(s: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:83:5 Platform declaration clash: The following declarations have the same JVM signature (setDownloadDir(Ljava/lang/String;)V):
+    fun `<set-downloadDir>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDownloadDir(d: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:84:5 Platform declaration clash: The following declarations have the same JVM signature (setDupeAction(Ljava/lang/String;)V):
+    fun `<set-dupeAction>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDupeAction(a: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:926:5 Platform declaration clash: The following declarations have the same JVM signature (setLook(Ljava/lang/String;)V):
+    fun `<set-look>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setLook(l: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:927:5 Platform declaration clash: The following declarations have the same JVM signature (setVisPreset(Ljava/lang/String;)V):
+    fun `<set-visPreset>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setVisPreset(p: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:928:5 Platform declaration clash: The following declarations have the same JVM signature (setWrappedStyle(Ljava/lang/String;)V):
+    fun `<set-wrappedStyle>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setWrappedStyle(s: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:929:5 Platform declaration clash: The following declarations have the same JVM signature (setSkipOrder(Ljava/lang/String;)V):
+    fun `<set-skipOrder>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setSkipOrder(s: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:930:5 Platform declaration clash: The following declarations have the same JVM signature (setDownloadDir(Ljava/lang/String;)V):
+    fun `<set-downloadDir>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDownloadDir(d: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:934:5 Platform declaration clash: The following declarations have the same JVM signature (setDupeAction(Ljava/lang/String;)V):
+    fun `<set-dupeAction>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDupeAction(a: String): Unit defined in org.omarchy.music.Music
 --
 * What went wrong:
 Execution failed for task ':app:compileReleaseKotlin'.
 > A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:905:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:909:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:910:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:941:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:943:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:944:1 Modifier 'private' is not applicable to 'local function'.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:950:2 Syntax error: Expecting ','.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:953:1 Anonymous functions with names are prohibited.
-e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Sheets.kt:986:2 Syntax error: Expecting ')'.
+    fun setSkipOrder(s: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:930:5 Platform declaration clash: The following declarations have the same JVM signature (setDownloadDir(Ljava/lang/String;)V):
+    fun `<set-downloadDir>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDownloadDir(d: String): Unit defined in org.omarchy.music.Music
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/Music.kt:934:5 Platform declaration clash: The following declarations have the same JVM signature (setDupeAction(Ljava/lang/String;)V):
+    fun `<set-dupeAction>`(`<set-?>`: String): Unit defined in org.omarchy.music.Music
+    fun setDupeAction(a: String): Unit defined in org.omarchy.music.Music
+
+> Task :app:compileReleaseKotlin FAILED
 
 FAILURE: Build failed with an exception.
 
@@ -127,5 +63,5 @@ Execution failed for task ':app:compileReleaseKotlin'.
 > Run with --scan to get full insights.
 > Get more help at https://help.gradle.org.
 
-BUILD FAILED in 2m 29s
+BUILD FAILED in 2m 18s
 38 actionable tasks: 38 executed
