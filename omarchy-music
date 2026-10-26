@@ -239,10 +239,13 @@ def download_path(root, artist, album, kind, number, title, ext=".flac"):
             / (name + ext))
 
 
+LOSSLESS_FILES = {"FLAC", "WAV", "AIF", "AIFF", "APE", "WV", "TTA", "DSF", "DFF", "ALAC"}
+
+
 def file_facts(path):
     """What a file is, for telling copies of a song apart: {"format", "quality", "size", "duration", "bitrate"}."""
     out = {"format": Path(path).suffix.lstrip(".").upper() or "?", "quality": "", "size": 0, "duration": 0,
-           "bitrate": 0}
+           "bitrate": 0, "bits": 0, "rate": 0, "lossless": Path(path).suffix.lstrip(".").upper() in LOSSLESS_FILES}
     try:
         out["size"] = Path(path).stat().st_size
     except OSError:
@@ -255,6 +258,9 @@ def file_facts(path):
             out["duration"] = round(getattr(info, "length", 0) or 0)
             out["bitrate"] = round((getattr(info, "bitrate", 0) or 0) / 1000)
             bits, rate = getattr(info, "bits_per_sample", 0), getattr(info, "sample_rate", 0)
+            out["bits"], out["rate"] = bits or 0, rate or 0
+            out["lossless"] = (out["format"] in LOSSLESS_FILES
+                               or "alac" in str(getattr(info, "codec", "")).lower())   # ALAC in an .m4a
             out["quality"] = (f"{bits}-bit/{rate / 1000:g} kHz" if bits and rate else
                               f"{out['bitrate']} kbps" if out["bitrate"] else "")
     except Exception:  # noqa: BLE001 -- the size alone, then
@@ -2113,6 +2119,52 @@ class Downloader:
         if self.on_saved:
             self.on_saved(vid)
         return str(path)
+
+    def upgrade(self, tracks, progress, stop):
+        """Your own files that Tidal has better (blocking): a lossy file (MP3, AAC…) for its FLAC,
+        a 16-bit one for its hi-res. Files in 24-bit, songs Tidal hasn't got and songs it has no
+        better are left. Returns {"done": [(old track, new id)], "missing", "kept", "failed"}; the
+        old files stay where they are (the app puts them away). progress(n) after each song;
+        stop() true: no more."""
+        out = {"done": [], "missing": [], "kept": [], "failed": []}
+        todo, lock = iter(enumerate(tracks)), threading.Lock()
+
+        def work():
+            while not stop():
+                with lock:
+                    i, t = next(todo, (None, None))
+                if t is None:
+                    return
+                try:
+                    facts = file_facts(t["file"])
+                    if facts["lossless"] and facts["bits"] >= 24:
+                        res = ("kept", t)   # as good as Tidal gets
+                    else:
+                        c = self.tidal.resolve(dict(t, source="file"))
+                        if not c:
+                            res = ("missing", t)
+                        elif facts["lossless"] and "HIRES_LOSSLESS" not in (c.media_metadata_tags or []):
+                            res = ("kept", t)   # Tidal has it in CD quality too: nothing better
+                        else:
+                            new = track_from_tidal(c)
+                            if not self.lib.is_flac(new["id"]):
+                                self._download(new)
+                            res = ("done", (t, new["id"]))
+                except NoLosslessMatch:
+                    res = ("missing", t)
+                except Exception as e:  # noqa: BLE001 -- the next song
+                    res = ("failed", (t, str(e) or type(e).__name__))
+                with lock:
+                    out[res[0]].append(res[1])
+                    n = sum(len(v) for v in out.values())
+                GLib.idle_add(lambda n=n: (progress(n), False)[1])
+
+        threads = [threading.Thread(target=work, daemon=True) for _ in range(SONGS_AT_ONCE)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        return out
 
     def dest(self, match, track):
         """Where a download goes: the app's songs folder, or yours as Artist/Albums|EPs|Singles/Album/NN Title.flac
@@ -7466,6 +7518,12 @@ class MusicWindow(Adw.ApplicationWindow):
         line("Folders", "Reading your folders…" if a.local.scanning else
              f"{n} song{'s' if n != 1 else ''} in your folders, in the Music tab" if a.folders else
              "Add the folders your own music is in", bool(n), pill("Add", self.add_folder))
+        if n:
+            up = a.upgrading
+            line("Upgrade", f"Upgrading · {up['n']} of {up['total']} songs" if up else
+                 "Swap your songs for Tidal's FLAC where it's better: MP3s and other lossy files, and 16-bit "
+                 "ones Tidal has in hi-res. The old files go to the trash", bool(up),
+                 pill("Stop", a.stop_upgrade, quiet=True) if up else pill("Upgrade…", self.confirm_upgrade))
         for folder in a.folders:
             fbox = Gtk.Box(spacing=6)
             name = Gtk.Label(label=short_path(folder), xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.MIDDLE)
@@ -8397,6 +8455,26 @@ class MusicWindow(Adw.ApplicationWindow):
                     a.replace_after[t["id"]] = c
             a.download([t for t in new if r != "skip" or t["id"] not in have], checked=True)
         dlg.connect("response", answered)
+        dlg.present(self)
+
+    def confirm_upgrade(self):
+        a = self.app
+        n = len(a.local.files)
+        dlg = Adw.AlertDialog(
+            heading=f"Upgrade your {n:,} songs?",
+            body="Each song in your folders is looked up on Tidal. Where Tidal has it better, the FLAC is downloaded "
+                 "and takes the old file's place: in your playlists, the queue, your plays and favorites.\n\n"
+                 "• MP3, AAC and other lossy files: replaced with FLAC\n"
+                 "• 16-bit FLAC/WAV: replaced only when Tidal has it in 24-bit\n"
+                 "• 24-bit files, and songs Tidal doesn't have: left as they are\n\n"
+                 "The old files go to the trash, so you can get them back. The new ones go to "
+                 + (short_path(a.download_dir) if a.download_dir else "the app's own folder (Downloads in this menu "
+                    "picks a folder of yours)") + ". A big library takes a while: you can keep listening, and Stop.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("go", "Upgrade")
+        dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "go" and a.upgrade_songs())
         dlg.present(self)
 
     def pick_download_dir(self):
@@ -11800,6 +11878,7 @@ class MusicApp(Adw.Application):
         self.dupe_action = "ask"   # a download you have a copy of already: "ask", "keep" (both) or "replace"
         self.replace_after = {}    # id being downloaded -> your copies to put away once it's in
         self.dupes = None          # the Duplicates view's last scan: [[(track, facts)]]
+        self.upgrading = None      # Upgrade running: {"total", "n", "stop"}
         self.music_sort = "title"  # how the Music tab's All is sorted
         self.search_in = "tidal"   # where the search bar looks (SEARCH_IN)
         self.spotify_history = SpotifyHistory()
@@ -13298,6 +13377,82 @@ class MusicApp(Adw.Application):
                     self.replace_copies(old, dict(self.lib.items[t["id"]]))
             self.download_next()
         in_thread(self.dl.sync, batch, lambda: self.win and self.win.refresh_all(), True, done=done)
+
+    def upgrade_songs(self):
+        """Upgrade: every song in your folders that Tidal has better, downloaded and put in
+        its place (playlists, queue, plays and stars go with it); the old files to the trash."""
+        if self.upgrading:
+            return
+        if not (self.dl.tidal and self.dl.tidal.connected):
+            self.toast("Connect Tidal in the accounts menu first: the new copies come from there, in FLAC")
+            return
+        tracks = [t for t in self.local.tracks() if not is_phone_song(t) and Path(t["file"]).exists()]
+        if not tracks:
+            self.toast("No songs in your folders to upgrade")
+            return
+        self.upgrading = {"total": len(tracks), "n": 0, "stop": False}
+        self.refresh_accounts_soon()
+
+        def progress(n):
+            if self.upgrading:
+                self.upgrading["n"] = n
+                if self.win:
+                    self.win.set_status(f"Upgrading your songs · {n} of {len(tracks)}")
+                self.refresh_accounts_soon()
+
+        def done(out, err):
+            self.upgrading = None
+            if self.win:
+                self.win.set_status("")
+            if err:
+                self.toast(f"Couldn't upgrade: {str(err)[:90]}")
+                return
+            cur = self.current_track()
+            replaced, failed = 0, len(out["failed"])
+            for old, vid in out["done"]:
+                if not self.lib.has(vid) or (cur and cur["id"] == old["id"]):
+                    failed += 1   # (the playing song stays: Upgrade again later)
+                    continue
+                if self.put_away(old):
+                    failed += 1
+                    continue
+                self.tidy_name(vid)
+                self.retarget([old["id"]], dict(self.lib.items[vid]))
+                replaced += 1
+            self.toast(f"Upgraded {replaced} song{'s' if replaced != 1 else ''} to FLAC (the old files are in the trash)"
+                       + (f" · {len(out['missing'])} not on Tidal" if out["missing"] else "")
+                       + (f" · {len(out['kept'])} as good already" if out["kept"] else "")
+                       + (f" · {failed} couldn't" if failed else ""))
+            self.rescan()
+            if self.win:
+                self.win.refresh_all()
+                self.refresh_accounts_soon()
+        in_thread(self.dl.upgrade, tracks, progress, lambda: bool(self.upgrading and self.upgrading["stop"]), done=done)
+
+    def tidy_name(self, vid):
+        """A download named "NN Title (td123).flac" because your file had its name: now that
+        that's gone, it takes the plain name."""
+        e = self.lib.items.get(vid)
+        path = Path(e["file"]) if e else None
+        m = path and re.match(r"^(.*) \([\w-]{1,8}\)$", path.stem)
+        if not m or not self.download_dir:
+            return
+        plain = path.with_name(m.group(1) + path.suffix)
+        if plain.exists():
+            return
+        try:
+            path.rename(plain)
+        except OSError:
+            return
+        for v, x in self.lib.items.items():
+            if x.get("file") == str(path):
+                x["file"] = str(plain)
+                self.lib._seen.pop(v, None)
+        self.lib.save()
+
+    def stop_upgrade(self):
+        if self.upgrading:
+            self.upgrading["stop"] = True
 
     def retarget(self, old_ids, new):
         """Songs going away for new: your playlists and the queue get new in their place,
