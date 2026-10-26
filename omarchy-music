@@ -110,7 +110,7 @@ REPO = "Varixxl/omarchy-music"
 PROFILE = os.environ.get("OMARCHY_MUSIC_PROFILE", "")
 SUFFIX = f"-{PROFILE}" if PROFILE else ""
 APP_ID = "org.omarchy.music" + (f".{PROFILE}" if PROFILE else "")
-DISCORD_APP_ID = ""          # the "VarMusic" app on Discord's developer portal (an app ID is public, not a secret)
+DISCORD_APP_ID = "1564098839475126292"        # the "VarMusic" app on Discord's developer portal (an app ID is public, not a secret)
 DOWNLOAD_PAGE = "https://varixxl.github.io/omarchy-music/"
 HOME = Path.home()
 WINDOWS = sys.platform == "win32"
