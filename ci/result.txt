@@ -1,29 +1,35 @@
-run 40350414708 · Mon Oct 26 15:37:29 UTC 2026
-BUILD OK
+run 40415577420 · Mon Oct 26 22:53:31 UTC 2026
+BUILD FAILED
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Library.kt:185:16 Type 'androidx.compose.runtime.MutableState<kotlin.Boolean>' has no method 'setValue(Nothing?, KMutableProperty0<*>, ERROR CLASS: Ambiguity: getValue, [kotlin/getValue, kotlin/getValue, kotlin/getValue, kotlin/collections/getValue, kotlin/collections/getValue, kotlin/collections/getValue])', so it cannot serve as a delegate for var (read-write property).
+e: file:///home/runner/work/omarchy-music/omarchy-music/app/android/app/src/main/java/org/omarchy/music/ui/Library.kt:185:16 Property delegate must have a 'getValue(Nothing?, KMutableProperty0<*>)' method. None of the following functions is applicable:
+@InlineOnly() fun <T> Lazy<T>.getValue(thisRef: Any?, property: KProperty<*>): T
+@SinceKotlin(...) @InlineOnly() fun <V> KProperty0<V>.getValue(thisRef: Any?, property: KProperty<*>): V
+--
+* What went wrong:
+Execution failed for task ':app:compileReleaseKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+@InlineOnly() fun <T> Lazy<T>.getValue(thisRef: Any?, property: KProperty<*>): T
+@SinceKotlin(...) @InlineOnly() fun <V> KProperty0<V>.getValue(thisRef: Any?, property: KProperty<*>): V
+@SinceKotlin(...) @InlineOnly() fun <T, V> KProperty1<T, V>.getValue(thisRef: T, property: KProperty<*>): V
+@SinceKotlin(...) fun <K, V> Map<K, V>.getValue(key: K): V
+@InlineOnly() fun <V, V1 : V> Map<in String, V>.getValue(thisRef: Any?, property: KProperty<*>): V1
+@JvmName(...) @InlineOnly() fun <V, V1 : V> MutableMap<in String, out V>.getValue(thisRef: Any?, property: KProperty<*>): V1
 
-> Task :app:compileReleaseJavaWithJavac
-  int max;
-}`
-Info: Proguard configuration rule does not match anything: `-keepclassmembers class j$.util.LongSummaryStatistics {
-  long count;
-  long sum;
-  long min;
-  long max;
-}`
-Info: Proguard configuration rule does not match anything: `-keepclassmembers class j$.util.DoubleSummaryStatistics {
-  long count;
-  double sum;
-  double min;
-  double max;
-}`
+> Task :app:compileReleaseKotlin FAILED
+> Task :app:mergeExtDexRelease
 
-> Task :app:compileReleaseArtProfile
-> Task :app:packageRelease
-> Task :app:createReleaseApkListingFileRedirect
-> Task :app:lintVitalAnalyzeRelease
-> Task :app:lintVitalReportRelease
-> Task :app:lintVitalRelease
-> Task :app:assembleRelease
+FAILURE: Build failed with an exception.
 
-BUILD SUCCESSFUL in 4m
-52 actionable tasks: 52 executed
+* What went wrong:
+Execution failed for task ':app:compileReleaseKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 2m
+28 actionable tasks: 28 executed
