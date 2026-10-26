@@ -1,6 +1,8 @@
 package org.omarchy.music.ui
 
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Environment
 import android.provider.MediaStore
@@ -33,25 +35,32 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -63,6 +72,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import org.omarchy.music.Music
 import org.omarchy.music.Wrapped
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -90,7 +100,14 @@ private object W {
 
 private fun n(i: Int) = "%,d".format(i)
 
-private class Slide(val color: Int, val save: String? = null, val content: @Composable ColumnScope.() -> Unit)
+private class Slide(val color: Int, val content: @Composable ColumnScope.() -> Unit)
+
+/** The summary slide's Share…: opens the top's menu, and isn't in the picture. */
+private class Sharing(val open: () -> Unit, val busy: Boolean)
+private val LocalSharing = compositionLocalOf<Sharing?> { null }
+
+/** Apps a slide's picture can go to straight away, when they're installed. */
+private val SHARE_APPS = listOf("com.instagram.android" to "Instagram", "com.facebook.katana" to "Facebook")
 
 /** Your week, month or year in music (or all of it) from your Last.fm history, a slide at a
  *  time: tap the right of a slide for the next, the left to go back; Week · Month · Year ·
@@ -138,6 +155,31 @@ fun WrappedScreen(onClose: () -> Unit) {
         val pager = rememberPagerState { slides.size }
         val scope = rememberCoroutineScope()
         LaunchedEffect(slides.size, data) { pager.scrollToPage(0) }
+        val ctx = LocalContext.current
+        val layers = remember { HashMap<Int, GraphicsLayer>() }   // each page's drawing, for its picture
+        var busy by remember { mutableStateOf(false) }
+        var menu by remember { mutableStateOf(false) }
+        val apps = remember { SHARE_APPS.filter { (pkg, _) -> runCatching { ctx.packageManager.getPackageInfo(pkg, 0) }.isSuccess } }
+
+        /** A picture of the slide showing: saved to Pictures, or sent to an app (pkg) or to the one you pick (null). */
+        fun share(save: Boolean, pkg: String? = null) {
+            val d = data ?: return
+            val i = pager.currentPage
+            val layer = layers[i] ?: return
+            scope.launch {
+                busy = true                            // the Share… button hides,
+                withFrameNanos {}; withFrameNanos {}   // and the page is drawn again without it
+                val bmp = runCatching { layer.toImageBitmap().asAndroidBitmap() }.getOrNull()
+                busy = false
+                val last = i == slides.size - 1   // the summary: named as it always was
+                val name = "Wrapped ${label.lowercase().replaceFirstChar { it.uppercase() }} · ${d.user}${if (last) "" else " · ${i + 1}"}"
+                when {
+                    bmp == null -> Music.toast("Couldn't make the picture")
+                    save -> Music.toast(if (savePicture(bmp, name)) "Saved to Pictures" else "Couldn't save it")
+                    else -> if (!sharePicture(ctx, bmp, name, pkg)) Music.toast("Couldn't share it")
+                }
+            }
+        }
         Box(Modifier.fillMaxSize().background(C.darker)) {
             HorizontalPager(pager, Modifier.fillMaxSize(), key = { "$label-${slides.size}-$it" }) { i ->
                 val s = slides[i]
@@ -145,7 +187,11 @@ fun WrappedScreen(onClose: () -> Unit) {
                     val w = constraints.maxWidth.toFloat(); val h = constraints.maxHeight.toFloat()
                     val tint = SLIDE[s.color % 8]
                     val glow = GLOW[s.color % 8]
+                    val layer = rememberGraphicsLayer()
+                    DisposableEffect(i, layer) { layers[i] = layer; onDispose { layers.remove(i, layer) } }
                     Box(Modifier.fillMaxSize()
+                        .drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }
+                        .background(C.darker)
                         .background(Brush.linearGradient(0f to tint.copy(alpha = 0.5f), 0.62f to C.darker.copy(alpha = 0f),
                             start = Offset(w * 0.4f, 0f), end = Offset(w * 0.6f + h * 0.27f, h)))
                         .background(Brush.radialGradient(listOf(glow.copy(alpha = 0.30f), Color.Transparent),
@@ -158,8 +204,10 @@ fun WrappedScreen(onClose: () -> Unit) {
                                 scope.launch { pager.animateScrollToPage(to) }
                             }
                         }) {
-                        Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 112.dp, bottom = 40.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically), content = s.content)
+                        CompositionLocalProvider(LocalSharing provides Sharing({ menu = true }, busy)) {
+                            Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 112.dp, bottom = 40.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically), content = s.content)
+                        }
                     }
                 }
             }
@@ -171,6 +219,17 @@ fun WrappedScreen(onClose: () -> Unit) {
                         if (slides.size > 1) repeat(slides.size) { k ->
                             Box(Modifier.weight(1f).height(3.dp).clip(RoundedCornerShape(2.dp))
                                 .background(if (k <= pager.currentPage) C.fg else C.fg.copy(alpha = 0.25f)))
+                        }
+                    }
+                    if (data?.empty == false) Box {
+                        Text("Share", style = T.tab.copy(fontSize = 12.sp), modifier = Modifier.clip(CircleShape).background(C.darker.copy(alpha = 0.4f))
+                            .pointerInput(Unit) { detectTapGestures { menu = true } }.padding(horizontal = 12.dp, vertical = 8.dp))
+                        DropdownMenu(menu, { menu = false }, containerColor = C.light) {
+                            DropdownMenuItem({ Text("Save to Pictures", style = T.body) }, { menu = false; share(save = true) })
+                            apps.forEach { (pkg, name) ->
+                                DropdownMenuItem({ Text("Post to $name", style = T.body) }, { menu = false; share(save = false, pkg = pkg) })
+                            }
+                            DropdownMenuItem({ Text("Share…", style = T.body) }, { menu = false; share(save = false) })
                         }
                     }
                     Text("✕", style = T.title, modifier = Modifier.clip(CircleShape).background(C.darker.copy(alpha = 0.4f))
@@ -490,10 +549,7 @@ private fun allTime(d: Wrapped.Data): List<Slide> {
 
 /** The last slide: the lot on one card, to save as a picture. */
 private fun summary(d: Wrapped.Data, title: String) = Slide(3) {
-    val layer = rememberGraphicsLayer()
-    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxWidth()
-        .drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }
         .background(C.bg).background(Brush.linearGradient(listOf(C.accent.copy(alpha = 0.20f), Color.Transparent)))
         .border(1.dp, C.line, RoundedCornerShape(4.dp)).padding(horizontal = 18.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -523,14 +579,14 @@ private fun summary(d: Wrapped.Data, title: String) = Slide(3) {
         }
     }
     Spacer(Modifier.height(8.dp))
-    Pill("Save as a picture") {
-        scope.launch {
-            val bmp = runCatching { layer.toImageBitmap().asAndroidBitmap() }.getOrNull()
-            Music.toast(if (bmp != null && savePicture(bmp, "Wrapped ${title.lowercase().replaceFirstChar { it.uppercase() }} · ${d.user}"))
-                "Saved to Pictures" else "Couldn't save it")
-        }
+    val sharing = LocalSharing.current
+    Box(Modifier.alpha(if (sharing?.busy == true) 0f else 1f)) {   // (kept in place, so nothing moves)
+        Pill("Share…") { sharing?.open?.invoke() }
     }
 }
+
+/** A bitmap Bitmap.compress can write (a GraphicsLayer's may be in the GPU's memory). */
+private fun Bitmap.plain(): Bitmap = if (config == Bitmap.Config.HARDWARE) copy(Bitmap.Config.ARGB_8888, false) else this
 
 private fun savePicture(bmp: Bitmap, name: String): Boolean = runCatching {
     val cr = Music.ctx.contentResolver
@@ -539,7 +595,20 @@ private fun savePicture(bmp: Bitmap, name: String): Boolean = runCatching {
         put(MediaStore.Images.Media.MIME_TYPE, "image/png")
         put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
     }) ?: return false
-    cr.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } ?: return false
+    cr.openOutputStream(uri)?.use { bmp.plain().compress(Bitmap.CompressFormat.PNG, 100, it) } ?: return false
+    true
+}.getOrDefault(false)
+
+/** Send the picture to pkg (Instagram, Facebook), or to the app you pick in Android's share sheet. */
+private fun sharePicture(ctx: Context, bmp: Bitmap, name: String, pkg: String?): Boolean = runCatching {
+    val dir = File(ctx.cacheDir, "shared").apply { mkdirs(); listFiles()?.forEach { it.delete() } }   // only the latest one is kept
+    val file = File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "") + ".png")
+    file.outputStream().use { bmp.plain().compress(Bitmap.CompressFormat.PNG, 100, it) }
+    val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
+    val send = Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    send.clipData = android.content.ClipData.newRawUri(name, uri)
+    ctx.startActivity(if (pkg != null) send.setPackage(pkg) else Intent.createChooser(send, "Share your Wrapped"))
     true
 }.getOrDefault(false)
 

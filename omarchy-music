@@ -9303,6 +9303,15 @@ def bars(values, labels=None, height=110, top=None):
     return grid
 
 
+def widgets_in(widget):
+    """widget and everything inside it."""
+    yield widget
+    child = widget.get_first_child()
+    while child:
+        yield from widgets_in(child)
+        child = child.get_next_sibling()
+
+
 def w_label(text, css, wrap=True, xalign=0.0, ellipsize=False):
     lab = Gtk.Label(label=text, xalign=xalign, wrap=wrap, wrap_mode=Pango.WrapMode.WORD_CHAR)
     if ellipsize:
@@ -9395,6 +9404,10 @@ class WrappedWindow(Adw.Window):
         row.append(self.segments)
         self.carousel.connect("notify::n-pages", lambda *_: self.make_segments())
         self.carousel.connect("notify::position", lambda *_: self.light_segments())
+        self.share = self.share_button(Gtk.MenuButton(icon_name="send-to-symbolic", valign=Gtk.Align.CENTER,
+                                                      tooltip_text="Share this slide (S)"))
+        self.share.get_first_child().add_css_class("w-nav")   # (its button: the styles are for buttons)
+        row.append(self.share)
         self.full = Gtk.Button(icon_name="view-fullscreen-symbolic", valign=Gtk.Align.CENTER,
                                tooltip_text="Full screen (F11)")
         self.full.add_css_class("w-nav")
@@ -9871,42 +9884,98 @@ class WrappedWindow(Adw.Window):
             foot.append(col)
         card.append(foot)
         s.append(card)
-        save = Gtk.Button(label="Save as a picture", halign=Gtk.Align.START, margin_top=8)
-        save.add_css_class("pill")
-        save.connect("clicked", lambda *_: self.save_picture(s.get_parent().get_parent(), save, title))
-        s.append(save)
+        share = self.share_button(Gtk.MenuButton(label="Share…", halign=Gtk.Align.START, margin_top=8))
+        share.get_first_child().add_css_class("pill")
+        share.add_css_class("w-unshot")
+        s.append(share)
 
-    def save_picture(self, slide, button, title):
-        button.set_visible(False)   # not in the picture
+    # ---- sharing a slide ----
+    SHARE_SITES = {"instagram": ("Instagram", "https://www.instagram.com/"),
+                   "facebook": ("Facebook", "https://www.facebook.com/")}
+
+    def share_button(self, button):
+        """button (a MenuButton) with the ways to share the slide that's showing."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop = Gtk.Popover(child=box)
+
+        def item(label, how):
+            b = Gtk.Button(label=label)
+            b.add_css_class("menu-item")
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda *_: (pop.popdown(), self.share_slide(how)))
+            box.append(b)
+        item("Save as a picture", "save")
+        item("Copy the picture", "copy")
+        for how, (name, _url) in self.SHARE_SITES.items():
+            item(f"Post to {name}…", how)
+        button.set_popover(pop)
+        return button
+
+    def share_slide(self, how):
+        """Make a picture of the slide showing, then save it, copy it, or both and open the site
+        to post it on. The sites take no picture from an app on a computer (only their phone apps
+        do), so it's pasted (Ctrl+V) or picked from Pictures there."""
+        n = self.carousel.get_n_pages()
+        if not self.data or not n:
+            return
+        i = max(0, min(n - 1, round(self.carousel.get_position())))
+        slide = self.carousel.get_nth_page(i)
+        hidden = [w for w in widgets_in(slide) if w.has_css_class("w-unshot") and w.get_visible()]
+        for w in hidden:
+            w.set_visible(False)   # not in the picture
         # That throws away the slide's last drawing, which is what gets saved: wait for the next frame to draw it again.
         clock = self.get_frame_clock()
 
         def painted(*_):
             clock.disconnect(handler)
-            GLib.idle_add(lambda: (self._render(slide, button, title), False)[1])
+            GLib.idle_add(lambda: (self._shared(slide, i, how, hidden), False)[1])
         handler = clock.connect("after-paint", painted)
         slide.queue_draw()
 
-    def _render(self, slide, button, title):
+    def _shared(self, slide, i, how, hidden):
         try:
-            paintable = Gtk.WidgetPaintable.new(slide)   # padding and all, unlike get_width()
-            w, h, scale = paintable.get_intrinsic_width(), paintable.get_intrinsic_height(), 2
-            snap = Gtk.Snapshot()
-            snap.scale(scale, scale)
-            paintable.snapshot(snap, w, h)
-            node = snap.to_node()
-            if node is None:
-                raise RuntimeError("the slide wasn't drawn yet")
-            tex = self.get_renderer().render_texture(node, Graphene.Rect().init(0, 0, w * scale, h * scale))
-            pictures = Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or HOME / "Pictures")
-            name = re.sub(r'[<>:"/\\|?*]', "", f"Wrapped {title.title()} · {self.data['user']}.png")
-            path = pictures / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tex.save_to_png(str(path))
-            self.toasts.add_toast(Adw.Toast(title=f"Saved to {path.parent.name}/{path.name}", timeout=4))
+            tex = self.picture_of(slide)
+            if how == "copy":
+                self.get_clipboard().set_content(Gdk.ContentProvider.new_for_value(tex))
+                self.toasts.add_toast(Adw.Toast(title="Picture copied", timeout=3))
+            else:
+                path = self.save_png(tex, i)
+                if how == "save":
+                    self.toasts.add_toast(Adw.Toast(title=f"Saved to {path.parent.name}/{path.name}", timeout=4))
+                else:
+                    name, url = self.SHARE_SITES[how]
+                    self.get_clipboard().set_content(Gdk.ContentProvider.new_for_value(tex))
+                    open_url(url)
+                    self.toasts.add_toast(Adw.Toast(
+                        title=f"Copied, and saved to {path.parent.name}: paste it (Ctrl+V) or pick it in {name}", timeout=6))
         except Exception as e:  # noqa: BLE001 -- say why
-            self.toasts.add_toast(Adw.Toast(title=f"Couldn't save it: {str(e)[:80]}", timeout=4))
-        button.set_visible(True)
+            self.toasts.add_toast(Adw.Toast(title=f"Couldn't make the picture: {str(e)[:80]}", timeout=4))
+        for w in hidden:
+            w.set_visible(True)
+
+    def picture_of(self, slide):
+        """The slide as a texture, drawn at twice its size."""
+        paintable = Gtk.WidgetPaintable.new(slide)   # padding and all, unlike get_width()
+        w, h, scale = paintable.get_intrinsic_width(), paintable.get_intrinsic_height(), 2
+        snap = Gtk.Snapshot()
+        snap.scale(scale, scale)
+        paintable.snapshot(snap, w, h)
+        node = snap.to_node()
+        if node is None:
+            raise RuntimeError("the slide wasn't drawn yet")
+        return self.get_renderer().render_texture(node, Graphene.Rect().init(0, 0, w * scale, h * scale))
+
+    def save_png(self, tex, i):
+        """tex as a PNG in Pictures, named for the period and the slide; returns its path."""
+        d = self.data
+        title = "All Time" if d["period"] == "all" else period_name(d["period"])
+        pictures = Path(GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) or HOME / "Pictures")
+        last = i == self.carousel.get_n_pages() - 1   # the summary: named as it always was
+        name = re.sub(r'[<>:"/\\|?*]', "", f"Wrapped {title} · {d['user']}{'' if last else f' · {i + 1}'}.png")
+        path = pictures / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tex.save_to_png(str(path))
+        return path
 
     # ---- moving around ----
     def go(self, step):
@@ -9927,6 +9996,8 @@ class WrappedWindow(Adw.Window):
                 self.close()
         elif keyval in (Gdk.KEY_F11, Gdk.KEY_f):
             self.toggle_fullscreen()
+        elif keyval == Gdk.KEY_s and self.data:
+            self.share.popup()
         elif keyval in (Gdk.KEY_Right, Gdk.KEY_space, Gdk.KEY_l, Gdk.KEY_Page_Down):
             self.go(1)
         elif keyval in (Gdk.KEY_Left, Gdk.KEY_h, Gdk.KEY_Page_Up):
