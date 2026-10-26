@@ -99,7 +99,7 @@ gi.require_version("Graphene", "1.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
-VERSION = "1.1.8"            # the release this is; GitHub's latest release is compared with it
+VERSION = "1.1.9"            # the release this is; GitHub's latest release is compared with it
 REPO = "Varixxl/omarchy-music"
 
 # OMARCHY_MUSIC_PROFILE=dev runs a second copy beside the real one, with its own
