@@ -77,6 +77,37 @@ jobs:
         with:
           name: VarMusic-Test-apk
           path: app/android/app/build/outputs/apk/release/app-release.apk
+      - name: Enable KVM (for the emulator)
+        if: hashFiles('work/ci/SHOTS') != ''
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get install -y -qq ffmpeg > /dev/null
+          base64 -d work/ci/shots.sh.b64 > work/ci/shots.sh
+          base64 -d work/ci/tap.py.b64 > work/ci/tap.py
+      - name: Screenshots on an emulator
+        if: hashFiles('work/ci/SHOTS') != ''
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash work/ci/shots.sh
+      - name: Keep the screenshots (ci/shots/)
+        if: hashFiles('work/ci/SHOTS') != ''
+        working-directory: work
+        run: |
+          rm -rf ci/shots; mkdir -p ci/shots
+          cp ../shots/*.png ci/shots/ 2>/dev/null || true
+          git add -A ci/shots
+          git -c user.name=Radon999 -c user.email=radon721690@gmail.com commit -qm "ci: screenshots" || true
+          git pull -q --rebase origin android-work || true
+          git push origin HEAD:android-work || true
       - name: To desktop-features
         if: hashFiles('work/ci/PUSH') != ''
         working-directory: app
