@@ -406,6 +406,12 @@ button.menu-item:hover {{ background-color: {rgba(acc, 0.10)}; color: {acc}; }}
 .lyrics-from {{ color: {muted}; font-size: 0.76em; font-weight: 700; letter-spacing: 1px; }}
 .lyrics {{ padding: 4px 18px 60px 18px; }}
 .lyrics-text {{ color: {fg}; font-size: 1.04em; line-height: 1.45; }}
+.lyrics-text link {{ color: {fg}; text-decoration-line: underline; text-decoration-style: wavy;
+  text-decoration-color: {rgba(acc, 0.6)}; }}
+.lyrics-text link:hover {{ color: {acc}; }}
+.note-card {{ background: {bg}; border: 1px solid {rgba(acc, 0.45)}; border-radius: {max(R, 6)}px; padding: 10px 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }}
+.note-words {{ color: {acc}; font-weight: 700; font-size: 0.92em; }}
 .lyric-line {{ color: {rgba(fg, 0.34)}; font-size: 1.16em; font-weight: 700; padding: 5px 0; line-height: 1.25; }}
 .lyric-line.past {{ color: {rgba(fg, 0.55)}; }}
 .lyric-line.now {{ color: {acc}; }}
@@ -3188,6 +3194,8 @@ def song_meta(lib, track):
 
 LYRICS_CACHE = CACHE / "lyrics"
 LYRICS_RETRY = 7 * 86400    # look again for lyrics nobody had, after a week
+GENIUS_NOTES = CACHE / "genius-notes"
+NOTES_KEEP = 14 * 86400     # Genius's annotations are looked at again after two weeks
 # Genius swaps a few letters of its lyrics for look-alikes from other alphabets
 # (to spot copies). In a word that is otherwise Latin, put the real letter back.
 HOMOGLYPHS = str.maketrans({"а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i",
@@ -3250,7 +3258,7 @@ class _GeniusLyrics(HTMLParser):
 
 
 def genius_lyrics(artist, title):
-    """(text, page address) of the song on Genius, or None if Genius hasn't got it."""
+    """(text, page address, song id) of the song on Genius, or None if Genius hasn't got it."""
     lead = artist.split(",")[0].strip()
     want = clean_title(title)
     best, best_score = None, 0.0
@@ -3273,7 +3281,68 @@ def genius_lyrics(artist, title):
     page = _GeniusLyrics()
     page.feed(http(best["url"]).decode("utf-8", "replace"))
     text = degenius(page.text())
-    return (text, best["url"]) if text else None
+    return (text, best["url"], best.get("id")) if text else None
+
+
+def genius_song_id(url):
+    """The id of the Genius song whose page is at url (songs whose lyrics were kept before ids were)."""
+    html = http(url).decode("utf-8", "replace")
+    m = re.search(r"genius://songs/(\d+)", html) or re.search(r'"song_id\\?"\s*:\s*(\d+)', html)
+    return int(m.group(1)) if m else None
+
+
+def genius_notes(song_id, pages=4):
+    """Genius's annotations of the song: [{"fragment" (the words they're about), "url",
+    "notes": [{"text", "votes", "verified", "state"}]}], in the song's order. Genius's
+    description of the whole song isn't one of them."""
+    out = []
+    for page in range(1, pages + 1):
+        res = http_json("https://genius.com/api/referents?" + urllib.parse.urlencode(
+            {"song_id": song_id, "text_format": "plain", "per_page": 50, "page": page}), timeout=15)
+        refs = (res.get("response") or {}).get("referents") or []
+        for r in refs:
+            if r.get("is_description") or not (r.get("fragment") or "").strip():
+                continue
+            notes = [{"text": degenius(a["body"]["plain"].strip()), "votes": a.get("votes_total") or 0,
+                      "verified": bool(a.get("verified")), "state": a.get("state") or ""}
+                     for a in r.get("annotations") or [] if ((a.get("body") or {}).get("plain") or "").strip()]
+            if notes:
+                out.append({"fragment": degenius(r["fragment"]).strip(), "url": r.get("url") or "", "notes": notes})
+        if len(refs) < 50:
+            break
+    return out
+
+
+def note_key(text):
+    """Words to compare a line of lyrics and an annotation's by: no case, quotes or punctuation."""
+    return re.sub(r"\W+", " ", text.lower().replace("’", "").replace("'", "")).strip()
+
+
+def place_notes(text, notes):
+    """Which lines of text (lyrics) each of notes (genius_notes) is about: {line index: note index}.
+    The words of an annotation are whole lines, or part of one; a chorus sung again gets the
+    note each time; a line two notes are about gets the first."""
+    keys = [note_key(line) for line in text.splitlines()]
+    at = {}
+    for k, n in enumerate(notes):
+        frag = [f for f in (note_key(x) for x in n["fragment"].splitlines()) if f]
+        if not frag:
+            continue
+        for i, first in enumerate(keys):
+            if not first or frag[0] not in first and not (len(first) >= 6 and first in frag[0]):
+                continue
+            lines, j = [i], i + 1
+            for f in frag[1:]:
+                while j < len(keys) and not keys[j]:   # a blank line inside the words
+                    j += 1
+                if j >= len(keys) or not (f in keys[j] or (len(keys[j]) >= 6 and keys[j] in f)):
+                    lines = None
+                    break
+                lines.append(j)
+                j += 1
+            for x in lines or []:
+                at.setdefault(x, k)
+    return at
 
 
 def lrclib_lyrics(artist, title, album, duration):
@@ -3362,7 +3431,7 @@ class Lyrics:
             g = genius_lyrics(m["artist"], m["title"])
             reached = True
             if g:
-                got.update(plain=g[0], plain_from="Genius", url=g[1])
+                got.update(plain=g[0], plain_from="Genius", url=g[1], genius_id=g[2])
         except (OSError, ValueError):   # offline, or Genius changed: the others may still have them
             pass
         tidal = self.app.dl.tidal
@@ -3390,6 +3459,26 @@ class Lyrics:
             except (OSError, ValueError):
                 pass
         return got, reached
+
+    def notes(self, got):
+        """(blocking) Genius's annotations of the song whose lyrics are got (see genius_notes),
+        [] if they aren't Genius's or it has none. Kept a while, each song's in a file."""
+        url = got.get("url") or ""
+        if not url.startswith("https://genius.com/"):
+            return []
+        sid = got.get("genius_id")
+        path = GENIUS_NOTES / f"{safe_name(url.rsplit('/', 1)[-1])}.json"
+        cached = read_json(path, None)
+        if cached and time.time() - cached.get("time", 0) < NOTES_KEEP:
+            return cached["notes"]
+        try:
+            sid = sid or genius_song_id(url)
+            notes = genius_notes(sid) if sid else []
+        except (OSError, ValueError):
+            return cached["notes"] if cached else []   # offline: what was found last time
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(path, json.dumps({"time": time.time(), "notes": notes}))
+        return notes
 
 
 # =============================================================================
@@ -5822,12 +5911,40 @@ class LyricsView(Gtk.Box):
         scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
         scroll.connect("scroll", lambda *_: setattr(self, "user_scrolled", time.monotonic()) or False)
         self.scroller.add_controller(scroll)
-        self.append(self.scroller)
+        # Genius's annotations: the lines they're about are links, and a card over the bottom shows one.
+        self.notes, self.text_label = [], None
+        overlay = Gtk.Overlay(child=self.scroller, vexpand=True)
+        self.card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.END, visible=False,
+                            margin_start=10, margin_end=10, margin_bottom=10)
+        self.card.add_css_class("note-card")
+        top = Gtk.Box(spacing=8)
+        self.card_words = Gtk.Label(xalign=0, hexpand=True, wrap=True, lines=2, ellipsize=Pango.EllipsizeMode.END)
+        self.card_words.add_css_class("note-words")
+        shut = Gtk.Button(icon_name="window-close-symbolic", valign=Gtk.Align.START, tooltip_text="Close")
+        shut.add_css_class("flat")
+        shut.connect("clicked", lambda *_: self.card.set_visible(False))
+        top.append(self.card_words)
+        top.append(shut)
+        self.card_text = Gtk.Label(xalign=0, wrap=True, selectable=True, wrap_mode=Pango.WrapMode.WORD_CHAR, valign=Gtk.Align.START)
+        self.card_scroll = Gtk.ScrolledWindow(child=self.card_text, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                              propagate_natural_height=True, max_content_height=240)
+        foot = Gtk.Box(spacing=8)
+        self.card_about = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self.card_about.add_css_class("service")
+        self.card_link = Gtk.LinkButton(label="On Genius", valign=Gtk.Align.CENTER)
+        foot.append(self.card_about)
+        foot.append(self.card_link)
+        for w in (top, self.card_scroll, foot):
+            self.card.append(w)
+        overlay.add_overlay(self.card)
+        self.append(overlay)
 
     def clear(self):
         while (child := self.body.get_first_child()):
             self.body.remove(child)
         self.times, self.labels, self.cur = [], [], -1
+        self.text_label = None
+        self.card.set_visible(False)
 
     def message(self, title, body=""):
         self.clear()
@@ -5849,7 +5966,7 @@ class LyricsView(Gtk.Box):
             return
         if track["id"] == self.track_id and not refresh:
             return
-        self.track_id, self.got = track["id"], None
+        self.track_id, self.got, self.notes = track["id"], None, []
         self.seq += 1
         seq = self.seq
         self.message("Finding the lyrics…", f"{track['title']} · {track['artist']}")
@@ -5877,6 +5994,39 @@ class LyricsView(Gtk.Box):
         self.mode.set_active_name(mode)
         self.syncing = False
         self.draw(mode)
+        if plain:
+            seq = self.seq
+            in_thread(self.app.lyrics.notes, got, done=lambda notes, _e: seq == self.seq and self.got_notes(notes or []))
+
+    def got_notes(self, notes):
+        self.notes = notes
+        if self.text_label and notes:   # the words as written, showing: their links now
+            adj = self.scroller.get_vadjustment()
+            keep = adj.get_value()
+            self.text_label.set_markup(self.markup(self.got["plain"]))
+            self.from_label.set_label(self.plain_heading())
+            GLib.idle_add(lambda: (adj.set_value(keep), False)[1])
+
+    def plain_heading(self):
+        n = len(self.notes)
+        return f"LYRICS · {(self.got.get('plain_from') or '').upper()}" + (
+            f" · {n} NOTE{'S' if n != 1 else ''}: CLICK AN UNDERLINED LINE" if n else "")
+
+    def show_note(self, _label, uri):
+        if not uri.startswith("note:"):
+            return False   # a link of the lyrics' own, if any
+        n = self.notes[int(uri[5:])]
+        best = max(n["notes"], key=lambda a: (a["verified"], a["state"] == "accepted", a["votes"]))
+        self.card_words.set_label(" / ".join(x.strip() for x in n["fragment"].splitlines() if x.strip()))
+        self.card_text.set_label(best["text"])
+        about = [f"{best['votes']:+,} votes" if best["votes"] else "",
+                 "verified by the artist" if best["verified"] else "" if best["state"] == "accepted" else "not reviewed yet",
+                 f"{len(n['notes']) - 1} more on Genius" if len(n["notes"]) > 1 else ""]
+        self.card_about.set_label(" · ".join(x for x in about if x))
+        self.card_link.set_uri(n["url"] or self.got.get("url") or "https://genius.com/")
+        self.card_scroll.get_vadjustment().set_value(0)
+        self.card.set_visible(True)
+        return True
 
     def on_mode(self, group, _p):
         if not self.syncing and self.got:
@@ -5900,20 +6050,25 @@ class LyricsView(Gtk.Box):
                 self.labels.append(lab)
             GLib.timeout_add(60, lambda: (self.tick(self.app.position, jump=True), False)[1])   # once laid out
         else:
-            self.from_label.set_label(f"LYRICS · {(got.get('plain_from') or '').upper()}")
+            self.from_label.set_label(self.plain_heading())
             lab = Gtk.Label(xalign=0, wrap=True, selectable=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
             lab.add_css_class("lyrics-text")
             lab.set_markup(self.markup(got["plain"]))
+            lab.connect("activate-link", self.show_note)
+            self.text_label = lab
             self.body.append(lab)
             self.scroller.get_vadjustment().set_value(0)
 
     def markup(self, text):
         muted = self.app.theme["c"]["muted"]
+        noted = place_notes(text, self.notes) if self.notes else {}
         out = []
-        for line in text.splitlines():
+        for i, line in enumerate(text.splitlines()):
             esc = GLib.markup_escape_text(line)
             if re.fullmatch(r"\s*\[[^\]]+\]\s*", line):   # [Verse 1], [Chorus]: Genius's section names
                 esc = f'<span foreground="{muted}" size="small" weight="bold">{esc.upper()}</span>'
+            elif i in noted and line.strip():
+                esc = f'<a href="note:{noted[i]}" title="Genius annotation">{esc}</a>'
             out.append(esc)
         return "\n".join(out)
 

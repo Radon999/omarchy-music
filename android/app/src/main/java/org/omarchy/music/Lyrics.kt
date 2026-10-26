@@ -9,11 +9,12 @@ import java.io.File
  *  a saved song's own tags come first, so lyrics work offline too. */
 object Lyrics {
     private const val RETRY = 7 * 86400   // look again for lyrics nobody had, after a week
+    private const val NOTES_KEEP = 14 * 86400   // Genius's annotations are looked at again after two weeks
 
     @Serializable
     data class Got(val plain: String? = null, val plain_from: String? = null, val synced: String? = null,
                    val synced_from: String? = null, val url: String? = null, val instrumental: Boolean = false,
-                   val time: Double = 0.0) {
+                   val time: Double = 0.0, val genius_id: Long? = null) {
         val has get() = plain != null || synced != null || instrumental
     }
 
@@ -25,7 +26,7 @@ object Lyrics {
         'І' to 'I', 'Ј' to 'J', 'Ѕ' to 'S', 'ο' to 'o', 'α' to 'a', 'ν' to 'v', 'Ο' to 'O', 'Α' to 'A')
     private val LRC_TIME = Regex("\\[(\\d+):(\\d+(?:[.:]\\d+)?)]")
 
-    private fun degenius(text: String): String {
+    internal fun degenius(text: String): String {
         val t = text.replace(Regex("[  -   ]"), " ").replace(Regex("[​-‍⁠﻿]"), "")
         return Regex("\\w+").replace(t) { m ->
             val w = m.value
@@ -72,8 +73,8 @@ object Lyrics {
         return parts.toString().replace(Regex("\n{3,}"), "\n\n").trim()
     }
 
-    /** (text, page address) of the song on Genius, or null if Genius hasn't got it. */
-    private fun genius(artist: String, title: String): Pair<String, String>? {
+    /** (text, page address, song id) of the song on Genius, or null if Genius hasn't got it. */
+    private fun genius(artist: String, title: String): Triple<String, String, Long?>? {
         val lead = artist.split(",")[0].trim()
         val want = cleanTitle(title)
         var best: kotlinx.serialization.json.JsonElement? = null
@@ -92,7 +93,87 @@ object Lyrics {
         }
         val url = best["url"].str ?: return null
         val text = degenius(geniusText(http(url, mapOf("User-Agent" to DESKTOP_UA))))
-        return if (text.isNotEmpty()) text to url else null
+        return if (text.isNotEmpty()) Triple(text, url, best["id"].long) else null
+    }
+
+    // ---- Genius's annotations of the words ----
+    /** One annotation: its text, its votes, whether the artist wrote it, and Genius's "accepted" or not. */
+    @Serializable
+    data class Note(val text: String, val votes: Int = 0, val verified: Boolean = false, val state: String = "")
+
+    /** The words of a song some annotations are about (fragment), and its page on Genius. */
+    @Serializable
+    data class Noted(val fragment: String, val url: String = "", val notes: List<Note>)
+
+    @Serializable
+    private data class SavedNotes(val time: Double, val notes: List<Noted>)
+
+    /** A page of Genius's referents: (the annotated words, how many referents the page had). The
+     *  description of the whole song isn't one of them. */
+    internal fun parseNotes(res: kotlinx.serialization.json.JsonElement): Pair<List<Noted>, Int> {
+        val refs = res.path("response", "referents").list
+        return refs.mapNotNull { r ->
+            val frag = r["fragment"].str?.trim().orEmpty()
+            if (r["is_description"].bool == true || frag.isEmpty()) return@mapNotNull null
+            val notes = r["annotations"].list.mapNotNull { a ->
+                val text = a.path("body", "plain").str?.trim().orEmpty()
+                if (text.isEmpty()) null else Note(degenius(text), (a["votes_total"].long ?: 0).toInt(), a["verified"].bool == true, a["state"].str ?: "")
+            }
+            if (notes.isEmpty()) null else Noted(degenius(frag), r["url"].str ?: "", notes)
+        } to refs.size
+    }
+
+    /** Words to compare a line of lyrics and an annotation's by: no case, quotes or punctuation. */
+    internal fun noteKey(text: String) =
+        text.lowercase().replace("’", "").replace("'", "").replace(Regex("[^\\p{L}\\p{N}_]+"), " ").trim()
+
+    /** Which lines of text (lyrics) each of notes is about: line index -> note index. The words of
+     *  an annotation are whole lines, or part of one; a chorus sung again gets the note each time;
+     *  a line two notes are about gets the first. (The desktop's place_notes.) */
+    internal fun placeNotes(text: String, notes: List<Noted>): Map<Int, Int> {
+        val keys = text.lines().map { noteKey(it) }
+        val at = HashMap<Int, Int>()
+        fun near(f: String, line: String) = f in line || (line.length >= 6 && line in f)
+        for ((k, n) in notes.withIndex()) {
+            val frag = n.fragment.lines().map { noteKey(it) }.filter { it.isNotEmpty() }
+            if (frag.isEmpty()) continue
+            for ((i, first) in keys.withIndex()) {
+                if (first.isEmpty() || !near(frag[0], first)) continue
+                val lines = mutableListOf(i)
+                var j = i + 1
+                var ok = true
+                for (f in frag.drop(1)) {
+                    while (j < keys.size && keys[j].isEmpty()) j++   // a blank line inside the words
+                    if (j >= keys.size || !near(f, keys[j])) { ok = false; break }
+                    lines += j; j++
+                }
+                if (ok) lines.forEach { at.putIfAbsent(it, k) }
+            }
+        }
+        return at
+    }
+
+    /** (blocking) Genius's annotations of the song whose lyrics are got, empty if they aren't
+     *  Genius's or it has none. Kept a while, each song's in a file. */
+    fun notes(ctx: Context, got: Got): List<Noted> {
+        val url = got.url ?: return emptyList()
+        if (!url.startsWith("https://genius.com/")) return emptyList()
+        val dir = File(ctx.cacheDir, "genius-notes").apply { mkdirs() }
+        val file = File(dir, "${safeName(url.substringAfterLast('/'))}.json")
+        val cached = readText(file)?.let { runCatching { JSON.decodeFromString(SavedNotes.serializer(), it) }.getOrNull() }
+        if (cached != null && now() - cached.time < NOTES_KEEP) return cached.notes
+        val notes = try {
+            val id = got.genius_id ?: Regex("genius://songs/(\\d+)").find(http(url, mapOf("User-Agent" to DESKTOP_UA)))?.groupValues?.get(1)?.toLong()
+            val out = ArrayList<Noted>()
+            if (id != null) for (page in 1..4) {
+                val (some, n) = parseNotes(httpJson("https://genius.com/api/referents?song_id=$id&text_format=plain&per_page=50&page=$page"))
+                out += some
+                if (n < 50) break
+            }
+            out
+        } catch (e: Exception) { return cached?.notes ?: emptyList() }   // offline: what was found last time
+        writeAtomic(file, JSON.encodeToString(SavedNotes.serializer(), SavedNotes(now(), notes)))
+        return notes
     }
 
     /** (timed LRC text, plain text, instrumental) from LRCLIB, or null. */
@@ -152,7 +233,7 @@ object Lyrics {
         var reached = false
         runCatching { genius(m.artist, m.title) }.onSuccess { g ->
             reached = true
-            if (g != null) got = got.copy(plain = g.first, plain_from = "Genius", url = g.second)
+            if (g != null) got = got.copy(plain = g.first, plain_from = "Genius", url = g.second, genius_id = g.third)
         }   // offline, or Genius changed: the others may still have them
         val tidal = Music.tidal
         if (m.tidal != null && tidal.connected) runCatching { tidal.lyrics(m.tidal) }.onSuccess { (synced, plain) ->
