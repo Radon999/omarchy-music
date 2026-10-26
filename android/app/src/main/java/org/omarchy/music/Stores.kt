@@ -165,6 +165,33 @@ data class FolderItem(val kind: String, val source: String = "", val id: String,
 @Serializable
 data class PlaylistFolder(val id: String, val name: String, val playlists: List<FolderItem> = emptyList())
 
+@Serializable
+data class SongSpeed(val speed: Double = 1.0, val pitch: Boolean = false)
+
+/** The speed you picked for songs (Speed…), kept by song so the same song from any service plays
+ *  at it; the desktop's song-speeds.json. pitch: whether the pitch moves with the speed (the way a
+ *  sped-up edit sounds) or stays where it is. */
+class SongSpeeds(private val file: File) {
+    private val ser = MapSerializer(String.serializer(), SongSpeed.serializer())
+    var items: Map<String, SongSpeed> = readText(file)?.let { runCatching { JSON.decodeFromString(ser, it) }.getOrNull() } ?: emptyMap()
+        private set
+
+    fun get(t: Track): SongSpeed = items[key(t)] ?: SongSpeed()
+
+    @Synchronized
+    fun set(tracks: List<Track>, speed: Double, pitch: Boolean = false) {
+        val s = Math.round(speed.coerceIn(LOW, HIGH) * 100) / 100.0
+        items = items.toMutableMap().apply { tracks.forEach { if (s == 1.0) remove(key(it)) else put(key(it), SongSpeed(s, pitch)) } }
+        writeAtomic(file, JSON.encodeToString(ser, items))
+    }
+
+    companion object {
+        const val LOW = 0.5
+        const val HIGH = 2.0
+        fun key(t: Track) = songKey(t).let { (a, b) -> "$a|$b" }
+    }
+}
+
 /** Folders you name in the Library, each holding playlists: yours and your services'. A playlist is in a folder once. */
 class PlaylistFolders(private val file: File) {
     private val ser = ListSerializer(PlaylistFolder.serializer())

@@ -118,6 +118,7 @@ SONGS, ART = MUSIC / "songs", MUSIC / "art"
 LIBRARY = MUSIC / "library.json"
 MISSING = MUSIC / "missing.json"    # songs Tidal had no lossless copy of, and when we looked
 PLAYLISTS = MUSIC / "playlists.json"   # the playlists you make here
+SONG_SPEEDS = MUSIC / "song-speeds.json"   # songs you sped up or slowed down: the speed each plays at
 PLAYLIST_FOLDERS = MUSIC / "playlist-folders.json"   # folders you name, holding playlists of yours and your services'
 CACHE = STATE_DIR / "cache" if WINDOWS else HOME / ".cache" / "omarchy-music"
 THUMBS = CACHE / "thumbs"
@@ -675,6 +676,34 @@ class Plays:
     def top(self, n=200):
         rows = sorted(self.items.values(), key=lambda e: (-e.get("plays", 0), -e.get("last", 0)))[:n]
         return [dict(e["track"], plays=e["plays"]) for e in rows]
+
+
+class SongSpeeds:
+    """The speed you picked for songs (Speed…): kept by song, so the same song from any
+    service plays at it. pitch: whether the pitch moves with the speed, the way a sped-up
+    edit sounds, or stays where it is."""
+    LOW, HIGH = 0.5, 2.0
+
+    def __init__(self):
+        self.items = read_json(SONG_SPEEDS, {})   # "title|artist" -> {"speed", "pitch"}
+
+    @staticmethod
+    def key(t):
+        return "|".join(song_key(t))
+
+    def get(self, t):
+        """(speed, pitch) the song plays at: (1.0, False) if you didn't change it."""
+        e = self.items.get(self.key(t)) or {}
+        return float(e.get("speed", 1.0)), bool(e.get("pitch", False))
+
+    def set(self, tracks, speed, pitch=False):
+        speed = round(min(self.HIGH, max(self.LOW, float(speed))), 2)
+        for t in tracks:
+            if speed == 1.0:
+                self.items.pop(self.key(t), None)
+            else:
+                self.items[self.key(t)] = {"speed": speed, "pitch": bool(pitch)}
+        write_atomic(SONG_SPEEDS, json.dumps(self.items, indent=1))
 
 
 class PlaylistFolders:
@@ -2694,9 +2723,15 @@ class Player:
         if "event" in msg:
             GLib.idle_add(lambda m=msg: (self.on_event(m), False)[1])
 
-    def load(self, path, paused=False, start=0):
-        opts = f"pause={'yes' if paused else 'no'}" + (f",start={start:.1f}" if start else "")
+    def load(self, path, paused=False, start=0, speed=1.0, pitch=False):
+        # The speed goes with every file, 1 too: mpv puts per-file options back when the file ends.
+        opts = (f"pause={'yes' if paused else 'no'}" + (f",start={start:.1f}" if start else "")
+                + f",speed={speed:g},audio-pitch-correction={'no' if pitch else 'yes'}")
         self.cmd("loadfile", path, "replace", -1, opts)
+
+    def set_speed(self, speed, pitch=False):
+        self.cmd("set_property", "audio-pitch-correction", not pitch)
+        self.cmd("set_property", "speed", speed)
 
     def set_volume(self, volume, muted):
         self.cmd("set_property", "volume", volume)
@@ -6938,6 +6973,50 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.connect("response", answered)
         dlg.present(self)
 
+    def speed_dialog(self, tracks):
+        """Speed…: how fast tracks play, from half to twice their speed."""
+        a = self.app
+        if not tracks:
+            return
+        speed, pitch = a.speeds.get(tracks[0])
+        dlg = Adw.AlertDialog(heading="Speed" if len(tracks) == 1 else f"Speed · {len(tracks)} songs",
+                              body=f"“{tracks[0]['title']}” plays at this speed from now on" if len(tracks) == 1
+                              else "These songs play at this speed from now on")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        label = Gtk.Label()
+        label.add_css_class("title-2")
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, SongSpeeds.LOW, SongSpeeds.HIGH, 0.05)
+        scale.set_draw_value(False)
+        scale.set_size_request(280, -1)
+        for mark in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0):
+            scale.add_mark(mark, Gtk.PositionType.BOTTOM, f"{mark:g}×" if mark in (0.5, 1.0, 1.5, 2.0) else None)
+        scale.connect("value-changed", lambda sc: label.set_label(f"{round(sc.get_value(), 2):g}×"))
+        scale.set_value(speed)
+        label.set_label(f"{speed:g}×")
+        row = Gtk.Box(spacing=10)
+        sw = Gtk.Switch(active=pitch, valign=Gtk.Align.CENTER)
+        hint = Gtk.Label(label="Pitch moves with it (a sped-up edit)", xalign=0, hexpand=True, wrap=True)
+        hint.add_css_class("service")
+        row.append(hint)
+        row.append(sw)
+        box.append(label)
+        box.append(scale)
+        box.append(row)
+        dlg.set_extra_child(box)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("normal", "Normal")
+        dlg.add_response("save", "Save")
+        dlg.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_close_response("cancel")
+
+        def answered(_d, r):
+            if r in ("save", "normal"):
+                a.set_speed(tracks, 1.0 if r == "normal" else round(scale.get_value(), 2), sw.get_active())
+                if self.selecting:
+                    self.stop_selecting()
+        dlg.connect("response", answered)
+        dlg.present(self)
+
     def delete_songs_dialog(self, tracks):
         """Are you sure? before deleting the files of tracks."""
         a = self.app
@@ -7277,6 +7356,7 @@ class MusicWindow(Adw.ApplicationWindow):
         bar.append(self.sel_download)
         self.sel_tags = icon_button("document-edit-symbolic", "ctl", "Edit tags", lambda: self.edit_tags_dialog(self.picked_tracks()))
         bar.append(self.sel_tags)
+        bar.append(icon_button("power-profile-performance-symbolic", "ctl", "Speed", lambda: self.speed_dialog(self.picked_tracks())))
         self.sel_delete = icon_button("user-trash-symbolic", "ctl", "Delete", lambda: self.delete_songs_dialog(self.picked_tracks()))
         bar.append(self.sel_delete)
         bar.append(icon_button("edit-select-all-symbolic", "ctl", "Select all (Ctrl+A)", self.select_all))
@@ -7573,6 +7653,8 @@ class MusicWindow(Adw.ApplicationWindow):
         if song_file(self.lib, t):
             item("Edit tags…", lambda: self.edit_tags_dialog([t]))
             item("Delete…", lambda: self.delete_songs_dialog([t]))
+        speed = self.app.speeds.get(t)[0]
+        item("Speed…" if speed == 1.0 else f"Speed ({speed:g}×)…", lambda: self.speed_dialog([t]))
         if row.group is not None:
             item("Select…", lambda: self.start_selecting(row))
         pop.connect("closed", lambda p: GLib.idle_add(lambda: (p.unparent(), False)[1]))
@@ -7826,7 +7908,8 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         self.np_title.set_label(t["title"])
         set_link_text(self.np_artist, t["artist"])
-        self.np_album.set_label(f" · {t['album']}" if t.get("album") else "")
+        speed = a.speeds.get(t)[0]
+        self.np_album.set_label((f" · {t['album']}" if t.get("album") else "") + (f" · {speed:g}×" if speed != 1.0 else ""))
         self.np_art.clear()
         self.art.apply(self.np_art, t)
         self.update_tint(t)
@@ -9345,6 +9428,7 @@ class MusicApp(Adw.Application):
         self.plays = Plays()
         self.lists = Playlists()
         self.folders_of_lists = PlaylistFolders()   # Library folders of playlists
+        self.speeds = SongSpeeds()
         self.dl = Downloader(self.lib)
         self.art = ArtCache(self.lib)
         self.player = Player(self.on_mpv)
@@ -10353,6 +10437,23 @@ class MusicApp(Adw.Application):
             self.lists.save()
         return done, failed
 
+    # ---- songs' speeds ----
+    def speed_opts(self, t):
+        speed, pitch = self.speeds.get(t)
+        return {"speed": speed, "pitch": pitch}
+
+    def set_speed(self, tracks, speed, pitch=False):
+        """Play tracks at speed from now on (the playing one too, at once)."""
+        self.speeds.set(tracks, speed, pitch)
+        cur = self.current_track()
+        if cur and any(SongSpeeds.key(t) == SongSpeeds.key(cur) for t in tracks):
+            self.player.set_speed(*self.speeds.get(cur))
+        speed = self.speeds.get(tracks[0])[0] if tracks else 1.0
+        what = f"“{tracks[0]['title']}”" if len(tracks) == 1 else f"{len(tracks)} songs"
+        self.toast(f"{what} back to normal speed" if speed == 1.0 else f"{what} at {speed:g}×")
+        if self.win:
+            self.win.update_now_playing()
+
     # ---- deleting songs ----
     def delete_files(self, tracks):
         """Delete tracks' files: a download for good (it can be downloaded again), a
@@ -11005,7 +11106,7 @@ class MusicApp(Adw.Application):
                 return
             if self.win:
                 self.win.set_status("")
-            self.player.load(path, paused=not autoplay)
+            self.player.load(path, paused=not autoplay, **self.speed_opts(t))
             self.paused = not autoplay
             if autoplay:
                 self.begin_listen(t)
@@ -11057,7 +11158,7 @@ class MusicApp(Adw.Application):
             if err:
                 self.toast(f"Couldn't get “{t['title']}” back: {err}")
                 return
-            self.player.load(path, paused=paused, start=pos)
+            self.player.load(path, paused=paused, start=pos, **self.speed_opts(t))
         self.dl.stream(t, ready)
 
     def save_current(self):

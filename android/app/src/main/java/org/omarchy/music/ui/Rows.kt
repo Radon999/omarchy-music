@@ -73,6 +73,7 @@ class Ui {
     var pickPlaylistFor by mutableStateOf<List<Track>?>(null)
     var editTagsFor by mutableStateOf<List<Track>?>(null)
     var deleteFor by mutableStateOf<List<Track>?>(null)
+    var speedFor by mutableStateOf<List<Track>?>(null)
     var askName by mutableStateOf<Triple<String, String, (String) -> Unit>?>(null)
     var confirm by mutableStateOf<Pair<String, () -> Unit>?>(null)
     var playlistsBySource = mutableStateListOf<Pair<String, List<Album>?>>()
@@ -193,6 +194,7 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
         }()
         else if (Music.phoneFile(t) != null) item("Delete…") { ui.deleteFor = listOf(t) }()
         if (org.omarchy.music.Tags.editable(t) != null) item("Edit tags…") { ui.editTagsFor = listOf(t) }()
+        Music.speeds.get(t).speed.let { s -> item(if (s == 1.0) "Speed…" else "Speed (${org.omarchy.music.fmtSpeed(s)})…") { ui.speedFor = listOf(t) }() }
         item("Select…") { ui.startSelecting(place.group, place, t) }()
     }
 }

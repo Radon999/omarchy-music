@@ -34,6 +34,7 @@ object Music {
     lateinit var plays: Plays
     lateinit var lists: Playlists
     lateinit var playlistFolders: PlaylistFolders   // Library folders of playlists
+    lateinit var speeds: SongSpeeds
     lateinit var local: LocalFiles
     lateinit var tidal: Tidal
     lateinit var dl: Downloader
@@ -109,6 +110,7 @@ object Music {
         plays = Plays(ctx)
         lists = Playlists(ctx)
         playlistFolders = PlaylistFolders(File(ctx.filesDir, "playlist-folders.json"))
+        speeds = SongSpeeds(File(ctx.filesDir, "song-speeds.json"))
         local = LocalFiles(ctx)
         tidal = Tidal(ctx)
         dl = Downloader(ctx, lib, tidal)
@@ -598,6 +600,22 @@ object Music {
 
     fun saveCurrent() { current()?.let { download(listOf(it)) } }
 
+    private fun playbackOf(t: Track) = speeds.get(t).let { s ->
+        androidx.media3.common.PlaybackParameters(s.speed.toFloat(), if (s.pitch) s.speed.toFloat() else 1f)
+    }
+
+    /** Play tracks at speed from now on (the playing one too, at once). */
+    fun setSpeed(tracks: List<Track>, speed: Double, pitch: Boolean) {
+        if (tracks.isEmpty()) return
+        speeds.set(tracks, speed, pitch)
+        val cur = current()
+        if (cur != null && tracks.any { SongSpeeds.key(it) == SongSpeeds.key(cur) }) player?.playbackParameters = playbackOf(cur)
+        val s = speeds.get(tracks[0]).speed
+        val what = if (tracks.size == 1) "“${tracks[0].title}”" else "${tracks.size} songs"
+        toast(if (s == 1.0) "$what back to normal speed" else "$what at ${fmtSpeed(s)}")
+        musicVersion++
+    }
+
     /** Write changes {field: value} into the tags of tracks' downloaded FLACs, and show the new
      *  names wherever the songs are. The playing song is left alone: its file is being read. */
     fun editTags(tracks: List<Track>, changes: Map<String, String>) {
@@ -991,6 +1009,7 @@ object Music {
                 .setArtworkUri(art).build())
             .build()
         p.setMediaItem(item, (startAt * 1000).toLong())
+        p.playbackParameters = playbackOf(t)
         p.prepare()
         p.playWhenReady = autoplay
     }

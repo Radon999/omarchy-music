@@ -199,6 +199,9 @@ fun <T> bestNamed(items: List<T>, name: String, get: (T) -> String): T? {
 /** The same song on any service: its name and lead artist, tidied. */
 fun songKey(t: Track) = norm(cleanTitle(t.title)) to norm(t.artist.split(",")[0])
 
+/** A speed as the app shows it: "1.25×", "1×". */
+fun fmtSpeed(s: Double) = (if (s == Math.floor(s)) s.toLong().toString() else s.toString().trimEnd('0')) + "×"
+
 fun safeName(id: String) = Regex("[^\\w.-]").replace(id, "_")
 
 fun randomHex(bytes: Int): String {

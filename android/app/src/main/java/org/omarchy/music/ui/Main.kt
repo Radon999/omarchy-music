@@ -217,6 +217,7 @@ private fun SelectBar(ui: Ui, bar: Color) {
             Pill("Download", quiet = true) { Music.download(picked()); ui.stopSelecting() }
             if (picked().any { org.omarchy.music.Tags.editable(it) != null }) Pill("Tags", quiet = true) { ui.editTagsFor = picked() }
             if (picked().any { Music.deletable(it) }) Pill("Delete", quiet = true) { ui.deleteFor = picked() }
+            Pill("Speed", quiet = true) { ui.speedFor = picked() }
             Pill("All", quiet = true) { ui.selected.clear(); ui.selected.addAll(ui.selectPool.map { it.id }.distinct()) }
         }
         Text("✕", style = T.title, modifier = Modifier.clickable { ui.stopSelecting() }.padding(10.dp))
@@ -236,7 +237,8 @@ private fun NowPlaying(ui: Ui, bar: Color) {
                 Modifier.clickable { ui.tab = "lyrics"; ui.pages.clear() })
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(t?.title ?: "Nothing playing", style = T.title.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (t != null) ArtistLinks(t.artist, ui, t.source, suffix = if (t.album.isNotEmpty()) " · ${t.album}" else "")
+                if (t != null) ArtistLinks(t.artist, ui, t.source, suffix = (if (t.album.isNotEmpty()) " · ${t.album}" else "") +
+                    Music.speeds.get(t).speed.let { if (it != 1.0 && !remote) " · ${org.omarchy.music.fmtSpeed(it)}" else "" })
                 else Text("Search for a song to start", style = T.sub)
                 val status = if (remote) Remote.status.message else Music.status
                 if (status.isNotEmpty()) Text(status, style = T.time.copy(color = C.accent))

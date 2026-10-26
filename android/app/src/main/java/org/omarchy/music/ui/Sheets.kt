@@ -95,6 +95,7 @@ fun Sheets(ui: Ui) {
     ui.folderFor?.let { item -> FolderPicker(ui, item) }
     ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
     DeleteDialog(ui)
+    ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -462,6 +463,37 @@ private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
             }
         },
         confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Speed…: how fast the songs play, from half to twice their speed. */
+@Composable
+private fun SpeedDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val start = remember(tracks) { Music.speeds.get(tracks[0]) }
+    var speed by remember(tracks) { mutableStateOf(start.speed.toFloat()) }
+    var pitch by remember(tracks) { mutableStateOf(start.pitch) }
+    val close = { ui.speedFor = null }
+    val done = { s: Double -> close(); Music.setSpeed(tracks, s, pitch); ui.stopSelecting() }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Speed of “${tracks[0].title}”" else "Speed of ${tracks.size} songs", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                Text(org.omarchy.music.fmtSpeed(Math.round(speed * 20) / 20.0), style = T.title.copy(color = C.accent))
+                Slider(speed, { speed = Math.round(it * 20) / 20f }, valueRange = 0.5f..2f, steps = 29,
+                    colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Pitch moves with it (a sped-up edit)", style = T.sub, modifier = Modifier.weight(1f))
+                    Switch(pitch, { pitch = it }, colors = swColors())
+                }
+            }
+        },
+        confirmButton = { TextButton({ done(Math.round(speed * 20) / 20.0) }) { Text("Save", color = C.accent) } },
+        dismissButton = {
+            Row {
+                TextButton({ done(1.0) }) { Text("Normal", color = C.fg) }
+                TextButton(close) { Text("Cancel", color = C.muted) }
+            }
+        })
 }
 
 /** Delete: are you sure? Downloads go at once; the phone's own songs (other apps' files) only once
