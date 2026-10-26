@@ -1175,21 +1175,20 @@ class LocalFiles:
     def tracks(self):
         return [dict(e["track"]) for e in list(self.files.values())]
 
-    def scan(self, folders, also_skip=None):
+    def scan(self, folders):
         """Walk the folders (blocking) and read the new and changed files. Returns
         whether anything changed. A file that turns up after the first scan was
-        added now; on the first scan, when it was last written. also_skip: your download
-        folder (its songs are in the library already)."""
+        added now; on the first scan, when it was last written. (Songs downloaded into a
+        folder of yours are read too; the Music tab lists each file once.)"""
         first, skip = not self.files, MUSIC.resolve()
-        skip2 = Path(also_skip).expanduser().resolve() if also_skip else None
         seen, changed = {}, False
         for folder in folders:
             root = Path(folder).expanduser()
-            if not root.is_dir() or root.resolve() in (skip, skip2):
+            if not root.is_dir() or root.resolve() == skip:
                 continue
             for dirpath, dirnames, filenames in os.walk(root):
                 d = Path(dirpath)
-                dirnames[:] = [n for n in dirnames if not n.startswith(".") and (d / n).resolve() not in (skip, skip2)]
+                dirnames[:] = [n for n in dirnames if not n.startswith(".") and (d / n).resolve() != skip]
                 for name in filenames:
                     path = d / name
                     if path.suffix.lower() not in AUDIO_EXT:
@@ -1553,6 +1552,15 @@ class Tidal:
             with self.lock:
                 c = self.session.track(int(track["tidal"]))
             if ok(c):
+                if not lossy and "HIRES_LOSSLESS" not in (c.media_metadata_tags or []) and getattr(c, "isrc", None):
+                    try:   # the same recording in hi-res on another release (the album, say)
+                        with self.lock:
+                            hi = [x for x in self.session.get_tracks_by_isrc(c.isrc) if self.lossless(x)
+                                  and "HIRES_LOSSLESS" in (x.media_metadata_tags or [])]
+                        if hi:
+                            return hi[0]
+                    except Exception:  # noqa: BLE001 -- that one, then
+                        pass
                 return c
         if track.get("isrc"):
             try:
@@ -1775,7 +1783,8 @@ class Tidal:
         credits = sum(found(x) for x in ours) / len(ours)    # prefers the version with the featured artists
         closeness = 1 - abs(c.duration - dur) / 6 if dur else 0.5
         same_album = 0.05 if track.get("album") and similar(track["album"].lower(), album.lower()) > 0.8 else 0.0
-        return 0.55 * t + 0.2 * lead + 0.1 * credits + 0.15 * closeness + same_album
+        hires = 0.04 if "HIRES_LOSSLESS" in (c.media_metadata_tags or []) else 0.0   # of two equal versions, the hi-res one
+        return 0.55 * t + 0.2 * lead + 0.1 * credits + 0.15 * closeness + same_album + hires
 
     def stream(self, c, lossy=False):
         """Tidal track c as something mpv plays straight from Tidal, nothing saved:
@@ -10012,8 +10021,7 @@ class MusicWindow(Adw.ApplicationWindow):
 
     # ---- actions ----
     def download_only(self, track):
-        self.dl.fetch(track, lambda _p, err: (self.toast(f"Download failed: {err}") if err else None, self.refresh_all()))
-        self.refresh_all()
+        self.app.download([track])   # (asks first when you have the song already)
 
     def remove_download(self, vid):
         cur = self.app.current_track()
@@ -11587,7 +11595,8 @@ class WrappedWindow(Adw.Window):
         return True
 
 
-AUDIO_EXT = {".flac", ".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".oga", ".opus", ".wav", ".wv", ".ape", ".aif", ".aiff"}
+AUDIO_EXT = {".flac", ".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".oga", ".opus", ".wav", ".wv", ".ape", ".aif", ".aiff",
+             ".wma", ".alac", ".m4b", ".mka", ".webm", ".dsf", ".dff", ".mpc", ".tta", ".ac3"}
 
 
 def track_from_file(path):
@@ -11829,7 +11838,7 @@ class MusicApp(Adw.Application):
         self.lastfm = LastFM()
         self.lyrics = Lyrics(self)
         self.tagger = Tagger(self)
-        self.dl.on_saved = lambda vid: GLib.idle_add(lambda: (self.tagger.start([vid]), False)[1])
+        self.dl.on_saved = lambda vid: GLib.idle_add(lambda: (self.tagger.start([vid]), self.after_saved(vid), False)[2])
         self.reload_theme()
         self.watch_theme()
         state = read_json(STATE, {})
@@ -12432,11 +12441,12 @@ class MusicApp(Adw.Application):
     def my_songs(self):
         """Every song you have: downloaded here (once each, whichever service it was saved from) and in your folders."""
         seen, out = set(), []
+        same = lambda f: os.path.normcase(os.path.normpath(f or ""))   # noqa: E731 -- C:\a and c:/A are one file
         for t in sorted(self.lib.items.values(), key=lambda t: -t.get("added", 0)):
-            if t["file"] not in seen:
-                seen.add(t["file"])
+            if same(t["file"]) not in seen:
+                seen.add(same(t["file"]))
                 out.append(dict(t))
-        return out + [t for t in self.local.tracks() if t["file"] not in seen]
+        return out + [t for t in self.local.tracks() if same(t["file"]) not in seen]
 
     def most_played(self):
         """The Music tab's Most played: every play added up (see Stats): Last.fm's, your Spotify
@@ -12803,7 +12813,7 @@ class MusicApp(Adw.Application):
                 self.win.refresh_accounts()
                 if changed:
                     self.win.refresh_music()
-        in_thread(self.local.scan, list(self.folders), self.download_dir, done=done)
+        in_thread(self.local.scan, list(self.folders), done=done)
 
     def rescan_soon(self):
         """When the Music tab opens: your folders again, at most every couple of minutes."""
@@ -13206,11 +13216,42 @@ class MusicApp(Adw.Application):
         self.dupe_action = action
         self.save_state()
 
+    def copy_index(self):
+        """Your songs on disk by the first letters of their title (squashed): kept until your songs change."""
+        sig = (len(self.lib.items), len(self.local.files), self.local.scanned)
+        if getattr(self, "_copy_sig", None) != sig:
+            index = {}
+            for m in self.my_songs():
+                if not is_phone_song(m):
+                    index.setdefault(squash(clean_title(m.get("title") or ""))[:4], []).append(m)
+            self._copy_index, self._copy_sig = index, sig
+        return self._copy_index
+
     def copies_of(self, t, mine=None):
         """Your songs on disk that are likely t (see maybe_same: close is enough, it's asked about),
         t itself left out."""
-        return [m for m in (mine if mine is not None else self.my_songs())
-                if m["id"] != t["id"] and maybe_same(t, m) and song_file(self.lib, m)]
+        pool = mine if mine is not None else self.copy_index().get(squash(clean_title(t.get("title") or ""))[:4], [])
+        return [m for m in pool if m["id"] != t["id"] and maybe_same(t, m) and song_file(self.lib, m)]
+
+    def auto_save_ok(self, t):
+        """Whether a song may be saved without asking (Keep, or a service's sync): yes unless you
+        have it already and Copies says Ask (then it streams, and Download asks). With Replace,
+        your copy goes once the download is in."""
+        if self.dupe_action == "keep" or self.lib.has(t["id"]):
+            return True
+        copies = self.copies_of(t)
+        if not copies:
+            return True
+        if self.dupe_action == "replace":
+            self.replace_after[t["id"]] = copies
+            return True
+        return False
+
+    def after_saved(self, vid):
+        """A download is in: your copies of it go, if you said to replace them."""
+        old = self.replace_after.pop(vid, None)
+        if old and self.lib.has(vid):
+            self.replace_copies(old, dict(self.lib.items[vid]))
 
     def download(self, tracks, checked=False):
         """Download the songs you picked, in FLAC, one after another. A song you have already
@@ -13423,7 +13464,8 @@ class MusicApp(Adw.Application):
                         seen.add(t["id"])
                         tracks.append(t)
                 GLib.idle_add(lambda now=list(tracks): (setattr(self, "sync_tracks", now), self.update_sync(), False)[2])
-            self.dl.sync(tracks + [t for t in lossy if t["id"] not in seen], self.update_sync)
+            todo = [t for t in tracks if self.auto_save_ok(t)]   # songs you have already: not unless Copies says so
+            self.dl.sync(todo + [t for t in lossy if t["id"] not in seen], self.update_sync)
 
         def done(_res, err):
             self.syncing = False
@@ -13854,7 +13896,7 @@ class MusicApp(Adw.Application):
         self.position, self.duration = 0.0, t.get("duration") or 0
         self.position_at = time.monotonic()
         on_disk = self.lib.has(t["id"]) or source_of(t) == "file"
-        self.streaming = not (on_disk or self.keep_played)
+        self.streaming = not (on_disk or (self.keep_played and self.auto_save_ok(t)))
         if self.win:
             self.win.update_now_playing()
             self.win.update_position(0, self.duration)
@@ -13914,7 +13956,7 @@ class MusicApp(Adw.Application):
         nxt = self.queue[self.index + 1] if self.index + 1 < len(self.queue) else None
         if not nxt or self.lib.has(nxt["id"]) or source_of(nxt) == "file":
             return
-        if self.keep_played:
+        if self.keep_played and self.auto_save_ok(nxt):
             self.dl.fetch(nxt, lambda *_: self.win and self.win.refresh_all())
         else:
             self.dl.stream(nxt, lambda *_: None)
@@ -14204,6 +14246,8 @@ def maybe_same(a, b):
     ta, tb = squash(clean_title(a.get("title") or "")), squash(clean_title(b.get("title") or ""))
     if not ta or not tb:
         return False
+    if re.findall(r"\d+", ta) != re.findall(r"\d+", tb):
+        return False   # "Song 1" and "Song 2", "22" and "25": different songs
     title = 1.0 if ta == tb else similar(ta, tb)
     if title < 0.75 and not (min(len(ta), len(tb)) >= 4 and (ta in tb or tb in ta)):
         return False
