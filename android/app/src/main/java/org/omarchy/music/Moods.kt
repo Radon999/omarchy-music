@@ -127,6 +127,15 @@ object Moods {
 
     internal fun from(t: Track): String = songs[key(t)]?.from ?: ""
 
+    fun isManual(t: Track) = songs[key(t)]?.from == "manual"
+
+    /** Moods you picked for tracks: they stay, whatever a scan finds. null: back to finding them. */
+    fun setManual(tracks: List<Track>, moods: List<String>?) {
+        for (t in tracks) if (moods == null) songs.remove(key(t)) else songs[key(t)] = Song(moods.filter { it in MOODS }, "manual", now())
+        version++
+        Music.bg({ save() })
+    }
+
     // ---- the parts that don't need the app ----
     /** The moods weighted tags mean, the strongest first, at most n (none weaker than a third of the strongest). */
     fun moodsOf(tags: List<Pair<String, Int>>, n: Int = 3): List<String> {

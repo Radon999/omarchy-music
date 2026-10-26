@@ -44,7 +44,7 @@ class LocalFiles(private val ctx: Context) {
         val out = ArrayList<Track>()
         val where = HashMap<String, String>()
         query { c, uri, path, modified ->
-            if (if (path.startsWith(DOWNLOADS)) mediaId(uri) in saved else folders.none { path.startsWith(it) }) return@query
+            if (mediaId(uri) in saved || (!path.startsWith(DOWNLOADS) && folders.none { path.startsWith(it) })) return@query
             where[uri] = path.trimEnd('/') + "/"
             val old = seen[uri]
             val added = old?.added ?: if (first) modified.toDouble() else now()

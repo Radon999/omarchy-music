@@ -121,6 +121,7 @@ class EqProcessor : BaseAudioProcessor() {
     @Volatile private var settings = EqSettings()
     @Volatile private var stages: List<Stage> = emptyList()
     @Volatile private var gain = 1.0
+    @Volatile var songGain = 1.0   // the playing song's own volume (Volume…), on top
     private var rate = 48000.0
     private var channels = 2
 
@@ -158,10 +159,10 @@ class EqProcessor : BaseAudioProcessor() {
         val st = stages
         val float = inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
         input.order(ByteOrder.nativeOrder())
-        if (st.isEmpty()) {
+        if (st.isEmpty() && songGain == 1.0) {
             out.put(input)
         } else {
-            val g = gain
+            val g = (if (st.isEmpty()) 1.0 else gain) * songGain
             var ch = 0
             while (input.hasRemaining()) {
                 var x = (if (float) input.float.toDouble() else input.short / 32768.0) * g

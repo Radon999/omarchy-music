@@ -100,6 +100,13 @@ fun Sheets(ui: Ui) {
     ui.coverFor?.let { albums -> CoverDialog(ui, albums) }
     ui.artistPictureFor?.let { name -> ArtistPictureDialog(ui, name) }
     ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }
+    ui.volumeFor?.let { tracks -> if (tracks.isNotEmpty()) VolumeDialog(ui, tracks) else ui.volumeFor = null }
+    ui.moodsFor?.let { tracks -> if (tracks.isNotEmpty()) MoodsDialog(ui, tracks) else ui.moodsFor = null }
+    ui.upgradeFor?.let { tracks -> UpgradeDialog(ui, tracks) }
+    Music.upgradeKept?.let { kept -> UpgradeKeptDialog(kept) }
+    Music.dupePrompt?.let { (new, dupes) -> DupeDownloadDialog(new, dupes) }
+    Trasher()
+    Exporter(ui)
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -183,6 +190,50 @@ private fun AccountsSheet(ui: Ui) {
             }
             Line("Colours", "The window takes the colour of the album art", Music.artColors) {
                 Switch(Music.artColors, { Music.setArtColors(it) }, colors = swColors())
+            }
+            Line("Look", "The app's colours", false) {
+                Box {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("${Looks.ALL.firstOrNull { it.first == Music.look }?.second ?: "Default"} ▾", quiet = true) { open = true }
+                    androidx.compose.material3.DropdownMenu(open, { open = false }, containerColor = C.light) {
+                        Looks.ALL.forEach { (k, name) ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(name, style = T.body) }, { open = false; Music.chooseLook(k) })
+                        }
+                    }
+                }
+            }
+            Line("Downloads", if (Music.downloadDir.isEmpty()) "To Music/Omarchy Music/. Change: to a folder of yours, by artist and album"
+                else "To ${Music.downloadDir}, as Artist/Albums, EPs or Singles/Album", Music.downloadDir.isNotEmpty()) {
+                Box {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change", quiet = true) { open = true }
+                    androidx.compose.material3.DropdownMenu(open, { open = false }, containerColor = C.light) {
+                        androidx.compose.material3.DropdownMenuItem({ Text("Music/Omarchy Music/ (the app's own)", style = T.body) },
+                            { open = false; Music.chooseDownloadDir("") })
+                        Music.folders.forEach { f ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(f, style = T.body) }, { open = false; Music.chooseDownloadDir(f) })
+                        }
+                        androidx.compose.material3.DropdownMenuItem({ Text("A new folder in Music/…", style = T.body) }, {
+                            open = false
+                            ui.askName = Triple("A folder in Music/ for downloads", "") { n ->
+                                Music.chooseDownloadDir("Music/" + org.omarchy.music.pathPart(n, "Downloads") + "/")
+                            }
+                        })
+                    }
+                }
+            }
+            Line("Copies", "Downloading a song you have already", false) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("ask" to "Ask", "keep" to "Keep both", "replace" to "Replace").forEach { (k, l) ->
+                        Chip(l, Music.dupeAction == k) { Music.chooseDupeAction(k) }
+                    }
+                }
+            }
+            if (Music.local.files.isNotEmpty() || Music.upgrading != null) Line("Upgrade", Music.upgrading
+                ?: "Swap your songs for Tidal's FLAC where it's better: MP3s and other lossy files, and 16-bit ones Tidal has in hi-res. The old files go to Android's trash",
+                Music.upgrading != null) {
+                if (Music.upgrading != null) Pill("Stop", quiet = true) { Music.upgradeStop = true }
+                else Pill("Upgrade…") { ui.upgradeFor = emptyList() }
             }
             Divider()
             LastFmLine(ui)
@@ -621,6 +672,188 @@ private fun SpeedDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
                 TextButton(close) { Text("Cancel", color = C.muted) }
             }
         })
+}
+
+/** Volume…: a song's own boost (quiet unreleased songs), from -12 to +12 dB, kept for it. */
+@Composable
+private fun VolumeDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    var db by remember(tracks) { mutableStateOf(Music.gains.get(tracks[0]).toFloat()) }
+    val close = { ui.volumeFor = null }
+    val done = { v: Double -> close(); Music.setGain(tracks, v); ui.stopSelecting() }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Volume of “${tracks[0].title}”" else "Volume of ${tracks.size} songs", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                Text("%+.1f dB".format(db), style = T.title.copy(color = C.accent))
+                Slider(db, { db = Math.round(it * 2) / 2f }, valueRange = -12f..12f, steps = 47,
+                    colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)))
+                Text("Plays this much louder (or quieter) from now on. +6 dB is about twice as loud; very loud songs may distort above 0.",
+                    style = T.sub)
+            }
+        },
+        confirmButton = { TextButton({ done(Math.round(db * 2) / 2.0) }) { Text("Save", color = C.accent) } },
+        dismissButton = {
+            Row {
+                TextButton({ done(0.0) }) { Text("Normal", color = C.fg) }
+                TextButton(close) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Moods…: pick a song's moods by hand (a scan leaves them alone), or let the scan find them again. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MoodsDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val picked = remember(tracks) { androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(org.omarchy.music.Moods.of(tracks[0])) } }
+    val close = { ui.moodsFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Moods of “${tracks[0].title}”" else "Moods of ${tracks.size} songs", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    org.omarchy.music.Moods.MOODS.keys.forEach { m ->
+                        Chip(m.replaceFirstChar { it.uppercase() }, m in picked) { if (m in picked) picked.remove(m) else picked.add(m) }
+                    }
+                }
+                Text(if (org.omarchy.music.Moods.isManual(tracks[0])) "Set by hand: scans leave them as they are."
+                     else "Found by the scan. Pick some and they're set by hand from now on.", style = T.sub, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.setMoods(tracks, picked.toList()); ui.stopSelecting() }) { Text("Save", color = C.accent) } },
+        dismissButton = {
+            Row {
+                TextButton({ close(); Music.setMoods(tracks, null); ui.stopSelecting() }) { Text("Find them", color = C.fg) }
+                TextButton(close) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Upgrade…: these songs (none: every song of yours) for Tidal's FLAC where it's better. */
+@Composable
+private fun UpgradeDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val all = tracks.isEmpty()
+    val n = if (all) Music.local.files.size else tracks.size
+    var every by remember { mutableStateOf(false) }
+    val close = { ui.upgradeFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (!all && n == 1) "Upgrade “${tracks[0].title}”?" else if (all) "Upgrade your $n songs?" else "Upgrade these $n songs?",
+            style = T.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text((if (n == 1) "The song is" else "Each song is") + " looked up on Tidal. Where Tidal has it better, the FLAC is downloaded and " +
+                    "takes the old file's place: in your playlists and the queue.\n\n" +
+                    "• MP3, AAC and other lossy files: replaced with FLAC\n" +
+                    "• 16-bit FLAC/WAV: replaced only when Tidal has it in 24-bit\n" +
+                    "• 24-bit files, and songs Tidal doesn't have: left as they are (you're asked about the ones kept as good already, at the end)\n\n" +
+                    "The old files go to Android's trash (it asks you first), so you can get them back. The new ones go to " +
+                    Music.downloadDir.ifEmpty { "Music/Omarchy Music/" } + ". It takes a while: you can keep listening, and Stop it in the accounts menu.",
+                    style = T.body)
+                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Replace every song Tidal has, even ones yours is as good as or better than", style = T.sub, modifier = Modifier.weight(1f))
+                    Switch(every, { every = it }, colors = swColors())
+                }
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.upgradeSongs(if (all) null else tracks, every); ui.stopSelecting() }) { Text("Upgrade", color = C.accent) } },
+        dismissButton = { TextButton(close) { Text("Cancel", color = C.muted) } })
+}
+
+/** After Upgrade: the songs it left because yours are as good or better. Replace them anyway? */
+@Composable
+private fun UpgradeKeptDialog(kept: List<Pair<org.omarchy.music.Track, String>>) {
+    val close = { Music.upgradeKept = null }
+    val n = kept.size
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text("$n song${if (n != 1) "s" else ""} kept as ${if (n != 1) "they are" else "it is"}", style = T.title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(if (n != 1) "Yours are as good as Tidal's or better, so they weren't replaced:" else "Yours is as good as Tidal's or better, so it wasn't replaced:",
+                    style = T.body)
+                kept.take(8).forEach { (t, why) -> Text("• ${t.title} — ${t.artist}\n   $why", style = T.sub, modifier = Modifier.padding(top = 4.dp)) }
+                if (n > 8) Text("…and ${n - 8} more", style = T.sub)
+                Text("Replace them with Tidal's anyway? The new copies may be lower quality than yours (yours go to Android's trash).",
+                    style = T.body, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.upgradeSongs(kept.map { it.first }, force = true) }) { Text("Replace anyway", color = C.red) } },
+        dismissButton = { TextButton(close) { Text("Keep mine", color = C.muted) } })
+}
+
+/** Before downloading songs you may have: which ones, and what you have of them. */
+@Composable
+private fun DupeDownloadDialog(new: List<org.omarchy.music.Track>, dupes: List<Pair<org.omarchy.music.Track, List<org.omarchy.music.Track>>>) {
+    val n = dupes.size
+    AlertDialog(onDismissRequest = { Music.answerDupes("cancel") }, containerColor = C.light,
+        title = { Text(if (n == 1) "You may have this song already" else "You may have $n of these songs already", style = T.title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                dupes.take(6).forEach { (t, copies) ->
+                    Text("“${t.title}” — ${t.artist}", style = T.body, modifier = Modifier.padding(top = 6.dp))
+                    Text("you have:", style = T.sub)
+                    copies.take(3).forEach { c ->
+                        Text("• ${c.title} — ${c.artist}" + (if (c.album.isNotEmpty()) " (${c.album})" else "") +
+                            "\n   " + listOf(Music.copyInfo(c), org.omarchy.music.fmtTime(c.duration), Music.whereIs(c)).filter { it.isNotEmpty() }.joinToString(" · "),
+                            style = T.sub)
+                    }
+                }
+                if (n > 6) Text("…and ${n - 6} more", style = T.sub)
+                Text("These look like the same song (the name, artist or album match closely). Download anyway?", style = T.body,
+                    modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton({ Music.answerDupes("replace") }) { Text("Download and replace", color = C.accent) }
+                TextButton({ Music.answerDupes("keep") }) { Text("Download, keep both", color = C.fg) }
+                if (new.size > n) TextButton({ Music.answerDupes("skip") }) { Text("Only the new ones", color = C.fg) }
+                TextButton({ Music.answerDupes("cancel") }) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Your files Android is asked to put in its trash (Upgrade, Replace, Duplicates): it asks you, then they go. */
+@Composable
+private fun Trasher() {
+    val ctx = LocalContext.current
+    var asked by remember { mutableStateOf<Music.TrashJob?>(null) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        val job = asked
+        asked = null
+        if (job != null) Music.trashed(job, r.resultCode == android.app.Activity.RESULT_OK)
+    }
+    val job = Music.trashJob
+    LaunchedEffect(job) {
+        if (job == null || asked != null) return@LaunchedEffect
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val uris = job.tracks.mapNotNull { Music.phoneFile(it) }.map { android.net.Uri.parse(it) }
+            if (uris.isEmpty()) Music.trashed(job, false)
+            else {
+                asked = job
+                val req = android.provider.MediaStore.createTrashRequest(ctx.contentResolver, uris, true)
+                ask.launch(androidx.activity.result.IntentSenderRequest.Builder(req.intentSender).build())
+            }
+        } else Music.trashed(job, false)
+    }
+}
+
+/** Export: a playlist as an .m3u8 file, where you pick. */
+@Composable
+private fun Exporter(ui: Ui) {
+    var pending by remember { mutableStateOf<List<org.omarchy.music.Track>?>(null) }
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
+        val t = pending
+        pending = null
+        if (uri != null && t != null) Music.exportM3u8(uri, t)
+    }
+    val job = ui.exportFor
+    LaunchedEffect(job) {
+        if (job == null) return@LaunchedEffect
+        ui.exportFor = null
+        pending = job.second
+        save.launch(org.omarchy.music.pathPart(job.first, "Playlist") + ".m3u8")
+    }
 }
 
 /** Delete: are you sure? Downloads go at once; the phone's own songs (other apps' files) only once

@@ -394,18 +394,19 @@ def load_theme(look="default"):
         pass
     if look in LOOKS:
         colors = dict(LOOKS[look])
+    # A clean sans-serif and rounded corners, Poweramp-like (the colours are the look's, as ever).
     if WINDOWS:
-        return {"c": colors, "font": "Consolas", "radius": 4}
+        return {"c": colors, "font": "Segoe UI", "radius": 10}
     try:
-        font = subprocess.run(["fc-match", "monospace", "-f", "%{family}"], capture_output=True,
-                              text=True, timeout=2).stdout.split(",")[0] or "monospace"
+        font = subprocess.run(["fc-match", "sans-serif", "-f", "%{family}"], capture_output=True,
+                              text=True, timeout=2).stdout.split(",")[0] or "sans-serif"
     except (OSError, subprocess.SubprocessError):
-        font = "monospace"
-    radius = 0
+        font = "sans-serif"
+    radius = 10
     try:
         out = subprocess.run(["hyprctl", "-j", "getoption", "decoration:rounding"],
                              capture_output=True, text=True, timeout=2).stdout
-        radius = max(0, min(int(json.loads(out).get("int", 0)), 14))
+        radius = max(10, min(int(json.loads(out).get("int", 0)), 16))
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return {"c": colors, "font": font, "radius": radius}
@@ -446,7 +447,11 @@ button.ctl:checked, button.ctl.on, button.ctl.liked {{ text-shadow: 0 0 8px {acc
 .tabs button:checked, toggle-group.sources > toggle:checked {{ box-shadow: 0 0 8px {rgba(acc, 0.55)}; text-shadow: 0 0 6px {rgba(acc, 0.7)}; }}
 listview.tracks > row > .song.playing {{ box-shadow: inset 3px 0 6px -2px {acc}; }}
 listview.tracks > row > .song.playing .title {{ text-shadow: 0 0 6px {rgba(acc, 0.7)}; }}
-.brand {{ color: {acc}; text-shadow: 0 0 8px {rgba(acc, 0.8)}; }}
+.brand, .nav-title {{ color: {acc}; text-shadow: 0 0 8px {rgba(acc, 0.8)}; }}
+.bigart {{ border: 1px solid {rgba(acc, 0.6)}; box-shadow: 0 0 26px {rgba(acc, 0.45)}; }}
+.cat-icon {{ box-shadow: 0 0 8px {rgba(acc, 0.35)}; }}
+.np-title {{ text-shadow: 0 0 10px {rgba(acc, 0.55)}; }}
+button.tool.on {{ -gtk-icon-shadow: 0 0 6px {acc}; }}
 progressbar progress {{ background-color: {acc}; box-shadow: 0 0 8px {acc}; }}
 entry:focus-within {{ box-shadow: 0 0 0 1px {acc}, 0 0 10px {rgba(acc, 0.5)}; }}
 """
@@ -468,7 +473,7 @@ def theme_css(t):
     defs = "\n".join(f"@define-color {n} {v};" for n, v in named.items())
     return f"""
 {defs}
-window, window * {{ font-family: "{t['font']}", monospace; }}
+window, window * {{ font-family: "{t['font']}", sans-serif; }}
 window {{ background-color: {rgba(bg, OPACITY)}; color: {fg}; font-size: 10.5pt; }}
 .top {{ padding: 14px 14px 6px 14px; }}
 .brand {{ font-weight: 800; letter-spacing: 1px; color: {fg}; }}
@@ -590,8 +595,44 @@ checkbutton.pick {{ padding: 0; margin: 0 2px 0 0; }}
 .actions {{ padding: 2px 8px 6px 8px; }}
 scale.tone {{ padding: 4px 0; }}
 scale.tone > trough > slider {{ opacity: 1; }}
+.nav {{ padding: 0; }}
+.nav-title {{ font-weight: 800; font-size: 1.35em; color: {fg}; }}
+.nav-title.home {{ font-size: 1.6em; }}
+list.home {{ background: transparent; padding: 2px 8px 14px 8px; }}
+list.home > row {{ border-radius: {R}px; padding: 7px 10px; margin: 1px 0; background: transparent; outline: none; }}
+list.home > row:hover {{ background-color: {rgba(acc, 0.08)}; }}
+list.home > row:focus-visible {{ background-color: {rgba(acc, 0.12)}; }}
+list.home > row.head {{ padding: 12px 8px 4px 8px; }}
+list.home > row.head:hover {{ background: transparent; }}
+.cat-icon {{ background-color: {rgba(acc, 0.14)}; border-radius: {R}px; color: {acc}; }}
+.cat-label {{ font-weight: 700; font-size: 1.06em; color: {fg}; }}
+.cat-count {{ color: {muted}; font-feature-settings: "tnum"; }}
+.chev {{ color: {muted}; }}
+.nowplaying {{ padding: 4px 22px 4px 22px; }}
+.bigart {{ border-radius: {max(R, 16)}px; background-color: {light}; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }}
+.np-kicker {{ color: {muted}; font-size: 0.74em; font-weight: 700; letter-spacing: 1.5px; }}
+.np-from {{ color: {fg}; font-size: 0.86em; }}
+.np-title {{ font-weight: 800; font-size: 1.45em; color: {fg}; }}
+.np-artist {{ color: {acc}; font-size: 1.04em; }}
+.np-album {{ color: {muted}; }}
+.badge {{ color: {acc}; border: 1px solid {rgba(acc, 0.55)}; border-radius: 6px; padding: 0 5px; font-size: 0.74em; font-weight: 800; }}
+.badge.quiet {{ color: {muted}; border-color: {rgba(muted, 0.55)}; }}
+.wave {{ color: {acc}; }}
+.np-times {{ color: {muted}; font-size: 0.8em; font-feature-settings: "tnum"; }}
+button.tool {{ background: transparent; border: none; box-shadow: none; border-radius: {R}px; padding: 4px 8px;
+  color: {rgba(fg, 0.85)}; min-height: 0; }}
+button.tool:hover {{ background-color: {rgba(acc, 0.08)}; color: {fg}; }}
+button.tool.on {{ color: {acc}; }}
+.tool-label {{ font-size: 0.72em; color: {muted}; }}
+button.tool.on .tool-label {{ color: {acc}; }}
+.player.expanded {{ background: transparent; border-top: none; padding-top: 0; }}
+.player.expanded button.play {{ min-width: 64px; min-height: 64px; border-radius: 999px; box-shadow: 0 6px 18px {rgba(acc, 0.35)}; }}
+.player.expanded button.play image {{ -gtk-icon-size: 26px; }}
+.player.expanded button.ctl image {{ -gtk-icon-size: 20px; }}
+.player button.play {{ border-radius: 999px; }}
+.player .mini-art {{ border-radius: {R}px; }}
 window.wrapped {{ background-color: {darker}; }}
-window.wrapped, window.wrapped * {{ font-family: "{t['font']}", monospace; }}
+window.wrapped, window.wrapped * {{ font-family: "{t['font']}", sans-serif; }}
 .slide {{ padding: 104px 30px 40px 30px; }}
 """ + "".join(f".slide.s{i} {{ background-color: {darker}; "
               f"background-image: radial-gradient(circle at 92% 8%, {rgba(c[k2], 0.30)}, {rgba(darker, 0.0)} 38%), "
@@ -5989,6 +6030,277 @@ def scroll_sideways(row):
     return sw
 
 
+ICONS = ("play", "pause", "next", "prev", "skip", "shuffle", "repeat", "repeat_one", "heart", "heart_line", "star",
+         "star_line", "eq", "lyrics", "vis", "queue", "more", "back", "down", "search", "menu", "note", "person", "clock",
+         "chart", "mood", "copy", "disc", "playlist", "sparkle", "cloud", "folder", "check", "close", "plus", "chev")
+
+
+def draw_icon(cr, name, size):
+    """One of the app's icons on a 24 x 24 grid scaled to size, in the current colour (the phone draws the same)."""
+    import math
+    u = size / 24.0
+    cr.set_line_width(2 * u)
+    cr.set_line_cap(1)    # round
+    cr.set_line_join(1)
+
+    def line(*p, close=False, fill=False):
+        cr.move_to(p[0] * u, p[1] * u)
+        for i in range(2, len(p), 2):
+            cr.line_to(p[i] * u, p[i + 1] * u)
+        if close:
+            cr.close_path()
+        cr.fill() if fill else cr.stroke()
+
+    def rect(x, y, w, h, r=1.2):
+        x, y, w, h, r = x * u, y * u, w * u, h * u, r * u
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 1.5 * math.pi)
+        cr.close_path()
+        cr.fill()
+
+    def ring(x, y, r):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, 0, 2 * math.pi)
+        cr.stroke()
+
+    def dot(x, y, r):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, 0, 2 * math.pi)
+        cr.fill()
+
+    def arc(x, y, r, a0, a1):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, math.radians(a0), math.radians(a1))
+        cr.stroke()
+
+    def heart(fill):
+        cr.move_to(12 * u, 20.5 * u)
+        cr.curve_to(5 * u, 15 * u, 2 * u, 11.5 * u, 2 * u, 8.2 * u)
+        cr.curve_to(2 * u, 5.5 * u, 4.2 * u, 3.5 * u, 6.8 * u, 3.5 * u)
+        cr.curve_to(8.8 * u, 3.5 * u, 10.8 * u, 4.6 * u, 12 * u, 6.5 * u)
+        cr.curve_to(13.2 * u, 4.6 * u, 15.2 * u, 3.5 * u, 17.2 * u, 3.5 * u)
+        cr.curve_to(19.8 * u, 3.5 * u, 22 * u, 5.5 * u, 22 * u, 8.2 * u)
+        cr.curve_to(22 * u, 11.5 * u, 19 * u, 15 * u, 12 * u, 20.5 * u)
+        cr.close_path()
+        cr.fill() if fill else cr.stroke()
+
+    def star(fill):
+        for i in range(10):
+            r = 10 if i % 2 == 0 else 4.3
+            a = -math.pi / 2 + i * math.pi / 5
+            x, y = 12 + r * math.cos(a), 12.6 + r * math.sin(a)
+            (cr.move_to if i == 0 else cr.line_to)(x * u, y * u)
+        cr.close_path()
+        if fill:
+            cr.fill()
+        else:
+            cr.set_line_width(1.8 * u)
+            cr.stroke()
+
+    n = name
+    if n == "play":
+        line(7, 4.5, 19.5, 12, 7, 19.5, close=True, fill=True)
+    elif n == "pause":
+        rect(6, 4.5, 4, 15); rect(14, 4.5, 4, 15)
+    elif n == "next":
+        line(4.5, 5.5, 14.5, 12, 4.5, 18.5, close=True, fill=True); rect(16.5, 5.5, 3, 13)
+    elif n == "prev":
+        line(19.5, 5.5, 9.5, 12, 19.5, 18.5, close=True, fill=True); rect(4.5, 5.5, 3, 13)
+    elif n == "skip":
+        line(5, 6, 11, 12, 5, 18); line(12, 6, 18, 12, 12, 18); line(20, 6, 20, 18)
+    elif n == "shuffle":
+        line(3, 7, 7.5, 7, 15.5, 17, 20, 17); line(3, 17, 7.5, 17, 15.5, 7, 20, 7)
+        line(17.5, 4.5, 20, 7, 17.5, 9.5); line(17.5, 14.5, 20, 17, 17.5, 19.5)
+    elif n in ("repeat", "repeat_one"):
+        line(4, 11, 4, 7, 19.5, 7); line(17, 4.5, 19.5, 7, 17, 9.5)
+        line(20, 13, 20, 17, 4.5, 17); line(7, 14.5, 4.5, 17, 7, 19.5)
+        if n == "repeat_one":
+            line(11, 10.5, 12.5, 9.8, 12.5, 14.2)
+    elif n in ("heart", "heart_line"):
+        heart(n == "heart")
+    elif n in ("star", "star_line"):
+        star(n == "star")
+    elif n == "eq":
+        line(6, 4, 6, 20); line(12, 4, 12, 20); line(18, 4, 18, 20)
+        dot(6, 14, 2.6); dot(12, 8, 2.6); dot(18, 15.5, 2.6)
+    elif n == "lyrics":
+        line(4, 6, 20, 6); line(4, 11, 17, 11); line(4, 16, 11, 16); dot(17, 18, 2.2); line(19, 18, 19, 12, 21, 12.6)
+    elif n == "vis":
+        rect(3.5, 12, 3, 8, 1); rect(8.5, 6, 3, 14, 1); rect(13.5, 9.5, 3, 10.5, 1); rect(18.5, 3.5, 3, 16.5, 1)
+    elif n == "queue":
+        line(4, 6, 16, 6); line(4, 11, 16, 11); line(4, 16, 10.5, 16); line(14, 13.5, 20.5, 17, 14, 20.5, close=True, fill=True)
+    elif n == "more":
+        dot(12, 5, 2); dot(12, 12, 2); dot(12, 19, 2)
+    elif n == "back":
+        line(15, 4.5, 7.5, 12, 15, 19.5)
+    elif n == "chev":
+        line(9, 4.5, 16.5, 12, 9, 19.5)
+    elif n == "down":
+        line(5, 9, 12, 16, 19, 9)
+    elif n == "search":
+        ring(10.5, 10.5, 6.5); line(15.5, 15.5, 20.5, 20.5)
+    elif n == "menu":
+        line(4, 6.5, 20, 6.5); line(4, 12, 20, 12); line(4, 17.5, 20, 17.5)
+    elif n == "note":
+        dot(7.5, 17.5, 3); dot(17.5, 15.5, 3); line(10.2, 17.5, 10.2, 5.5, 20.2, 3.5, 20.2, 15.5)
+    elif n == "person":
+        ring(12, 8, 4); arc(12, 20.5, 7.5, 180, 360)
+    elif n == "clock":
+        ring(12, 12, 9); line(12, 7, 12, 12, 15.5, 14)
+    elif n == "chart":
+        rect(4, 13, 4, 7); rect(10, 8, 4, 12); rect(16, 3.5, 4, 16.5)
+    elif n == "mood":
+        ring(12, 12, 9); dot(9, 10, 1.4); dot(15, 10, 1.4); arc(12, 12.5, 4.5, 20, 160)
+    elif n == "copy":
+        cr.save(); rect_path = (8, 8, 12, 12)
+        x, y, w, h = (v * u for v in rect_path)
+        cr.rectangle(x, y, w, h); cr.stroke(); cr.restore()
+        line(16, 4.5, 6, 4.5, 4, 6.5, 4, 16)
+    elif n == "disc":
+        ring(12, 12, 9); dot(12, 12, 2.2); arc(12, 12, 6, 200, 260)
+    elif n == "playlist":
+        line(4, 6, 15, 6); line(4, 11, 15, 11); line(4, 16, 10, 16); dot(15.5, 18, 2.4); line(17.9, 18, 17.9, 9, 21, 10)
+    elif n == "sparkle":
+        line(12, 2.5, 14, 10, 21.5, 12, 14, 14, 12, 21.5, 10, 14, 2.5, 12, 10, 10, close=True, fill=True); dot(19, 5, 1.4)
+    elif n == "cloud":
+        cr.move_to(7 * u, 18.5 * u)
+        cr.curve_to(3.8 * u, 18.5 * u, 2.5 * u, 15.8 * u, 3.4 * u, 13.6 * u)
+        cr.curve_to(4.1 * u, 11.9 * u, 5.6 * u, 11.2 * u, 7 * u, 11.4 * u)
+        cr.curve_to(7.5 * u, 7.8 * u, 10 * u, 5.5 * u, 13 * u, 5.5 * u)
+        cr.curve_to(16.5 * u, 5.5 * u, 18.6 * u, 8.2 * u, 18.8 * u, 10.8 * u)
+        cr.curve_to(21 * u, 11.2 * u, 22 * u, 13.2 * u, 21.6 * u, 15.2 * u)
+        cr.curve_to(21.2 * u, 17.2 * u, 19.6 * u, 18.5 * u, 17.5 * u, 18.5 * u)
+        cr.close_path(); cr.stroke()
+    elif n == "folder":
+        line(3, 18.5, 3, 5.5, 9, 5.5, 11, 8, 21, 8, 21, 18.5, 3, 18.5)
+    elif n == "check":
+        line(4.5, 12.5, 9.5, 17.5, 19.5, 6.5)
+    elif n == "close":
+        line(5.5, 5.5, 18.5, 18.5); line(18.5, 5.5, 5.5, 18.5)
+    elif n == "plus":
+        line(12, 4.5, 12, 19.5); line(4.5, 12, 19.5, 12)
+
+
+def widget_color(w):
+    """A widget's CSS colour, as (r, g, b, a)."""
+    try:
+        c = w.get_color()
+    except AttributeError:   # GTK before 4.10
+        c = w.get_style_context().get_color()
+    return c.red, c.green, c.blue, c.alpha
+
+
+class Icon(Gtk.DrawingArea):
+    """A drawn icon in its CSS colour (draw_icon)."""
+
+    def __init__(self, name, size=22, **kw):
+        kw.setdefault("content_width", size)
+        kw.setdefault("content_height", size)
+        super().__init__(can_target=False, **kw)
+        self.name, self.size = name, size
+        self.set_draw_func(self._draw)
+
+    def set_name(self, name):
+        if name != self.name:
+            self.name = name
+            self.queue_draw()
+
+    def set_size(self, size):
+        if size != self.size:
+            self.size = size
+            self.set_content_width(size)
+            self.set_content_height(size)
+            self.queue_draw()
+
+    def _draw(self, _area, cr, w, h):
+        cr.set_source_rgba(*widget_color(self))
+        cr.translate((w - self.size) / 2, (h - self.size) / 2)
+        draw_icon(cr, self.name, self.size)
+
+
+def draw_button(icon, css, tip, cb, size=18):
+    """A button with a drawn icon (b.icon), the same on every system."""
+    b = Gtk.Button(child=Icon(icon, size), tooltip_text=tip)
+    b.icon = b.get_child()
+    b.add_css_class(css)
+    b.connect("clicked", lambda *_: cb())
+    return b
+
+
+class Wave(Gtk.DrawingArea):
+    """The seek bar as a waveform (its shape made up from the song's id: the same each time it plays).
+    Click or drag on it to go there."""
+    BARS = 64
+
+    def __init__(self, win):
+        super().__init__(content_height=52, hexpand=True)
+        self.add_css_class("wave")
+        self.win, self.pos, self.dur, self.drag = win, 0.0, 0.0, None
+        self.bars = [0.5] * self.BARS
+        self.set_draw_func(self._draw)
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click.connect("released", lambda _g, _n, x, _y: self.drag is None and self._seek(x / max(self.get_width(), 1)))
+        self.add_controller(click)
+        drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        drag.connect("drag-begin", lambda _g, x, _y: self._drag_to(x))
+        drag.connect("drag-update", lambda g, dx, _dy: self._drag_to(g.get_start_point()[1] + dx))
+        drag.connect("drag-end", lambda *_: self._drag_end())
+        self.add_controller(drag)
+        self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+
+    def set_song(self, vid):
+        import random
+        r = random.Random(vid or "")
+        raw = [0.25 + r.random() * 0.75 for _ in range(self.BARS)]
+        n = self.BARS
+        self.bars = [max(0.15, min(1.0, (raw[max(i - 1, 0)] + raw[i] * 2 + raw[min(i + 1, n - 1)]) / 4)) for i in range(n)]
+        self.queue_draw()
+
+    def set_position(self, pos, dur):
+        self.pos, self.dur = pos or 0.0, dur or 0.0
+        if self.drag is None:
+            self.queue_draw()
+
+    def _drag_to(self, x):
+        self.drag = min(max(x / max(self.get_width(), 1), 0.0), 1.0)
+        self.win.np_times[0].set_label(fmt_time(self.drag * self.dur))
+        self.queue_draw()
+
+    def _drag_end(self):
+        if self.drag is not None:
+            f, self.drag = self.drag, None
+            self._seek(f)
+
+    def _seek(self, f):
+        if self.dur > 0:
+            self.win.on_seek(None, None, min(max(f, 0.0), 1.0) * self.dur)
+            self.pos = f * self.dur
+            self.queue_draw()
+
+    def _draw(self, _area, cr, w, h):
+        r, g, b, a = widget_color(self)
+        frac = self.drag if self.drag is not None else (self.pos / self.dur if self.dur > 0 else 0.0)
+        step = w / self.BARS
+        bw = step * 0.55
+        for i, v in enumerate(self.bars):
+            bh = h * v
+            x, y = i * step + (step - bw) / 2, (h - bh) / 2
+            played = (i + 0.5) / self.BARS <= frac
+            cr.set_source_rgba(r, g, b, a if played else 0.22)
+            rad = bw / 2
+            cr.new_sub_path()
+            cr.arc(x + rad, y + rad, rad, 3.14159, 0)
+            cr.arc(x + rad, y + bh - rad, rad, 0, 3.14159)
+            cr.close_path()
+            cr.fill()
+        cr.set_source_rgba(r, g, b, a)
+        cr.rectangle(frac * w - 1.5, 0, 3, h)
+        cr.fill()
+
+
 def art_widget(px):
     # Gtk.Image draws at exactly pixel_size; a Picture grows to the texture.
     pic = Gtk.Image(pixel_size=px)
@@ -6968,12 +7280,17 @@ class MusicWindow(Adw.ApplicationWindow):
         top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         top.add_css_class("top")
         brand = Gtk.Box(spacing=6)
-        mark = Gtk.Label(label="▶")
-        mark.add_css_class("brand-mark")
-        name = Gtk.Label(label="MUSIC", xalign=0, hexpand=True)
-        name.add_css_class("brand")
-        brand.append(mark)
-        brand.append(name)
+        brand.add_css_class("nav")
+        # Poweramp-like: the screen's name, with back (‹) when you're past the library's front page.
+        self.nav, self.nav_back_going, self.nav_last = [], False, "home"
+        self.back_btn = Gtk.Button(child=Icon("back", 20), valign=Gtk.Align.CENTER, tooltip_text="Back (Esc)", visible=False)
+        self.back_btn.add_css_class("ctl")
+        self.back_btn.connect("clicked", lambda *_: self.nav_back())
+        self.nav_title = Gtk.Label(label="Library", xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self.nav_title.add_css_class("nav-title")
+        self.nav_title.add_css_class("home")
+        brand.append(self.back_btn)
+        brand.append(self.nav_title)
         # Where the Library and Search tabs look; the audio is Tidal's FLAC whichever it is.
         self.syncing_source = False
         self.source_group = Adw.ToggleGroup(valign=Gtk.Align.CENTER, homogeneous=False)
@@ -7030,7 +7347,9 @@ class MusicWindow(Adw.ApplicationWindow):
             sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=lst, vexpand=True)
             if key == "music":   # all your songs, your playlists, recent, added, most played
                 page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                page.append(self.music_chips())
+                chips = self.music_chips()
+                chips.set_visible(False)   # which list is picked from the library's front page
+                page.append(chips)
                 page.append(sw)
                 self.stack.add_named(page, key)
             else:
@@ -7051,7 +7370,14 @@ class MusicWindow(Adw.ApplicationWindow):
         # Artist and album pages have no tab of their own: they open over the tab you were on.
         self.track_list("artist")
         self.stack.add_named(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.artist_list), "artist")
-        root.append(scroll_sideways(tabs))
+        # The library's front page and Now playing: the tabs above are reached from there (the
+        # row of them stays for Alt+1…7 and is hidden).
+        self.stack.add_named(self.home_page(), "home")
+        self.stack.add_named(self.now_page(), "nowplaying")
+        self.stack.connect("notify::visible-child-name", lambda *_: self.page_changed())
+        self.tabs_strip = scroll_sideways(tabs)
+        self.tabs_strip.set_visible(False)
+        root.append(self.tabs_strip)
         root.append(self.stack)
         root.append(self.select_bar())
 
@@ -7060,7 +7386,14 @@ class MusicWindow(Adw.ApplicationWindow):
         player.add_css_class("player")
         self.player_bar = player   # the cover's colour goes on it (App.apply_tint)
         row = Gtk.Box(spacing=12)
-        frame, self.np_art = art_widget(56)
+        self.np_row = row
+        frame, self.np_art = art_widget(52)
+        frame.add_css_class("mini-art")
+        frame.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        frame.set_tooltip_text("Now playing")
+        opener = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        opener.connect("released", lambda *_: self.show_now())
+        frame.add_controller(opener)
         row.append(frame)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=1)
         self.np_title = Gtk.Label(label="Nothing playing", xalign=0, ellipsize=Pango.EllipsizeMode.END)
@@ -7101,17 +7434,20 @@ class MusicWindow(Adw.ApplicationWindow):
         prog.append(self.t_pos)
         prog.append(self.scale)
         prog.append(self.t_len)
+        self.np_prog = prog
         player.append(prog)
         controls = Gtk.CenterBox()
         mid = Gtk.Box(spacing=10)
-        mid.append(icon_button("media-skip-backward-symbolic", "ctl", "Previous", app.previous))
-        self.play_btn = icon_button("media-playback-start-symbolic", "play", "Play / pause", app.toggle_pause)
+        self.prev_btn = draw_button("prev", "ctl", "Previous", app.previous)
+        mid.append(self.prev_btn)
+        self.play_btn = draw_button("play", "play", "Play / pause", app.toggle_pause, 18)
         mid.append(self.play_btn)
-        mid.append(icon_button("media-skip-forward-symbolic", "ctl", "Next", app.next))
+        self.next_btn = draw_button("next", "ctl", "Next", app.next)
+        mid.append(self.next_btn)
         controls.set_center_widget(mid)
         modes = Gtk.Box(spacing=2)
-        modes.append(icon_button("media-playlist-shuffle-symbolic", "ctl", "Shuffle up next", app.shuffle))
-        self.repeat_btn = icon_button("media-playlist-repeat-symbolic", "ctl", "", app.cycle_repeat)
+        modes.append(draw_button("shuffle", "ctl", "Shuffle up next", app.shuffle))
+        self.repeat_btn = draw_button("repeat", "ctl", "", app.cycle_repeat)
         modes.append(self.repeat_btn)
         controls.set_start_widget(modes)
         self.saved_label = Gtk.Label(valign=Gtk.Align.CENTER)
@@ -7136,7 +7472,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.refresh_music()
         self.refresh_queue()
         self.refresh_account()
-        self.show_tab("music" if self.lib.items or app.local.files else "search")
+        self.show_tab("home")
         self.art.on_loaded = lambda vid, _path: vid == (app.current_track() or {}).get("id") and self.update_tint()
         self.set_empty(self.search_list, "Find something to play",
                        "Type a song or artist and press Enter.\nPaste a playlist, album or song link to load it.")
@@ -7381,6 +7717,299 @@ class MusicWindow(Adw.ApplicationWindow):
             self.eq_note.set_label("Off: the music plays untouched.")
 
     # ---- accounts: the services, Last.fm, the tagger, lyrics ----
+    # ---- the library's front page, Poweramp-like ----
+    HOME_ICONS = {"all": "note", "playlists": "playlist", "recent": "clock", "top": "chart", "moods": "mood",
+                  "favorites": "star", "unfavorited": "star_line", "skips": "skip", "dupes": "copy", "dj": "disc"}
+    HOME_NAMES = {"all": "All songs", "recent": "Recently played"}
+
+    def home_page(self):
+        self.home_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.home_list.add_css_class("home")
+        self.home_list.connect("row-activated", lambda _l, row: getattr(row, "go", None) and row.go())
+        self.refresh_home()
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.home_list, vexpand=True)
+
+    def home_row(self, label, icon, go, count=None, sub=""):
+        box = Gtk.Box(spacing=14)
+        tile = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.CENTER, hexpand=False)
+        tile.add_css_class("cat-icon")
+        tile.set_size_request(40, 40)
+        tile.append(Icon(icon, 22, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, content_width=40, content_height=40))
+        box.append(tile)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        name = Gtk.Label(label=label, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.add_css_class("cat-label")
+        text.append(name)
+        if sub:
+            s = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            s.add_css_class("sub")
+            text.append(s)
+        box.append(text)
+        if count is not None:
+            c = Gtk.Label(label=f"{count:,}")
+            c.add_css_class("cat-count")
+            box.append(c)
+        chev = Icon("chev", 14)
+        chev.add_css_class("chev")
+        box.append(chev)
+        row = Gtk.ListBoxRow(child=box)
+        row.go = go
+        return row
+
+    def home_head(self, text):
+        lab = Gtk.Label(label=text, xalign=0)
+        lab.add_css_class("section")
+        row = Gtk.ListBoxRow(child=lab, activatable=False, selectable=False)
+        row.add_css_class("head")
+        return row
+
+    def refresh_home(self):
+        lst = getattr(self, "home_list", None)
+        if lst is None:
+            return
+        a = self.app
+        lst.remove_all()
+        if not a.browse_local:
+            name = SOURCES.get(a.source, "Service")
+            lst.append(self.home_row(f"{name} library", "cloud", lambda: self.show_tab("account"), sub=f"Your playlists on {name}"))
+        if a.lastfm.connected or a.spotify_history.plays:
+            lst.append(self.home_row(f"Your {wrapped_year()} Wrapped", "sparkle", lambda: a.open_wrapped(),
+                                     sub="Your year, week or month in music"))
+        lst.append(self.home_head("MY MUSIC"))
+        songs = len({t["file"] for t in self.lib.items.values()}) + len(a.local.files)
+        counts = {"all": songs, "favorites": len(a.favorites.items)}
+        views = list(self.MUSIC_VIEWS)
+        for name, label, _tip in views[:2]:
+            lst.append(self.home_row(self.HOME_NAMES.get(name, label), self.HOME_ICONS[name],
+                                     lambda n=name: self.open_view(n), counts.get(name)))
+        lst.append(self.home_row("Artists", "person", lambda: self.show_tab("artists")))
+        for name, label, _tip in views[2:]:
+            lst.append(self.home_row(self.HOME_NAMES.get(name, label), self.HOME_ICONS.get(name, "note"),
+                                     lambda n=name: self.open_view(n), counts.get(name)))
+        lst.append(self.home_row("Up next", "queue", lambda: self.show_tab("queue")))
+        lst.append(self.home_head("NOW PLAYING"))
+        lst.append(self.home_row("Now playing", "play", self.show_now))
+        lst.append(self.home_row("Lyrics", "lyrics", lambda: self.show_tab("lyrics")))
+        lst.append(self.home_row("Visualizer", "vis", lambda: self.show_tab("visualizer")))
+        lst.append(self.home_row("Equalizer", "eq", lambda: self.eq_btn.popup(), sub="On" if a.eq.get("on") else "Off"))
+
+    def open_view(self, view):
+        """One of the Music tab's lists (All, Playlists, Favorites…), from the front page."""
+        self.show_tab("music")
+        if view != self.music_view or self.open_mine:
+            self.set_music_view(view)
+        self.page_changed()
+
+    def page_title(self, key):
+        a = self.app
+        if key == "music":
+            return self.HOME_NAMES.get(self.music_view) or dict((k, l) for k, l, _t in self.MUSIC_VIEWS).get(self.music_view, "My music")
+        if key == "account":
+            return f"{SOURCES.get(a.source, 'Service')} library"
+        return {"home": "Library", "search": "Search", "artists": "Artists", "queue": "Up next", "lyrics": "Lyrics",
+                "visualizer": "Visualizer", "artist": "Artist", "nowplaying": "Now playing"}.get(key, "Library")
+
+    def page_changed(self):
+        """The stack moved: remember where from (for ‹), and the header says where you are."""
+        key = self.stack.get_visible_child_name() or "home"
+        if key != self.nav_last and not self.nav_back_going:
+            self.nav.append(self.nav_last)
+            del self.nav[:-30]
+        self.nav_last = key
+        home = key == "home"
+        self.back_btn.set_visible(not home)
+        self.nav_title.set_label(self.page_title(key))
+        (self.nav_title.add_css_class if home else self.nav_title.remove_css_class)("home")
+        now = key == "nowplaying"
+        self.np_row.set_visible(not now)
+        self.np_prog.set_visible(not now)
+        (self.player_bar.add_css_class if now else self.player_bar.remove_css_class)("expanded")
+        self.play_btn.icon.set_size(28 if now else 18)
+        self.prev_btn.icon.set_size(26 if now else 18)
+        self.next_btn.icon.set_size(26 if now else 18)
+        for k, b in (("lyrics", self.tool_lyrics), ("visualizer", self.tool_vis), ("queue", self.tool_queue)):
+            (b.add_css_class if key == k else b.remove_css_class)("on")
+        if home:
+            self.nav.clear()
+            self.refresh_home()
+        if now:
+            self.update_now_page(self.app.current_track())
+            self.wave.set_position(self.scale.get_value(), self.scale.get_adjustment().get_upper())
+            self.np_times[0].set_label(self.t_pos.get_label())
+            self.np_times[1].set_label(self.t_len.get_label())
+
+    def nav_back(self):
+        if self.selecting:
+            self.stop_selecting()
+        key = self.stack.get_visible_child_name()
+        self.nav_back_going = True
+        try:
+            if key == "artist" and len(self.artist_pages) > 1:
+                self.artist_back()
+                return
+            if key == "music" and self.open_mine:
+                self.open_mine = None
+                self.refresh_music()
+                return
+            while self.nav and self.nav[-1] in (key, "artist"):
+                self.nav.pop()
+            if key == "artist":
+                self.artist_pages.clear()
+            self.show_tab(self.nav.pop() if self.nav else "home")
+        finally:
+            self.nav_back_going = False
+
+    def show_now(self):
+        if self.app.current_track():
+            self.show_tab("nowplaying")
+        else:
+            self.toast("Nothing is playing: pick a song first")
+
+    # ---- Now playing: the cover big, a waveform to seek on, and the controls under it ----
+    def now_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("nowplaying")
+        self.np_kicker = Gtk.Label(label="NOW PLAYING")
+        self.np_kicker.add_css_class("np-kicker")
+        self.np_from = Gtk.Label(ellipsize=Pango.EllipsizeMode.END)
+        self.np_from.add_css_class("np-from")
+        self.np_kicker.set_visible(False)   # the header says Now playing
+        box.append(self.np_kicker)
+        box.append(self.np_from)
+        self.big_pic = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True, hexpand=True, vexpand=True)
+        holder = Gtk.Box(overflow=Gtk.Overflow.HIDDEN)
+        holder.add_css_class("bigart")
+        holder.append(self.big_pic)
+        self.big_frame = Gtk.AspectFrame(ratio=1.0, obey_child=False, child=holder, vexpand=True,
+                                         margin_top=6, margin_bottom=8)
+        self.big_frame.set_size_request(120, 120)
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click.connect("released", lambda _g, n, _x, _y: n == 2 and self.app.toggle_pause())
+        self.big_frame.add_controller(click)
+        swipe = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        swipe.connect("drag-end", lambda _g, dx, _dy: dx < -80 and self.app.next() or dx > 80 and self.app.previous())
+        self.big_frame.add_controller(swipe)
+        self.big_frame.set_tooltip_text("Drag sideways for the next or last song · double-click to pause")
+        box.append(self.big_frame)
+        self.np2_title = Gtk.Label(ellipsize=Pango.EllipsizeMode.END, justify=Gtk.Justification.CENTER)
+        self.np2_title.add_css_class("np-title")
+        self.np2_artist = artist_link(self, "", css="np-artist")
+        self.np2_artist.set_xalign(0.5)
+        self.np2_album = Gtk.Label(ellipsize=Pango.EllipsizeMode.END)
+        self.np2_album.add_css_class("np-album")
+        self.np_badges = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        for w in (self.np2_title, self.np2_artist, self.np2_album, self.np_badges):
+            box.append(w)
+        self.wave = Wave(self)
+        box.append(self.wave)
+        times = Gtk.Box()
+        self.np_times = (Gtk.Label(label="0:00", xalign=0, hexpand=True), Gtk.Label(label="0:00", xalign=1))
+        for w in self.np_times:
+            w.add_css_class("np-times")
+            times.append(w)
+        box.append(times)
+        tools = Gtk.Box(homogeneous=True, margin_top=4)
+        self.tool_fav = self.tool("star_line", "Favorite", lambda: self.app.toggle_favorite_playing())
+        self.tool_like = self.tool("heart_line", "Like", lambda: self.app.toggle_like())
+        self.tool_lyrics = self.tool("lyrics", "Lyrics", lambda: self.toggle_page("lyrics"))
+        self.tool_vis = self.tool("vis", "Visualizer", lambda: self.toggle_page("visualizer"))
+        self.tool_queue = self.tool("queue", "Up next", lambda: self.toggle_page("queue"))
+        for b in (self.tool_fav, self.tool_like, self.tool_lyrics, self.tool_vis, self.tool_queue):
+            tools.append(b)
+        box.append(tools)
+        return box
+
+    def tool(self, icon, label, cb):
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        ic = Icon(icon, 22, halign=Gtk.Align.CENTER)
+        inner.append(ic)
+        lab = Gtk.Label(label=label)
+        lab.add_css_class("tool-label")
+        inner.append(lab)
+        b = Gtk.Button(child=inner, tooltip_text=label)
+        b.add_css_class("tool")
+        b.icon = ic
+        b.connect("clicked", lambda *_: cb())
+        return b
+
+    def set_tool(self, b, icon, on):
+        b.icon.set_name(icon)
+        (b.add_css_class if on else b.remove_css_class)("on")
+
+    def toggle_page(self, key):
+        """Lyrics, the visualizer or Up next from Now playing (‹ comes back)."""
+        if self.stack.get_visible_child_name() == key:
+            self.nav_back()
+        else:
+            self.show_tab(key)
+
+    def update_now_page(self, t):
+        if not t or not hasattr(self, "np2_title"):
+            return
+        a = self.app
+        self.np2_title.set_label(t["title"])
+        set_link_text(self.np2_artist, t["artist"])
+        self.np2_album.set_label(t.get("album") or "")
+        self.np2_album.set_visible(bool(t.get("album")))
+        self.wave.set_song(t["id"])
+        src = source_of(t)
+        frm = ("Radio" if getattr(a, "radio", False) else "") or \
+              ("My music" if src == "file" or self.lib.has(t["id"]) else SOURCES.get(src, ""))
+        self.np_from.set_label(frm)
+        self.np_from.set_visible(bool(frm))
+        child = self.np_badges.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.np_badges.remove(child)
+            child = nxt
+        saved = self.lib.items.get(t["id"]) if self.lib.has(t["id"]) else None
+        marks = []
+        if saved:
+            marks.append(("FLAC " + (saved.get("quality") or "")).strip() if saved.get("format") == "flac" else "✓ offline")
+        elif src != "file":
+            q = a.dl.stream_quality(t["id"])
+            marks.append(q.split()[0] if q else "Streaming")
+        else:
+            ext = Path(t.get("file") or "").suffix.lstrip(".").upper()
+            if ext:
+                marks.append(ext)
+        speed = a.speeds.get(t)[0]
+        if speed != 1.0:
+            marks.append(f"{speed:g}×")
+        try:
+            g = a.gains.get(t)
+            if g:
+                marks.append(f"{g:+.1f} dB")
+        except Exception:  # noqa: BLE001 -- the mark is a nicety
+            pass
+        for i, m in enumerate(marks):
+            lab = Gtk.Label(label=m)
+            lab.add_css_class("badge")
+            if i:
+                lab.add_css_class("quiet")
+            self.np_badges.append(lab)
+        self.load_big_art(t)
+
+    def load_big_art(self, t):
+        """The cover at full size for Now playing (rows use a small copy)."""
+        if not hasattr(self, "big_pic") or self.stack.get_visible_child_name() != "nowplaying":
+            return
+        vid = t["id"]
+        if getattr(self, "big_vid", None) == vid:
+            return
+        lib = self.lib.items.get(vid)
+        path = self.art.paths.get(vid) or (Path(lib["art"]) if lib and lib.get("art") else None)
+        self.big_pic.set_paintable(self.art.textures.get(vid))
+        if not path:
+            return
+        self.big_vid = vid
+
+        def done(tex, _err):
+            cur = self.app.current_track()
+            if tex is not None and cur and cur["id"] == vid:
+                self.big_pic.set_paintable(tex)
+        in_thread(load_texture, path, 900, done=done)
+
     def accounts_button(self):
         self.accounts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.accounts_box.add_css_class("accounts")
@@ -7947,7 +8576,7 @@ class MusicWindow(Adw.ApplicationWindow):
     def show_tab(self, key):
         if self.selecting:
             self.stop_selecting()
-        if not self.tab_buttons[key].get_active():
+        if key in self.tab_buttons and not self.tab_buttons[key].get_active():
             self.tab_buttons[key].set_active(True)
         self.stack.set_visible_child_name(key)
         self.run_stale(key)
@@ -8171,6 +8800,8 @@ class MusicWindow(Adw.ApplicationWindow):
             self.chips.set_active_name(view)
         self.refresh_music()
         self.scroll_top(self.music_list)
+        if hasattr(self, "nav_title"):
+            self.page_changed()
 
     def show_mine(self, pid):
         """One of your playlists, open in the Music tab."""
@@ -9820,6 +10451,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.syncing_source = False
         # Local: your own songs, in the Music tab and the search; no Library tab (that's a service's).
         self.tab_buttons["account"].set_visible(not a.browse_local)
+        self.refresh_home()
         if self.search_in.get_selected() != list(SEARCH_IN).index(a.search_in):
             self.search_in.set_selected(list(SEARCH_IN).index(a.search_in))
         self.entry.set_placeholder_text(self.search_hint())
@@ -10160,7 +10792,8 @@ class MusicWindow(Adw.ApplicationWindow):
         self.np_art.clear()
         self.art.apply(self.np_art, t)
         self.update_tint(t)
-        self.play_btn.set_icon_name("media-playback-start-symbolic" if a.paused else "media-playback-pause-symbolic")
+        self.update_now_page(t)
+        self.play_btn.icon.set_name("play" if a.paused else "pause")
         self.update_saved()
         self.update_like()
         self.update_favorite()
@@ -10199,6 +10832,8 @@ class MusicWindow(Adw.ApplicationWindow):
         """The window in the colour of what's playing's cover (once its picture is on disk)."""
         t = t or self.app.current_track()
         self.app.set_tint(self.art.paths.get(t["id"]) if t else None)
+        if t:
+            self.load_big_art(t)
 
     def update_favorite(self):
         t = self.app.current_track()
@@ -10206,6 +10841,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.fav_btn.get_child().set_label("★" if on else "☆")
         (self.fav_btn.add_css_class if on else self.fav_btn.remove_css_class)("liked")
         self.fav_btn.set_tooltip_text("In your favorites (f)" if on else "Favorite (f)")
+        self.set_tool(self.tool_fav, "star" if on else "star_line", on)
 
     def update_like(self):
         t = self.app.current_track()
@@ -10213,6 +10849,8 @@ class MusicWindow(Adw.ApplicationWindow):
         can = bool(t) and bool(src and src.signed_in)
         liked = can and t["id"] in self.app.liked
         self.like_btn.set_visible(can)
+        self.tool_like.set_visible(can)
+        self.set_tool(self.tool_like, "heart" if liked else "heart_line", liked)
         self.like_btn.get_child().set_label("󰋑" if liked else "󰋕")
         (self.like_btn.add_css_class if liked else self.like_btn.remove_css_class)("liked")
         if can:
@@ -10223,8 +10861,7 @@ class MusicWindow(Adw.ApplicationWindow):
 
     def update_repeat(self):
         mode = self.app.repeat
-        self.repeat_btn.set_icon_name("media-playlist-repeat-song-symbolic" if mode == "one"
-                                      else "media-playlist-repeat-symbolic")
+        self.repeat_btn.icon.set_name("repeat_one" if mode == "one" else "repeat")
         (self.repeat_btn.add_css_class if mode != "off" else self.repeat_btn.remove_css_class)("on")
         self.repeat_btn.set_tooltip_text({"off": "Repeat: off", "all": "Repeat: all",
                                           "one": "Repeat: this song"}[mode] + " (r)")
@@ -10240,6 +10877,11 @@ class MusicWindow(Adw.ApplicationWindow):
         self.scale.set_value(pos or 0)
         self.t_pos.set_label(fmt_time(pos))
         self.t_len.set_label(fmt_time(dur))
+        if self.stack.get_visible_child_name() == "nowplaying":
+            self.wave.set_position(pos, dur)
+            if self.wave.drag is None:
+                self.np_times[0].set_label(fmt_time(pos))
+            self.np_times[1].set_label(fmt_time(dur))
 
     def on_seek(self, _scale, _scroll, value):
         self.dragging_until = time.monotonic() + 0.4
@@ -10252,8 +10894,8 @@ class MusicWindow(Adw.ApplicationWindow):
         if keyval == Gdk.KEY_Escape:
             if self.selecting:
                 self.stop_selecting()
-            elif self.stack.get_visible_child_name() == "artist":
-                self.artist_back()
+            elif self.stack.get_visible_child_name() != "home":
+                self.nav_back()
             else:
                 self.set_visible(False)
             return True
@@ -12135,9 +12777,10 @@ class MusicApp(Adw.Application):
                      "added": "added", "top": "top", "most-played": "top",
                      "favorites": "favorites", "skips": "skips", "duplicates": "dupes"}
             tab = {"search": "search", "library": "account", "queue": "queue", "up-next": "queue",
-                   "lyrics": "lyrics", "visualizer": "visualizer"}.get(arg) or ("music" if arg in views else None)
+                   "lyrics": "lyrics", "visualizer": "visualizer", "home": "home", "now": "nowplaying",
+                   "now-playing": "nowplaying", "player": "nowplaying"}.get(arg) or ("music" if arg in views else None)
             if rest and not tab:
-                return fail("omarchy-music show [search|library|music|playlists|recent|added|top|favorites|skips|duplicates|queue|lyrics|visualizer]", 2)
+                return fail("omarchy-music show [home|now|search|library|music|playlists|recent|added|top|favorites|skips|duplicates|queue|lyrics|visualizer]", 2)
             self.show_window(tab)
             if arg in views:
                 self.win.set_music_view(views[arg])
