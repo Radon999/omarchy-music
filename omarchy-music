@@ -381,7 +381,7 @@ button.play:hover {{ background-color: {rgba(acc, 0.85)}; color: {darker}; }}
 toast {{ border-radius: {R}px; background-color: {light}; color: {fg}; border: 1px solid {line}; }}
 toggle-group.sources {{ background: transparent; padding: 0; box-shadow: none; border-radius: {R}px; }}
 toggle-group.sources > separator {{ opacity: 0; min-width: 2px; }}
-toggle-group.sources > toggle {{ border-radius: {R}px; padding: 1px 7px; min-height: 22px; background: transparent;
+toggle-group.sources > toggle {{ border-radius: {R}px; padding: 1px 5px; min-height: 22px; background: transparent;
   border: 1px solid transparent; box-shadow: none; color: {muted}; font-weight: 700; font-size: 0.8em; }}
 toggle-group.sources > toggle:hover {{ color: {fg}; background-color: {rgba(acc, 0.06)}; }}
 toggle-group.sources > toggle:checked {{ color: {acc}; background-color: {rgba(acc, 0.12)}; border-color: {rgba(acc, 0.45)}; }}
@@ -5602,13 +5602,15 @@ class MusicWindow(Adw.ApplicationWindow):
         brand.append(name)
         # Where the Library and Search tabs look; the audio is Tidal's FLAC whichever it is.
         self.syncing_source = False
-        self.source_group = Adw.ToggleGroup(valign=Gtk.Align.CENTER)
+        self.source_group = Adw.ToggleGroup(valign=Gtk.Align.CENTER, homogeneous=False)
         self.source_group.add_css_class("sources")
         for key, label in (("ytm", "YouTube"), ("tidal", "Tidal"), ("apple", "Apple"), ("spotify", "Spotify")):
             self.source_group.add(Adw.Toggle(label=label, name=key, tooltip=f"Browse {SOURCES[key]}  (s)"))
-        self.source_group.set_active_name(app.source)
+        self.source_group.add(Adw.Toggle(icon_name="folder-music-symbolic", name="local",   # an icon: the bar is full
+                                         tooltip="Local: your own music, the songs you downloaded and the ones in your folders  (s)"))
+        self.source_group.set_active_name("local" if app.browse_local else app.source)
         self.source_group.connect("notify::active-name",
-                                  lambda g, _p: self.syncing_source or app.set_source(g.get_active_name()))
+                                  lambda g, _p: self.syncing_source or app.browse(g.get_active_name()))
         brand.append(self.source_group)
         brand.append(self.accounts_button())
         top.append(brand)
@@ -5655,6 +5657,7 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.stack.add_named(page, key)
             else:
                 self.stack.add_named(sw, key)
+        self.tab_buttons["account"].set_visible(not app.browse_local)   # Local has no Library of a service
         b = Gtk.ToggleButton(label="Lyrics", group=first)
         b.connect("toggled", lambda btn: btn.get_active() and self.show_tab("lyrics"))
         tabs.append(b)
@@ -7217,13 +7220,22 @@ class MusicWindow(Adw.ApplicationWindow):
         in_thread(src.playlist, pl["id"], done=done)
 
     def on_source_changed(self):
-        key = self.app.source
+        a = self.app
+        key = "local" if a.browse_local else a.source
         if self.source_group.get_active_name() != key:
             self.syncing_source = True
             self.source_group.set_active_name(key)
             self.syncing_source = False
+        # Local: your own songs, in the Music tab and the search; no Library tab (that's a service's).
+        self.tab_buttons["account"].set_visible(not a.browse_local)
+        if self.search_in.get_selected() != list(SEARCH_IN).index(a.search_in):
+            self.search_in.set_selected(list(SEARCH_IN).index(a.search_in))
+        self.entry.set_placeholder_text(self.search_hint())
+        if a.browse_local and self.stack.get_visible_child_name() == "account":
+            self.show_tab("music")
         self.open_playlist = None
-        self.refresh_account()
+        if not a.browse_local:
+            self.refresh_account()
 
     def refresh_queue(self):
         """What's playing and what comes after it, in order: the songs you queued first.
@@ -7639,8 +7651,9 @@ class MusicWindow(Adw.ApplicationWindow):
                 self.app.enqueue([row.track], "next" if keyval == Gdk.KEY_A else "queue")
                 return True
         if keyval == Gdk.KEY_s:
-            keys = list(SOURCES)
-            self.app.set_source(keys[(keys.index(self.app.source) + 1) % len(keys)])
+            keys = [*SOURCES, "local"]
+            now = "local" if self.app.browse_local else self.app.source
+            self.app.browse(keys[(keys.index(now) + 1) % len(keys)])
             return True
         if keyval == Gdk.KEY_w:
             self.app.open_wrapped()
@@ -9026,6 +9039,9 @@ class MusicApp(Adw.Application):
         self.music_sort = state.get("music_sort") if state.get("music_sort") in ("title", "artist", "album", "added") else "title"
         self.playlist_sort = state.get("playlist_sort") if state.get("playlist_sort") in dict(PLAYLIST_SORTS) else "order"
         self.search_in = state.get("search_in") if state.get("search_in") in SEARCH_IN else "tidal"
+        self.browse_local = bool(state.get("browse_local"))   # Local picked in the source bar
+        self.search_before_local = state.get("search_before_local") if state.get("search_before_local") in SEARCH_IN \
+            and state.get("search_before_local") != "local" else "tidal"   # where the search looked before
         self.lyrics_mode = state.get("lyrics_mode") if state.get("lyrics_mode") in ("genius", "synced") else "genius"
         self.remote_tokens = {k: v for k, v in (state.get("remote_tokens") or {}).items() if isinstance(v, dict)}
         # Settings: keys of yours for Google's image search, Chartmetric and an AutoEq server (see API_KEYS)
@@ -9107,7 +9123,8 @@ class MusicApp(Adw.Application):
                                        "music_sort": self.music_sort, "search_in": self.search_in,
                                        "remote": self.remote_on, "remote_tokens": self.remote_tokens,
                                        "api_keys": self.api_keys, "shuffled": self.shuffled,
-                                       "playlist_sort": self.playlist_sort}))
+                                       "playlist_sort": self.playlist_sort, "browse_local": self.browse_local,
+                                       "search_before_local": self.search_before_local}))
 
     def save_soon(self):
         """Remember the settings, without a disk write per scroll step or slider move."""
@@ -9489,6 +9506,27 @@ class MusicApp(Adw.Application):
         if key not in SOURCES or key == self.source:
             return
         self.source = key
+        self.save_state()
+        if self.win:
+            self.win.on_source_changed()
+
+    def browse(self, key):
+        """The source bar: a service (its library in the Library tab, its search) or "local": your
+        own songs, which the search looks in, with the Library tab hidden until you pick a service."""
+        if key == "local":
+            if self.browse_local:
+                return
+            self.browse_local = True
+            if self.search_in != "local":
+                self.search_before_local, self.search_in = self.search_in, "local"
+        elif key in SOURCES:
+            if not self.browse_local and key == self.source:
+                return
+            if self.browse_local and self.search_in == "local":
+                self.search_in = self.search_before_local
+            self.browse_local, self.source = False, key
+        else:
+            return
         self.save_state()
         if self.win:
             self.win.on_source_changed()

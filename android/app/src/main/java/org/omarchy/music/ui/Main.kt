@@ -100,7 +100,7 @@ fun App() {
                 if (page != null) PageScreen(ui, page)
                 else when (ui.tab) {
                     "search" -> SearchTab(ui)
-                    "library" -> LibraryTab(ui)
+                    "library" -> if (Music.browseLocal) MusicTab(ui) else LibraryTab(ui)   // Local has no Library
                     "music" -> MusicTab(ui)
                     "queue" -> QueueTab(ui)
                     "lyrics" -> LyricsTab(ui)
@@ -129,12 +129,16 @@ private fun TopBar(ui: Ui) {
         Row(Modifier.weight(1f).padding(start = 8.dp).horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End)) {
             SOURCES.forEach { (k, name) ->
-                Chip(if (k == "ytm") "YouTube" else name.removeSuffix(" Music"), Music.source == k) {
-                    if (Music.source != k) {
-                        Music.setSource(k)
+                Chip(if (k == "ytm") "YouTube" else name.removeSuffix(" Music"), Music.source == k && !Music.browseLocal) {
+                    if (Music.source != k || Music.browseLocal) {
+                        Music.browse(k)
                         ui.openList = null
                     }
                 }
+            }
+            Chip("Local", Music.browseLocal) {   // your own songs: no Library tab, the search looks in them
+                Music.browse("local")
+                if (ui.tab == "library") { ui.tab = "music"; ui.pages.clear() }
             }
         }
         Text("☰", style = T.title.copy(fontSize = 20.sp), modifier = Modifier.clickable { ui.sheet = "accounts" }.padding(10.dp))
@@ -186,7 +190,8 @@ private fun SearchField(ui: Ui) {
 private fun Tabs(ui: Ui) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        listOf("search" to "Search", "library" to "Library", "music" to "Music", "queue" to "Up next", "lyrics" to "Lyrics").forEach { (k, l) ->
+        listOf("search" to "Search", "library" to "Library", "music" to "Music", "queue" to "Up next", "lyrics" to "Lyrics")
+            .filter { it.first != "library" || !Music.browseLocal }.forEach { (k, l) ->
             Chip(l, ui.tab == k && ui.pages.isEmpty()) { ui.tab = k; ui.pages.clear(); ui.stopSelecting() }
         }
     }

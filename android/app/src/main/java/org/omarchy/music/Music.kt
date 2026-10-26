@@ -70,6 +70,8 @@ object Music {
     var apiKeys by mutableStateOf(mapOf<String, String>())   // Settings: keys of yours (see API_KEYS)
     var shuffled = false   // the queue was shuffled: repeat-all shuffles it again
     var playlistSort by mutableStateOf("order")   // how a playlist's songs are listed (PLAYLIST_SORTS)
+    var browseLocal by mutableStateOf(false)   // Local picked in the source bar: your own songs, no Library tab
+    private var searchBeforeLocal = "tidal"     // where the search looked before
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var streaming by mutableStateOf(false)
     var downloads by mutableStateOf(listOf<Track>())
@@ -146,6 +148,7 @@ object Music {
         val folders: List<String> = listOf("Music/"), val art_colors: Boolean = true, val keep_played: Boolean = false,
         val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
         val api_keys: Map<String, String> = emptyMap(), val shuffled: Boolean = false, val playlist_sort: String = "order",
+        val browse_local: Boolean = false, val search_before_local: String = "tidal",
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -169,6 +172,8 @@ object Music {
         apiKeys = st.api_keys.filterKeys { it in API_KEYS }
         shuffled = st.shuffled
         playlistSort = st.playlist_sort.takeIf { it in PLAYLIST_SORTS } ?: "order"
+        browseLocal = st.browse_local
+        searchBeforeLocal = st.search_before_local.takeIf { it in SEARCH_IN && it != "local" } ?: "tidal"
         eq = st.eq
         eqProcessor.update(eq)
         val t = current()
@@ -177,7 +182,8 @@ object Music {
     }
 
     fun saveState() {
-        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled, playlistSort)
+        val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled, playlistSort,
+            browseLocal, searchBeforeLocal)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -577,6 +583,26 @@ object Music {
     // ---- services ----
     @JvmName("chooseSource")
     fun setSource(key: String) { source = key; saveState() }
+
+    /** The source bar: a service (its library in the Library tab, its search) or "local": your own
+     *  songs, which the search looks in, with the Library tab hidden until you pick a service. */
+    fun browse(key: String) {
+        when {
+            key == "local" -> {
+                if (browseLocal) return
+                browseLocal = true
+                if (searchIn != "local") { searchBeforeLocal = searchIn; searchIn = "local" }
+            }
+            key in SOURCES -> {
+                if (!browseLocal && key == source) return
+                if (browseLocal && searchIn == "local") searchIn = searchBeforeLocal
+                browseLocal = false
+                source = key
+            }
+            else -> return
+        }
+        saveState()
+    }
 
     @JvmName("chooseSearchIn")
     fun setSearchIn(key: String) { searchIn = key; saveState() }
