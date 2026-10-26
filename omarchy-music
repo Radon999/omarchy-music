@@ -2120,12 +2120,13 @@ class Downloader:
             self.on_saved(vid)
         return str(path)
 
-    def upgrade(self, tracks, progress, stop):
+    def upgrade(self, tracks, progress, stop, force=False):
         """Your own files that Tidal has better (blocking): a lossy file (MP3, AAC…) for its FLAC,
         a 16-bit one for its hi-res. Files in 24-bit, songs Tidal hasn't got and songs it has no
         better are left. Returns {"done": [(old track, new id)], "missing", "kept", "failed"}; the
         old files stay where they are (the app puts them away). progress(n) after each song;
-        stop() true: no more."""
+        stop() true: no more. force: every song Tidal has, however good yours is ("kept" lists
+        (track, why) otherwise)."""
         out = {"done": [], "missing": [], "kept": [], "failed": []}
         todo, lock = iter(enumerate(tracks)), threading.Lock()
 
@@ -2137,14 +2138,14 @@ class Downloader:
                     return
                 try:
                     facts = file_facts(t["file"])
-                    if facts["lossless"] and facts["bits"] >= 24:
-                        res = ("kept", t)   # as good as Tidal gets
+                    if not force and facts["lossless"] and facts["bits"] >= 24:
+                        res = ("kept", (t, f"yours is {facts_text(facts)}: as good as Tidal gets"))
                     else:
                         c = self.tidal.resolve(dict(t, source="file"))
                         if not c:
                             res = ("missing", t)
-                        elif facts["lossless"] and "HIRES_LOSSLESS" not in (c.media_metadata_tags or []):
-                            res = ("kept", t)   # Tidal has it in CD quality too: nothing better
+                        elif not force and facts["lossless"] and "HIRES_LOSSLESS" not in (c.media_metadata_tags or []):
+                            res = ("kept", (t, f"yours is {facts_text(facts)}; Tidal's is 16-bit too"))
                         else:
                             new = track_from_tidal(c)
                             if not self.lib.is_flac(new["id"]):
@@ -8466,15 +8467,37 @@ class MusicWindow(Adw.ApplicationWindow):
                  "and takes the old file's place: in your playlists, the queue, your plays and favorites.\n\n"
                  "• MP3, AAC and other lossy files: replaced with FLAC\n"
                  "• 16-bit FLAC/WAV: replaced only when Tidal has it in 24-bit\n"
-                 "• 24-bit files, and songs Tidal doesn't have: left as they are\n\n"
+                 "• 24-bit files, and songs Tidal doesn't have: left as they are (you're asked about the "
+                 "ones kept as good already, at the end)\n\n"
                  "The old files go to the trash, so you can get them back. The new ones go to "
                  + (short_path(a.download_dir) if a.download_dir else "the app's own folder (Downloads in this menu "
                     "picks a folder of yours)") + ". A big library takes a while: you can keep listening, and Stop.")
+        every = Gtk.CheckButton(label="Replace every song Tidal has, even ones yours is as good as or better than")
+        dlg.set_extra_child(every)
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("go", "Upgrade")
         dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
         dlg.set_close_response("cancel")
-        dlg.connect("response", lambda _d, r: r == "go" and a.upgrade_songs())
+        dlg.connect("response", lambda _d, r: r == "go" and a.upgrade_songs(force=every.get_active()))
+        dlg.present(self)
+
+    def confirm_upgrade_kept(self, kept):
+        """After Upgrade: the songs it left because yours are as good or better. Replace them anyway?"""
+        n = len(kept)
+        lines = [f"• {t['title']} — {t['artist']}\n    {why}" for t, why in kept[:8]]
+        if n > 8:
+            lines.append(f"…and {n - 8} more")
+        dlg = Adw.AlertDialog(
+            heading=f"{n} song{'s' if n != 1 else ''} kept as {'they are' if n != 1 else 'it is'}",
+            body=("Yours are as good as Tidal's or better, so they weren't replaced:\n\n" if n != 1 else
+                  "Yours is as good as Tidal's or better, so it wasn't replaced:\n\n") + "\n".join(lines)
+                 + "\n\nReplace them with Tidal's anyway? The new copies may be lower quality than yours "
+                   "(yours go to the trash).")
+        dlg.add_response("keep", "Keep mine")
+        dlg.add_response("replace", "Replace anyway")
+        dlg.set_response_appearance("replace", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_close_response("keep")
+        dlg.connect("response", lambda _d, r: r == "replace" and self.app.upgrade_songs([t for t, _w in kept], force=True))
         dlg.present(self)
 
     def pick_download_dir(self):
@@ -13378,15 +13401,17 @@ class MusicApp(Adw.Application):
             self.download_next()
         in_thread(self.dl.sync, batch, lambda: self.win and self.win.refresh_all(), True, done=done)
 
-    def upgrade_songs(self):
-        """Upgrade: every song in your folders that Tidal has better, downloaded and put in
-        its place (playlists, queue, plays and stars go with it); the old files to the trash."""
+    def upgrade_songs(self, tracks=None, force=False):
+        """Upgrade: every song in your folders (or tracks) that Tidal has better (force: every one
+        it has), downloaded and put in its place (playlists, queue, plays and stars go with it);
+        the old files to the trash. Songs kept as good already are offered afterwards."""
         if self.upgrading:
             return
         if not (self.dl.tidal and self.dl.tidal.connected):
             self.toast("Connect Tidal in the accounts menu first: the new copies come from there, in FLAC")
             return
-        tracks = [t for t in self.local.tracks() if not is_phone_song(t) and Path(t["file"]).exists()]
+        tracks = [t for t in (tracks if tracks is not None else self.local.tracks())
+                  if not is_phone_song(t) and Path(t["file"]).exists()]
         if not tracks:
             self.toast("No songs in your folders to upgrade")
             return
@@ -13427,7 +13452,10 @@ class MusicApp(Adw.Application):
             if self.win:
                 self.win.refresh_all()
                 self.refresh_accounts_soon()
-        in_thread(self.dl.upgrade, tracks, progress, lambda: bool(self.upgrading and self.upgrading["stop"]), done=done)
+                if out["kept"] and not force:
+                    self.win.confirm_upgrade_kept(out["kept"])
+        in_thread(self.dl.upgrade, tracks, progress, lambda: bool(self.upgrading and self.upgrading["stop"]), force,
+                  done=done)
 
     def tidy_name(self, vid):
         """A download named "NN Title (td123).flac" because your file had its name: now that
