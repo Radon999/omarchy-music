@@ -425,6 +425,7 @@ checkbutton.pick {{ padding: 0; margin: 0 2px 0 0; }}
 .artist-tile {{ padding: 6px 2px; border-radius: {R}px; }}
 .artist-tile .name {{ font-weight: 600; }}
 .bio {{ color: {muted}; font-size: 0.92em; }}
+.visualizer {{ color: {acc}; }}
 .bio-link {{ padding: 0; min-height: 0; }}
 .actions {{ padding: 2px 8px 6px 8px; }}
 scale.tone {{ padding: 4px 0; }}
@@ -5533,6 +5534,136 @@ class PlaylistRow(Gtk.ListBoxRow):
         self.add_controller(menu)
 
 
+VIS_BANDS = 48     # bars (ffmpeg makes one more, at the top of the range, that's always empty: left out)
+VIS_FPS = 30       # spectra a second
+VIS_STEPS = 40     # how finely each bar's height is measured
+VIS_FLOOR = 12     # of those steps: as quiet as a bar shows (ffmpeg's log scale starts here with sound)
+
+
+def spectrum_cmd(src):
+    """ffmpeg working out src's spectrum ahead of the music: VIS_FPS frames a second, each
+    VIS_BANDS + 1 rows of VIS_STEPS bytes, a row's non-zero bytes its band's level (low bands
+    first). A 3-minute song takes it about half a second."""
+    return ["ffmpeg", "-v", "error", "-nostdin", "-protocol_whitelist", "file,http,https,tcp,tls,crypto,data", "-i", src,
+            "-filter_complex", f"[0:a]aformat=channel_layouts=mono,showfreqs=s={VIS_BANDS + 1}x{VIS_STEPS}:rate={VIS_FPS}"
+            ":mode=bar:ascale=log:fscale=log:win_size=2048,format=gray,transpose=1[v]",
+            "-map", "[v]", "-f", "rawvideo", "-"]
+
+
+def spectrum_levels(frame):
+    """A frame of spectrum_cmd's output as each band's level, 0..1."""
+    span = VIS_STEPS - VIS_FLOOR
+    return [max(0.0, min(1.0, (VIS_STEPS - frame[i * VIS_STEPS:(i + 1) * VIS_STEPS].count(0) - VIS_FLOOR) / span))
+            for i in range(VIS_BANDS)]
+
+
+class Visualizer(Gtk.Box):
+    """The Visualizer tab: what's playing as bars rising and falling with its sound. The
+    spectrum is worked out ahead of the music (spectrum_cmd) and drawn in step with where mpv
+    is in the song, so it's the song itself, not the speakers, and works the same on Windows."""
+
+    def __init__(self, win):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.win, self.app = win, win.app
+        self.area = Gtk.DrawingArea(vexpand=True, hexpand=True)
+        self.area.add_css_class("visualizer")
+        self.area.set_draw_func(self.draw)
+        self.note = Gtk.Label(xalign=0.5, wrap=True, margin_bottom=10)
+        self.note.add_css_class("sub")
+        self.append(self.area)
+        self.append(self.note)
+        self.frames = []          # each frame's band levels, as bytes (level * 255)
+        self.for_src = None
+        self.proc = None
+        self.levels = [0.0] * VIS_BANDS
+        self.tick = None
+
+    # ---- the spectrum ----
+    def song_loaded(self):
+        if self.win.shown("visualizer"):
+            self.start()
+
+    def start(self):
+        """Work out the playing song's spectrum (if not done yet) and draw it while the tab shows."""
+        vid, src = self.app.loaded
+        t = self.app.current_track()
+        if not src or not t:
+            self.note.set_label("Nothing playing")
+        elif src != self.for_src:
+            self.analyse(src)
+            self.note.set_label(t["title"])
+        if self.tick is None:
+            self.tick = self.area.add_tick_callback(self.on_tick)
+
+    def stop(self):
+        if self.tick is not None:
+            self.area.remove_tick_callback(self.tick)
+            self.tick = None
+
+    def analyse(self, src):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+        self.for_src, self.frames = src, []
+        frames, size = self.frames, (VIS_BANDS + 1) * VIS_STEPS
+        try:
+            self.proc = proc = child(spectrum_cmd(src), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     stdin=subprocess.DEVNULL)
+        except OSError:
+            self.note.set_label("The visualizer needs ffmpeg")
+            return
+
+        def read():
+            while True:
+                chunk = proc.stdout.read(size)
+                if len(chunk) < size:
+                    break
+                frames.append(bytes(int(v * 255) for v in spectrum_levels(chunk)))
+            proc.wait()
+            if not frames and frames is self.frames:
+                GLib.idle_add(lambda: (self.note.set_label("Couldn't read this song's sound"), False)[1])
+        threading.Thread(target=read, daemon=True).start()
+
+    # ---- drawing ----
+    def position(self):
+        a = self.app
+        pos = a.position
+        if not a.paused and a.position_at:
+            t = a.current_track()
+            speed = a.speeds.get(t)[0] if t else 1.0
+            pos += min(0.6, time.monotonic() - a.position_at) * speed
+        return pos
+
+    def on_tick(self, _area, _clock):
+        i = int(self.position() * VIS_FPS)
+        frame = self.frames[i] if 0 <= i < len(self.frames) and not self.app.paused else None
+        moving = False
+        for b in range(VIS_BANDS):
+            want = frame[b] / 255 if frame else 0.0
+            have = self.levels[b]
+            new = want if want > have else have - (have - want) * 0.18   # up at once, down gently
+            moving = moving or abs(new - have) > 0.002
+            self.levels[b] = new
+        if moving:
+            self.area.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    def draw(self, area, cr, w, h):
+        c = area.get_color()
+        n, pad = VIS_BANDS, 16
+        gap = max(1.0, (w - 2 * pad) / n * 0.25)
+        bw = max(1.0, (w - 2 * pad) / n - gap)
+        base = h * 0.78
+        for b, lv in enumerate(self.levels):
+            x = pad + b * (bw + gap)
+            bh = max(2.0, lv * base * 0.95)
+            cr.set_source_rgba(c.red, c.green, c.blue, 0.35 + 0.65 * lv)
+            cr.rectangle(x, base - bh, bw, bh)
+            cr.fill()
+            cr.set_source_rgba(c.red, c.green, c.blue, 0.12 * (0.4 + lv))   # its reflection
+            cr.rectangle(x, base + 3, bw, bh * 0.25)
+            cr.fill()
+
+
 class LyricsView(Gtk.Box):
     """The Lyrics tab: Genius's text, or the lines timed to the music with the
     one being sung lit up and kept in view (click a line to jump there)."""
@@ -5804,6 +5935,12 @@ class MusicWindow(Adw.ApplicationWindow):
         self.tab_buttons["lyrics"] = b
         self.lyrics = LyricsView(self)
         self.stack.add_named(self.lyrics, "lyrics")
+        b = Gtk.ToggleButton(label="Visualizer", group=first)
+        b.connect("toggled", lambda btn: btn.get_active() and self.show_tab("visualizer"))
+        tabs.append(b)
+        self.tab_buttons["visualizer"] = b
+        self.visualizer = Visualizer(self)
+        self.stack.add_named(self.visualizer, "visualizer")
         # Artist and album pages have no tab of their own: they open over the tab you were on.
         self.track_list("artist")
         self.stack.add_named(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.artist_list), "artist")
@@ -6373,6 +6510,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.tab_buttons[key].set_active(True)
         self.stack.set_visible_child_name(key)
         self.run_stale(key)
+        (self.visualizer.start if key == "visualizer" else self.visualizer.stop)()
         if key == "lyrics":
             self.lyrics.show_for(self.app.current_track())
         elif key == "music":
@@ -9742,6 +9880,8 @@ class MusicApp(Adw.Application):
         self.queue, self.index = [], -1
         self.context = 0        # bumped when a new list starts, so a late radio doesn't land in it
         self.paused, self.position, self.duration = True, 0.0, 0.0
+        self.position_at = 0.0     # when position was last heard from mpv (the visualizer goes on from there)
+        self.loaded = (None, None)   # (the song's id, what mpv was given to play: a file or an address)
         self.radio_from = None  # the song the radio going is of
         self.dj = {"on": False, "sets": {}, "shown": None}   # the DJ: on, its sets' kinds and lines, the one shown
         self.djs, self.dj_busy = DJ(self), None
@@ -11548,6 +11688,7 @@ class MusicApp(Adw.Application):
         self.load_seq += 1
         seq = self.load_seq
         self.position, self.duration = 0.0, t.get("duration") or 0
+        self.position_at = time.monotonic()
         on_disk = self.lib.has(t["id"]) or source_of(t) == "file"
         self.streaming = not (on_disk or self.keep_played)
         if self.win:
@@ -11579,6 +11720,9 @@ class MusicApp(Adw.Application):
             if self.win:
                 self.win.set_status("")
             self.player.load(path, paused=not autoplay, **self.speed_opts(t))
+            self.loaded = (t["id"], path)
+            if self.win:
+                self.win.visualizer.song_loaded()
             self.paused = not autoplay
             if autoplay:
                 self.begin_listen(t)
@@ -11631,6 +11775,7 @@ class MusicApp(Adw.Application):
                 self.toast(f"Couldn't get “{t['title']}” back: {err}")
                 return
             self.player.load(path, paused=paused, start=pos, **self.speed_opts(t))
+            self.loaded = (t["id"], path)
         self.dl.stream(t, ready)
 
     def save_current(self):
@@ -11780,7 +11925,7 @@ class MusicApp(Adw.Application):
             if name == "time-pos" and data is not None:
                 if abs(data - self.position) >= 0.2 or data < self.position:
                     step = data - self.position
-                    self.position = data
+                    self.position, self.position_at = data, time.monotonic()
                     if 0 < step < 1.5 and not self.paused:   # playing on, not a seek
                         self.listened(step)
                     if self.win:

@@ -105,6 +105,7 @@ fun App() {
                     "artists" -> ArtistsTab(ui)
                     "queue" -> QueueTab(ui)
                     "lyrics" -> LyricsTab(ui)
+                    "visualizer" -> VisualizerTab()
                 }
             }
             if (ui.selecting) SelectBar(ui, bar)
@@ -192,7 +193,7 @@ private fun Tabs(ui: Ui) {
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         listOf("search" to "Search", "library" to "Library", "music" to "Music", "artists" to "Artists", "queue" to "Up next",
-            "lyrics" to "Lyrics")
+            "lyrics" to "Lyrics", "visualizer" to "Visualizer")
             .filter { it.first != "library" || !Music.browseLocal }.forEach { (k, l) ->
             Chip(l, ui.tab == k && ui.pages.isEmpty()) { ui.tab = k; ui.pages.clear(); ui.stopSelecting() }
         }
