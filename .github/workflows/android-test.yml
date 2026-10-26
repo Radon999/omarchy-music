@@ -116,4 +116,4 @@ jobs:
           git checkout -q -- android/app/build.gradle.kts android/app/src/main/AndroidManifest.xml
           B="$(head -1 ../work/ci/PUSH | tr -d '[:space:]' | grep . || echo desktop-features)"
           # ci/PUSH's first line names the branch (desktop-features if empty); never forced
-          git push origin HEAD:"$B"
+          git push origin HEAD:"refs/heads/$B"
