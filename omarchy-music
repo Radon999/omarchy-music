@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Omarchy Music: a minimal music popup, themed live from Omarchy.
+"""VarMusic: a minimal music popup, themed live from Omarchy.
 
 Browse and search YouTube Music, Tidal, Apple Music or Spotify (switch at the
 top), and the music in your own folders (~/Music to start). The audio of the
@@ -72,6 +72,7 @@ import shlex
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -109,6 +110,8 @@ REPO = "Varixxl/omarchy-music"
 PROFILE = os.environ.get("OMARCHY_MUSIC_PROFILE", "")
 SUFFIX = f"-{PROFILE}" if PROFILE else ""
 APP_ID = "org.omarchy.music" + (f".{PROFILE}" if PROFILE else "")
+DISCORD_APP_ID = ""          # the "VarMusic" app on Discord's developer portal (an app ID is public, not a secret)
+DOWNLOAD_PAGE = "https://varixxl.github.io/omarchy-music/"
 HOME = Path.home()
 WINDOWS = sys.platform == "win32"
 # Logins, settings and play counts: ~/.local/state on Linux, %LOCALAPPDATA%\omarchy-music on Windows.
@@ -2399,7 +2402,7 @@ class Spotify:
                 h.send_response(200)
                 h.send_header("Content-Type", "text/plain; charset=utf-8")
                 h.end_headers()
-                h.wfile.write(("Spotify is connected to Omarchy Music. You can close this tab." if ok
+                h.wfile.write(("Spotify is connected to VarMusic. You can close this tab." if ok
                                else f"Spotify didn't connect: {got.get('error', 'no code came back')}").encode())
 
             def log_message(h, *_a):
@@ -3116,7 +3119,7 @@ class Mpris:
         status = "Stopped" if not t else ("Paused" if a.paused else "Playing")
         return {
             "CanQuit": GLib.Variant("b", True), "CanRaise": GLib.Variant("b", True),
-            "HasTrackList": GLib.Variant("b", False), "Identity": GLib.Variant("s", "Omarchy Music"),
+            "HasTrackList": GLib.Variant("b", False), "Identity": GLib.Variant("s", "VarMusic"),
             "DesktopEntry": GLib.Variant("s", APP_ID), "SupportedUriSchemes": GLib.Variant("as", []),
             "SupportedMimeTypes": GLib.Variant("as", []),
             "PlaybackStatus": GLib.Variant("s", status),
@@ -3145,6 +3148,188 @@ class Mpris:
         changed = {k: p[k] for k in ("PlaybackStatus", "LoopStatus", "Metadata", "Volume")}
         self.conn.emit_signal(None, MPRIS_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
                               GLib.Variant("(sa{sv}as)", (PLAYER_IFACE, changed, [])))
+
+
+# =============================================================================
+# Discord: what's playing, on your profile, as Spotify does
+# =============================================================================
+
+def discord_ipc_paths():
+    """Where the Discord app (or Vesktop, or another client with Rich Presence) listens on this computer."""
+    if WINDOWS:
+        return [rf"\\.\pipe\discord-ipc-{i}" for i in range(10)]
+    bases = [os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP")] + ["/tmp"]
+    subs = ("", "app/com.discordapp.Discord/", "app/com.discordapp.DiscordCanary/", "app/dev.vencord.Vesktop/",
+            ".flatpak/dev.vencord.Vesktop/xdg-run/", "snap.discord/")
+    return [f"{b.rstrip('/')}/{sub}discord-ipc-{i}" for i in range(10) for b in dict.fromkeys(filter(None, bases)) for sub in subs]
+
+
+def song_page(t):
+    """(the service's name, the song's page there), or None for a song only you have."""
+    src = source_of(t)
+    if src == "ytm":
+        return "YouTube Music", f"https://music.youtube.com/watch?v={t['id']}"
+    if src == "tidal" and t.get("tidal"):
+        return "Tidal", f"https://tidal.com/browse/track/{t['tidal']}"
+    if src == "apple" and t.get("apple"):
+        return "Apple Music", f"https://music.apple.com/song/{t['apple']}"
+    if src == "spotify" and t.get("spotify"):
+        return "Spotify", f"https://open.spotify.com/track/{t['spotify']}"
+    return None
+
+
+def discord_activity(t, position, duration, speed=1.0, now=None):
+    """The Rich Presence activity for t, playing position seconds in: "Listening to
+    VarMusic", the song and its artists, its cover, a bar of how far in it is, and buttons to
+    open the song and to get the app."""
+    now = time.time() if now is None else now
+
+    def text(v):   # Discord takes 2 to 128 characters
+        return (v or "").strip()[:128].ljust(2, "\u2800")
+    start = now - position / speed
+    act = {"type": 2, "status_display_type": 0, "details": text(t.get("title")), "state": text(t.get("artist")),
+           "timestamps": {"start": int(start * 1000)},
+           "assets": {"large_image": t["thumb"] if str(t.get("thumb") or "").startswith("https://") else DOWNLOAD_PAGE + "icon.png",
+                      "small_image": DOWNLOAD_PAGE + "icon.png", "small_text": "VarMusic"}}
+    if duration:
+        act["timestamps"]["end"] = int((start + duration / speed) * 1000)
+    if t.get("album"):
+        act["assets"]["large_text"] = text(t["album"])
+    page = song_page(t)
+    if page:
+        act["details_url"] = page[1]
+    act["buttons"] = ([{"label": f"Play on {page[0]}", "url": page[1]}] if page else []) + \
+        [{"label": "Get VarMusic", "url": DOWNLOAD_PAGE}]
+    return act
+
+
+def same_activity(a, b):
+    """Whether Discord showing b is as good as a: the same, give or take 2 s on the bar."""
+    if a is None or b is None:
+        return a is b
+    ta, tb = a.get("timestamps", {}), b.get("timestamps", {})
+    return ({**a, "timestamps": None} == {**b, "timestamps": None} and ta.keys() == tb.keys()
+            and all(abs(ta[k] - tb[k]) <= 2000 for k in ta))
+
+
+class DiscordPresence:
+    """What you're playing on your Discord profile, as Spotify does, through the Discord app's
+    own Rich Presence socket on this computer (nothing goes anywhere else). Paused or stopped,
+    it's cleared. With Discord closed it looks for it again every so often."""
+    RETRY = 20     # seconds between looks for Discord while it's closed
+    GAP = 4.0      # Discord takes 5 updates a 20 s: one every 4 s at most
+
+    def __init__(self, app):
+        self.app = app
+        self.want, self.sent = None, None   # the activity to show, and what Discord shows (None: nothing)
+        self.conn = None
+        self.status = ""                    # for the accounts menu: "" (not tried yet), "on", or why not
+        self.cond = threading.Condition()
+        self.soon = None
+        threading.Thread(target=self.run, daemon=True, name="discord").start()
+
+    def app_id(self):
+        return self.app.api_keys.get("discord_app_id") or DISCORD_APP_ID
+
+    def changed(self):
+        """Something about what's playing changed: tell Discord in a moment (once the position has caught up)."""
+        if self.soon is None:
+            self.soon = GLib.timeout_add(800, self._update)
+
+    def _update(self):
+        self.soon = None
+        a = self.app
+        t = a.current_track()
+        want = None
+        if a.discord_on and self.app_id() and t and not a.paused and a.loaded and a.loaded[0] == t["id"]:
+            want = discord_activity(t, a.position, a.duration or t.get("duration") or 0, a.speeds.get(t)[0])
+        with self.cond:
+            self.want = want
+            self.cond.notify()
+        return False
+
+    # ---- the socket (a named pipe on Windows) ----
+    def connect(self):
+        for path in discord_ipc_paths():
+            try:
+                if WINDOWS:
+                    conn = open(path, "r+b", buffering=0)  # noqa: SIM115 -- kept open while Discord is
+                else:
+                    if not os.path.exists(path):
+                        continue
+                    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    conn.settimeout(10)
+                    conn.connect(path)
+                break
+            except OSError:
+                continue
+        else:
+            raise OSError("Discord isn't open")
+        self.conn = conn
+        self.send(0, {"v": 1, "client_id": self.app_id()})
+        self.reply()
+
+    def close(self):
+        if self.conn:
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+        self.conn, self.sent = None, None
+
+    def send(self, op, data):
+        body = json.dumps(data).encode()
+        frame = struct.pack("<II", op, len(body)) + body
+        if WINDOWS:
+            self.conn.write(frame)
+        else:
+            self.conn.sendall(frame)
+
+    def recv(self, n):
+        out = b""
+        while len(out) < n:
+            part = self.conn.read(n - len(out)) if WINDOWS else self.conn.recv(n - len(out))
+            if not part:
+                raise OSError("Discord closed the connection")
+            out += part
+        return out
+
+    def reply(self):
+        op, n = struct.unpack("<II", self.recv(8))
+        data = json.loads(self.recv(n) or b"{}")
+        if op == 2 or data.get("evt") == "ERROR":   # 2: Discord closed it, saying why
+            raise ValueError((data.get("data") or {}).get("message") or data.get("message") or "Discord said no")
+        return data
+
+    def run(self):
+        last = 0.0
+        while True:
+            with self.cond:
+                self.cond.wait_for(lambda: not same_activity(self.want, self.sent), timeout=self.RETRY)
+                want = self.want
+            if same_activity(want, self.sent):
+                continue
+            wait = last + self.GAP - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+                continue   # (what to show may have changed meanwhile)
+            last = time.monotonic()
+            try:
+                if not self.conn:
+                    if want is None:
+                        self.sent = None
+                        continue
+                    self.connect()
+                args = {"pid": os.getpid()} | ({"activity": want} if want else {})
+                self.send(1, {"cmd": "SET_ACTIVITY", "args": args, "nonce": secrets.token_hex(8)})
+                self.reply()
+                self.sent, self.status = want, "on"
+            except (OSError, ValueError, struct.error) as e:
+                self.close()
+                self.status = str(e)[:80] or "Discord isn't open"
+                with self.cond:
+                    self.cond.wait(self.RETRY)   # look again in a while (or when something changes)
+            GLib.idle_add(lambda: (self.app.refresh_accounts_soon(), False)[1])
 
 
 # =============================================================================
@@ -4933,11 +5118,11 @@ class Updater:
                 return
             if version_tuple(rel.get("tag_name")) <= version_tuple(VERSION):
                 if not quiet:
-                    self.app.toast(f"Omarchy Music {VERSION} is the newest")
+                    self.app.toast(f"VarMusic {VERSION} is the newest")
                 return
             tag = rel["tag_name"]
             if tag != self.latest:
-                self.app.toast(f"Omarchy Music {tag.lstrip('v')} is out: update it in the accounts menu (☰)")
+                self.app.toast(f"VarMusic {tag.lstrip('v')} is out: update it in the accounts menu (☰)")
             self.latest = tag
             self.installer = self.setup_of(rel)
             self.app.accounts_changed()
@@ -5138,7 +5323,7 @@ class Remote:
     def announce(self):
         """Tell the network, so the phone finds this app without typing an address: Avahi on
         Linux, the zeroconf module on Windows. Without either, the phone takes the address."""
-        name = f"Omarchy Music on {socket.gethostname()}"
+        name = f"VarMusic on {socket.gethostname()}"
         if not WINDOWS:
             try:
                 self.avahi = child(["avahi-publish-service", name, REMOTE_SERVICE, str(REMOTE_PORT)],
@@ -6135,7 +6320,7 @@ class MusicWindow(Adw.ApplicationWindow):
             # Windows: a title bar to move and close it by, and closing it quits (there is no
             # bar icon or keybind there to bring a hidden window back).
             frame = Adw.ToolbarView(content=self.toasts)
-            frame.add_top_bar(Adw.HeaderBar(title_widget=Adw.WindowTitle(title="Omarchy Music")))
+            frame.add_top_bar(Adw.HeaderBar(title_widget=Adw.WindowTitle(title="VarMusic")))
             self.set_content(frame)
             self.set_hide_on_close(False)
             self.connect("close-request", lambda *_: (app.quit_app(), True)[1])
@@ -6628,7 +6813,7 @@ class MusicWindow(Adw.ApplicationWindow):
             elif up.state == "working":
                 line("Update", f"Updating to {new}…" if not WINDOWS else f"Downloading {new}… (it reopens when it's done)")
             else:
-                line("Update", up.state or f"Omarchy Music {new} is out (this is {VERSION})", False,
+                line("Update", up.state or f"VarMusic {new} is out (this is {VERSION})", False,
                      pill("Update", up.install))
         else:
             line("Version", f"{VERSION} · checking…" if up.checking else f"{VERSION} · {up.check_error or 'up to date'}", False,
@@ -6665,7 +6850,7 @@ class MusicWindow(Adw.ApplicationWindow):
             line("Spotify", f"Connected as {sp.user}" if sp.user else "Connected", True, sync_switch("spotify"),
                  pill("Disconnect", a.spotify_disconnect, quiet=True))
         elif a.spotify_connecting:
-            line("Spotify", "Approve Omarchy Music on the Spotify page that opened…", False,
+            line("Spotify", "Approve VarMusic on the Spotify page that opened…", False,
                  pill("Cancel", a.spotify_cancel, quiet=True))
         elif sp:
             line("Spotify", "Spotify wants a developer app of yours (its owner needs Premium). Make one with "
@@ -6711,7 +6896,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if paired:
                 across(pill("Forget the paired phones", a.forget_phones, quiet=True))
         else:
-            line("Phone", "Control this app from the Omarchy Music Android app, on your network", False, remote)
+            line("Phone", "Control this app from the VarMusic Android app, on your network", False, remote)
 
         box.append(Gtk.Separator())
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
@@ -6724,7 +6909,7 @@ class MusicWindow(Adw.ApplicationWindow):
                  pill("Disconnect", a.lastfm_disconnect, quiet=True))
             across(pill(f"✦  Open your {wrapped_year()} Wrapped", a.open_wrapped))
         elif a.lastfm_connecting:
-            line("Last.fm", "Approve Omarchy Music on the Last.fm page that opened…", False,
+            line("Last.fm", "Approve VarMusic on the Last.fm page that opened…", False,
                  pill("Cancel", a.lastfm_cancel, quiet=True))
         else:
             line("Last.fm", "Scrobble what you play, and see your Wrapped. Last.fm wants an API account of yours: "
@@ -6772,6 +6957,13 @@ class MusicWindow(Adw.ApplicationWindow):
         modes.set_active_name(a.lyrics_mode)
         modes.connect("notify::active-name", lambda g, _p: a.set_lyrics_mode(g.get_active_name()))
         line("Lyrics", "Show in the Lyrics tab", False, modes)
+        disc = Gtk.Switch(active=a.discord_on, valign=Gtk.Align.CENTER)
+        disc.connect("notify::active", lambda sw, _p: a.set_discord(sw.get_active()))
+        st = a.discord.status
+        line("Discord", "Show what you're playing on your Discord profile, as Spotify does" if not a.discord_on else
+             "Needs a Discord application ID (Settings below)" if not a.discord.app_id() else
+             "Showing what you play (paused: nothing)" if st == "on" else
+             "On · Discord isn't open" if st in ("", "Discord isn't open") else f"On · {st}", a.discord_on and st == "on", disc)
         have = [API_KEYS[k][0] for k in API_KEYS if a.api_keys.get(k)]
         line("Settings", ("Using your " + ", ".join(have)) if have else
              "Keys of yours for Google's pictures, Chartmetric's moods and an AutoEq server: none is needed",
@@ -9056,6 +9248,8 @@ API_KEYS = {
     "google_cx": ("Google search engine ID", "A Programmable Search Engine (programmablesearchengine.google.com) set to search the whole web"),
     "chartmetric": ("Chartmetric refresh token", "From your Chartmetric API account: songs' moods from Chartmetric"),
     "autoeq_api": ("AutoEq server", "The address of an AutoEqApi server of your own (github.com/timschneeb/AutoEqApi)"),
+    "discord_app_id": ("Discord application ID", "An app of your own at discord.com/developers: Discord shows "
+                       "“Listening to” its name (VarMusic's own is used without one)"),
 }
 PICTURES_RETRY = 14 * 86400   # an artist nothing was found for is looked for again after this long
 WIKI_API = "https://en.wikipedia.org/w/api.php"
@@ -10525,6 +10719,7 @@ class MusicApp(Adw.Application):
         self.folders = [str(HOME / "Music")]   # where your own music is
         self.art_colors = True  # the window takes the colour of the album art
         self.keep_played = False   # off: songs stream from Tidal and download only when you pick Download
+        self.discord_on = True     # what's playing on your Discord profile
         self.music_sort = "title"  # how the Music tab's All is sorted
         self.search_in = "tidal"   # where the search bar looks (SEARCH_IN)
         self.spotify_history = SpotifyHistory()
@@ -10556,6 +10751,7 @@ class MusicApp(Adw.Application):
         self.art = ArtCache(self.lib)
         self.player = Player(self.on_mpv)
         self.mpris = MediaKeys(self) if WINDOWS else Mpris(self)
+        self.discord = DiscordPresence(self)
         self.lastfm = LastFM()
         self.lyrics = Lyrics(self)
         self.tagger = Tagger(self)
@@ -10582,6 +10778,7 @@ class MusicApp(Adw.Application):
             self.folders = [f for f in state["folders"] if isinstance(f, str)]
         self.art_colors = bool(state.get("art_colors", True))
         self.keep_played = bool(state.get("keep_played", False))
+        self.discord_on = bool(state.get("discord", True))
         self.music_sort = state.get("music_sort") if state.get("music_sort") in ("title", "artist", "album", "added") else "title"
         self.playlist_sort = state.get("playlist_sort") if state.get("playlist_sort") in dict(PLAYLIST_SORTS) else "order"
         self.search_in = state.get("search_in") if state.get("search_in") in SEARCH_IN else "tidal"
@@ -10667,6 +10864,7 @@ class MusicApp(Adw.Application):
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
+                                       "discord": self.discord_on,
                                        "music_sort": self.music_sort, "search_in": self.search_in,
                                        "remote": self.remote_on, "remote_tokens": self.remote_tokens,
                                        "api_keys": self.api_keys, "shuffled": self.shuffled,
@@ -11707,6 +11905,7 @@ class MusicApp(Adw.Application):
         cur = self.current_track()
         if cur and any(SongSpeeds.key(t) == SongSpeeds.key(cur) for t in tracks):
             self.player.set_speed(*self.speeds.get(cur))
+            self.discord.changed()
         speed = self.speeds.get(tracks[0])[0] if tracks else 1.0
         what = f"“{tracks[0]['title']}”" if len(tracks) == 1 else f"{len(tracks)} songs"
         self.toast(f"{what} back to normal speed" if speed == 1.0 else f"{what} at {speed:g}×")
@@ -12364,6 +12563,7 @@ class MusicApp(Adw.Application):
                     if self.win:
                         self.win.update_now_playing()
                     self.mpris.changed()
+                    self.discord.changed()
                 return
             if self.win:
                 self.win.set_status("")
@@ -12378,6 +12578,7 @@ class MusicApp(Adw.Application):
                 self.win.song_changed()
                 self.win.update_now_playing()
             self.mpris.changed()
+            self.discord.changed()
             self.prefetch()
         (self.dl.stream if self.streaming else self.dl.fetch)(t, ready)
         self.save_state()
@@ -12434,6 +12635,11 @@ class MusicApp(Adw.Application):
     def set_keep_played(self, on):
         self.keep_played = on
         self.save_soon()
+
+    def set_discord(self, on):
+        self.discord_on = on
+        self.save_soon()
+        self.discord.changed()
 
     def set_remote(self, on):
         self.remote_on = on
@@ -12634,6 +12840,7 @@ class MusicApp(Adw.Application):
                             self.win.lyrics.tick(self.position)
             elif name == "duration" and data:
                 self.duration = data
+                self.discord.changed()
             elif name == "pause" and data is not None:
                 self.paused = bool(data)
                 t = self.current_track()
@@ -12642,8 +12849,11 @@ class MusicApp(Adw.Application):
                 if self.win:
                     self.win.update_now_playing()
                 self.mpris.changed()
-        elif ev == "playback-restart" and not self.eq_synced:
-            self.retune_eq()  # a seek or new song rebuilt the filters from the graph, before the latest tweaks
+                self.discord.changed()
+        elif ev == "playback-restart":
+            self.discord.changed()   # a seek, or a song starting: Discord's bar starts from there
+            if not self.eq_synced:
+                self.retune_eq()  # a seek or new song rebuilt the filters from the graph, before the latest tweaks
         elif ev == "end-file" and msg.get("reason") == "eof":
             if self.streaming and self.duration and self.position < self.duration - 5:
                 self.stream_broke()   # the network went away mid-song: that's not the end
@@ -12665,7 +12875,7 @@ def song_key(t):
 # =============================================================================
 
 def primary_running():
-    """Whether Omarchy Music is running already (it owns its name on the session bus)."""
+    """Whether VarMusic is running already (it owns its name on the session bus)."""
     try:
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         res = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner",
@@ -12715,7 +12925,7 @@ def lastfm_login():
         if isinstance(e, LastFMError):
             fm.set_account("", "")   # ask for them again next time
         return 1
-    print("Approve Omarchy Music on this Last.fm page (opening it in your browser):", url, sep="\n", flush=True)
+    print("Approve VarMusic on this Last.fm page (opening it in your browser):", url, sep="\n", flush=True)
     open_url(url)
     for _ in range(60):
         time.sleep(3)
@@ -12746,7 +12956,7 @@ def spotify_login():
     client_id = sp.client_id or input("Client ID: ")
 
     def opened(url):
-        print("Approve Omarchy Music on this Spotify page (opening it in your browser):", url, sep="\n", flush=True)
+        print("Approve VarMusic on this Spotify page (opening it in your browser):", url, sep="\n", flush=True)
         open_url(url)
     try:
         sp.login(client_id, opened)
@@ -12782,10 +12992,10 @@ def main():
         return spotify_login()
     if args and args[0] != "--background" and not primary_running():
         if args[0].lower() in ("status", "hide", "pause", "quit", "reload"):
-            print("Omarchy Music isn't running.")
+            print("VarMusic isn't running.")
             return 1 if args[0].lower() == "status" else 0
         if not start_in_background():
-            print("Omarchy Music didn't start.", file=sys.stderr)
+            print("VarMusic didn't start.", file=sys.stderr)
             return 1
     return MusicApp().run(sys.argv)
 

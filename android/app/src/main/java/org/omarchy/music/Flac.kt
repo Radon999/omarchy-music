@@ -140,7 +140,7 @@ object Flac {
     private fun vorbisComment(tags: Map<String, List<String>>): ByteArray {
         val o = ByteArrayOutputStream()
         val le = { n: Int -> o.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(n).array()) }
-        val vendor = "Omarchy Music".toByteArray()
+        val vendor = "VarMusic".toByteArray()
         le(vendor.size); o.write(vendor)
         val entries = tags.flatMap { (k, vs) -> vs.filter { it.isNotEmpty() }.map { "${k.lowercase()}=$it".toByteArray() } }
         le(entries.size)

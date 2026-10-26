@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/OmarchyMusic/: Omarchy Music for Windows with everything it needs
+# Builds dist/OmarchyMusic/: VarMusic for Windows with everything it needs
 # (Python, PyGObject, GTK 4, libadwaita, mpv, ffmpeg), copied from the MSYS2 UCRT64
 # prefix it runs in and laid out the same way (bin/, lib/, share/, etc/), so GLib,
 # GTK and Python find their files relative to themselves. Run it in an MSYS2 UCRT64

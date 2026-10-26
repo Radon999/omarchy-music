@@ -116,7 +116,7 @@ fun FolderBrowser(onClose: () -> Unit) {
             Column {
                 when {
                     !access.granted -> {
-                        Text("Omarchy Music needs permission to see the music on this phone.", style = T.sub,
+                        Text("VarMusic needs permission to see the music on this phone.", style = T.sub,
                             modifier = Modifier.padding(bottom = 10.dp))
                         Pill("Allow access") { access.ask() }
                     }

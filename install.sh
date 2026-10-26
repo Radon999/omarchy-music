@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Omarchy Music for this user: a venv for the Python modules, the
+# Install VarMusic for this user: a venv for the Python modules, the
 # `omarchy-music` command in ~/.local/bin and a launcher entry. Run it again
 # to update the modules. Nothing here touches your music or your logins.
 set -euo pipefail
@@ -45,7 +45,7 @@ mkdir -p "$(dirname "$desktop")"
 cat >"$desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Music
+Name=VarMusic
 GenericName=Music Player
 Comment=Lossless music popup for YouTube Music, Tidal, Apple Music, Spotify and your own files
 Exec=$bin

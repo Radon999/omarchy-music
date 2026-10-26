@@ -1,4 +1,4 @@
-; Omarchy Music for Windows: installs dist\OmarchyMusic (made by build.sh) for the
+; VarMusic for Windows: installs dist\OmarchyMusic (made by build.sh) for the
 ; current user, with no administrator rights needed, and adds it to the Start menu.
 ; Build: ISCC /DAppVersion=1.0.0 packaging\windows\installer.iss
 
@@ -8,13 +8,14 @@
 
 [Setup]
 AppId={{8C1F3B52-6D0E-4C4B-9E27-0F6A7B3D9C11}
-AppName=Omarchy Music
+AppName=VarMusic
 AppVersion={#AppVersion}
-AppVerName=Omarchy Music {#AppVersion}
+AppVerName=VarMusic {#AppVersion}
 AppPublisher=Xavier Reid
 AppPublisherURL=https://github.com/Varixxl/omarchy-music
+; Still where 1.1.x put it, so updates go to the same place.
 DefaultDirName={localappdata}\Programs\Omarchy Music
-DefaultGroupName=Omarchy Music
+DefaultGroupName=VarMusic
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -23,7 +24,7 @@ OutputDir=..\..\dist
 OutputBaseFilename=OmarchyMusic-Setup
 SetupIconFile=omarchy-music.ico
 UninstallDisplayIcon={app}\omarchy-music.ico
-UninstallDisplayName=Omarchy Music
+UninstallDisplayName=VarMusic
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -47,13 +48,16 @@ Source: "..\..\dist\OmarchyMusic\*"; DestDir: "{app}"; Flags: recursesubdirs cre
 Type: filesandordirs; Name: "{app}\bin"
 Type: filesandordirs; Name: "{app}\lib"
 Type: filesandordirs; Name: "{app}\share"
+; The shortcuts 1.1.x made, before the app was VarMusic.
+Type: files; Name: "{autoprograms}\Omarchy Music.lnk"
+Type: files; Name: "{autodesktop}\Omarchy Music.lnk"
 
 [Icons]
-Name: "{autoprograms}\Omarchy Music"; Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; IconFilename: "{app}\omarchy-music.ico"; AppUserModelID: "Omarchy.Music"; Comment: "Music from YouTube Music, Tidal, Apple Music and Spotify, in FLAC"
-Name: "{autodesktop}\Omarchy Music"; Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; IconFilename: "{app}\omarchy-music.ico"; AppUserModelID: "Omarchy.Music"; Tasks: desktopicon
+Name: "{autoprograms}\VarMusic"; Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; IconFilename: "{app}\omarchy-music.ico"; AppUserModelID: "Omarchy.Music"; Comment: "Music from YouTube Music, Tidal, Apple Music and Spotify, in FLAC"
+Name: "{autodesktop}\VarMusic"; Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; IconFilename: "{app}\omarchy-music.ico"; AppUserModelID: "Omarchy.Music"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; Description: "Start Omarchy Music"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; Description: "Start VarMusic"; Flags: nowait postinstall skipifsilent
 ; An update started from the app (Setup.exe /SILENT /UPDATE=1) opens the new copy when it's done.
 Filename: "{app}\bin\pythonw.exe"; Parameters: """{app}\omarchy-music"""; WorkingDir: "{app}"; Flags: nowait; Check: IsUpdate
 

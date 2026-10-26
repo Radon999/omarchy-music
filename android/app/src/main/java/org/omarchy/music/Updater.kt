@@ -67,14 +67,14 @@ object Updater {
             checkError = err?.let { "couldn't check: ${it.message?.take(60)}" } ?: ""
             Music.accountsVersion++
             val tag = rel["tag_name"].str ?: return@bg
-            if (!newer(tag, version)) { if (!quiet) Music.toast("Omarchy Music $version is the newest"); return@bg }
+            if (!newer(tag, version)) { if (!quiet) Music.toast("VarMusic $version is the newest"); return@bg }
             val url = rel["assets"].list.firstOrNull { it["name"].str == "OmarchyMusic.apk" }?.get("browser_download_url").str
             if (url == null) {   // the release is still being put up: its APK comes a few minutes after
-                if (!quiet) Music.toast("Omarchy Music ${tag.removePrefix("v")} is on its way: its Android app isn't up yet")
+                if (!quiet) Music.toast("VarMusic ${tag.removePrefix("v")} is on its way: its Android app isn't up yet")
                 Music.scope.launch { delay(5 * 60_000L); check() }
                 return@bg
             }
-            if (latest != tag.removePrefix("v")) Music.toast("Omarchy Music ${tag.removePrefix("v")} is out: update it in the accounts menu (☰)")
+            if (latest != tag.removePrefix("v")) Music.toast("VarMusic ${tag.removePrefix("v")} is out: update it in the accounts menu (☰)")
             latest = tag.removePrefix("v"); apk = url
             Music.accountsVersion++
         }
@@ -102,7 +102,7 @@ object Updater {
         android.util.Log.i(TAG, "update: installing $url over $version")
         if (!ctx.packageManager.canRequestPackageInstalls()) {
             // Android asks once whether this app may install apps; then pick Update again.
-            Music.toast("Allow Omarchy Music to install apps, then pick Update again")
+            Music.toast("Allow VarMusic to install apps, then pick Update again")
             ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return

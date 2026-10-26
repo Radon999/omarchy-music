@@ -1,4 +1,6 @@
-# Omarchy Music
+# VarMusic
+
+(Formerly Omarchy Music.)
 
 A small music popup for [Omarchy](https://omarchy.org/) (Hyprland), themed live from the
 Omarchy theme. You browse YouTube Music, Tidal, Apple Music or Spotify, plus the music
@@ -170,7 +172,7 @@ popup.
 ## Windows
 
 Get `OmarchyMusic-Setup.exe` from the releases page. It installs for your account only
-(no administrator rights needed) and adds Omarchy Music to the Start menu. It's the same app
+(no administrator rights needed) and adds VarMusic to the Start menu. It's the same app
 in a normal window, with Python, GTK 4, mpv and ffmpeg bundled. Media keys control it
 directly.
 

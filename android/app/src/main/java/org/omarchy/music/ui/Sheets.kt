@@ -124,7 +124,7 @@ private fun AccountsSheet(ui: Ui) {
             }
             val v = Updater.latest
             if (v != null) Line("Update", when (Updater.state) {
-                "" -> "Omarchy Music $v is out (this is ${Updater.version})"
+                "" -> "VarMusic $v is out (this is ${Updater.version})"
                 "working" -> "Downloading $v…"
                 "confirm" -> "Downloaded $v: install it"
                 else -> Updater.state

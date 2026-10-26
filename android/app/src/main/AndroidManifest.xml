@@ -23,7 +23,7 @@
 
     <application
         android:name=".MusicApp"
-        android:label="Omarchy Music"
+        android:label="VarMusic"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
         android:theme="@style/Theme.OmarchyMusic"
