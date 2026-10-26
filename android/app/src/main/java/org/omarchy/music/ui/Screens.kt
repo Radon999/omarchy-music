@@ -61,7 +61,7 @@ fun SearchTab(ui: Ui) {
     val where = searchName(ui.foundIn.ifEmpty { Music.searchIn })
     LazyColumn(Modifier.fillMaxSize()) {
         when {
-            ui.searching -> item { Empty("Searching $where…") }
+            ui.searching && (res == null || res.isEmpty) -> item { Empty("Searching $where…") }   // else what was found stays till the new results come
             res == null -> item { Empty("Search ${searchName(Music.searchIn)}", "Songs, artists or albums: pick where with the menu by the search bar. Or paste a link to a song, an album or a playlist.") }
             res.isEmpty -> item { Empty("Nothing found", "${ui.query}\nin $where") }
             else -> {
@@ -90,13 +90,15 @@ fun SearchTab(ui: Ui) {
 }
 
 /** Search where the search bar's menu says (a pasted link: on its own service), for songs, artists and albums. */
-fun runSearch(ui: Ui) {
+/** Search for ui.query. quiet (searching as you type): no messages about services that aren't connected. */
+fun runSearch(ui: Ui, quiet: Boolean = false) {
     val q = ui.query.trim()
     if (q.isEmpty()) return
+    ui.searched = q
     val link = linkSource(q)
     var key = link ?: Music.searchIn
     if (key == "tidal" && link == null && Music.sources["tidal"]?.signedIn != true) {
-        Music.toast("Tidal isn't connected: searching YouTube Music")
+        if (!quiet) Music.toast("Tidal isn't connected: searching YouTube Music")
         key = "ytm"
     }
     val seq = ++ui.searchSeq
@@ -109,8 +111,8 @@ fun runSearch(ui: Ui) {
         return
     }
     val src = Music.sources[key]
-    if (src == null) { Music.toast("Still connecting to ${SOURCES[key]}…"); return }
-    if (!src.signedIn && key in setOf("tidal", "spotify", "apple")) { Music.toast("Connect ${SOURCES[key]} in the accounts menu first"); return }
+    if (src == null) { if (!quiet) Music.toast("Still connecting to ${SOURCES[key]}…"); return }
+    if (!src.signedIn && key in setOf("tidal", "spotify", "apple")) { if (!quiet) Music.toast("Connect ${SOURCES[key]} in the accounts menu first"); return }
     ui.searching = true
     ui.foundIn = key
     Music.bg({ if (link != null) Found(src.search(q)) else src.find(q) }) { res, err ->

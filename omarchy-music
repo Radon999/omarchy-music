@@ -967,6 +967,17 @@ def best_named(items, name, get):
 SEARCH_IN = {"tidal": "Tidal", "ytm": "YouTube Music", "local": "Local files"}
 
 
+def live_search_wait(q, where):
+    """How long (ms) after the last key to search as you type, or None not to: two letters at
+    least; a moment for your own songs, a little longer for a service; a pasted link at once."""
+    q = q.strip()
+    if link_source(q):
+        return 50
+    if len(q) < 2:
+        return None
+    return 150 if where == "local" else 450
+
+
 def link_source(q):
     """The service a pasted link is from, or None for words to search."""
     return ("apple" if "music.apple.com" in q else "tidal" if "tidal.com" in q
@@ -7393,19 +7404,36 @@ class MusicWindow(Adw.ApplicationWindow):
             self.search()
 
     def on_search_changed(self, entry):
-        if entry.get_text().strip():
+        """Search as you type: once you stop typing for a moment (see live_search_wait)."""
+        q = entry.get_text().strip()
+        if q:
             self.show_tab("search")
+        if getattr(self, "_live_timer", 0):
+            GLib.source_remove(self._live_timer)
+            self._live_timer = 0
+        wait = live_search_wait(q, self.app.search_in)
+        if wait is not None:
+            self._live_timer = GLib.timeout_add(wait, self._live_search, q)
 
-    def search(self):
-        """Search where the dropdown says (a pasted link: its own service), for songs, artists and albums."""
+    def _live_search(self, q):
+        self._live_timer = 0
+        if self.entry.get_text().strip() == q and q != getattr(self, "searched", None):
+            self.search(quiet=True)
+        return False
+
+    def search(self, quiet=False):
+        """Search where the dropdown says (a pasted link: its own service), for songs, artists and albums.
+        quiet (searching as you type): no messages about services that aren't connected."""
         q = self.entry.get_text().strip()
         if not q:
             return
+        self.searched = q
         link = link_source(q)
         key = link or self.app.search_in
         tidal = self.app.sources.get("tidal")
         if key == "tidal" and not link and not (tidal and tidal.signed_in):
-            self.toast("Tidal isn't connected: searching YouTube Music")
+            if not quiet:
+                self.toast("Tidal isn't connected: searching YouTube Music")
             key = "ytm"
         self.show_tab("search")
         self.search_seq += 1
@@ -7422,12 +7450,15 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         src = self.app.sources.get(key)
         if not src:
-            self.toast(f"Still connecting to {SOURCES[key]}…")
+            if not quiet:
+                self.toast(f"Still connecting to {SOURCES[key]}…")
             return
         if key in ("tidal", "spotify") and not src.signed_in:
-            self.toast(f"Connect {SOURCES[key]} in the accounts menu first")
+            if not quiet:
+                self.toast(f"Connect {SOURCES[key]} in the accounts menu first")
             return
-        self.set_empty(self.search_list, "Searching…", q)
+        if not quiet or not (self.results or self.result_artists or self.result_albums):
+            self.set_empty(self.search_list, "Searching…", q)   # as you type, what was found stays until the new results come
 
         def work():
             if link or not hasattr(src, "find"):

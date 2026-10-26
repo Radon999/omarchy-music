@@ -24,6 +24,15 @@ const val LASTFM_BLANK = "2a96cbd8b46e442fc41c2b86b821562f"   // Last.fm's grey 
 /** Where the search bar's dropdown can search. */
 val SEARCH_IN = linkedMapOf("tidal" to "Tidal", "ytm" to "YouTube Music", "local" to "Your music")
 
+/** How long (ms) after the last key to search as you type, or null not to: two letters at least;
+ *  a moment for your own songs, a little longer for a service; a pasted link at once. */
+fun liveSearchWait(q: String, where: String): Long? = when {
+    linkSource(q.trim()) != null -> 50
+    q.trim().length < 2 -> null
+    where == "local" -> 150
+    else -> 450
+}
+
 /** The service a pasted link is from, or null for words to search. */
 fun linkSource(q: String): String? = when {
     "music.apple.com" in q -> "apple"

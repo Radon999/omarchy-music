@@ -63,6 +63,7 @@ class Ui {
     var found by mutableStateOf<org.omarchy.music.Found?>(null)
     var foundIn by mutableStateOf("")                   // where it was searched: tidal, ytm, local…
     var searchSeq = 0
+    var searched = ""   // the last query searched for (searching as you type skips it)
     var resultsAreList by mutableStateOf(false)
     var searching by mutableStateOf(false)
     var sheet by mutableStateOf<String?>(null)          // "accounts", "eq", "tidal-login", "spotify-login"…

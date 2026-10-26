@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.imageLoader
+import org.omarchy.music.liveSearchWait
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
 import org.omarchy.music.SEARCH_IN
@@ -144,6 +145,13 @@ private fun TopBar(ui: Ui) {
 private fun SearchField(ui: Ui) {
     val focus = LocalFocusManager.current
     var menu by remember { mutableStateOf(false) }
+    // Search as you type: once you stop typing for a moment (a new letter starts the wait again).
+    LaunchedEffect(ui.query, Music.searchIn) {
+        val q = ui.query.trim()
+        val wait = liveSearchWait(q, Music.searchIn) ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(wait.toLong())
+        if (q != ui.searched) { ui.pages.clear(); runSearch(ui, quiet = true) }
+    }
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)
         .border(1.dp, C.line).background(C.fg.copy(alpha = 0.04f)), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f).padding(start = 12.dp, top = 10.dp, bottom = 10.dp)) {
