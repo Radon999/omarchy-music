@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import org.omarchy.music.Album
 import org.omarchy.music.ArtistInfo
 import org.omarchy.music.Dj
+import org.omarchy.music.FolderItem
 import org.omarchy.music.LastFm
 import org.omarchy.music.Moods
 import org.omarchy.music.PLAYLIST_SORTS
@@ -152,6 +153,8 @@ fun LibraryTab(ui: Ui) {
                 Empty("Not signed in", src.hint)
                 ActionRow("Connect ${SOURCES[key]}  ›") { ui.sheet = "accounts" }
             }
+            open == null && ui.openFolder != null && Music.playlistFolders.get(ui.openFolder!!) != null ->
+                folderView(ui, Music.playlistFolders.get(ui.openFolder!!)!!)
             open != null -> {
                 item { BackRow(open.first.title) { ui.openList = null } }
                 val tracks = open.second?.let { Music.sortedPlaylist(it) }
@@ -167,10 +170,13 @@ fun LibraryTab(ui: Ui) {
                 item { SyncLine() }
                 if (LastFmOn()) item { ActionRow("✦  Your ${org.omarchy.music.Wrapped.year()} Wrapped  ›") { ui.sheet = "wrapped" } }
                 val lists = loaded.second!!
+                item { ActionRow("＋  New folder") { ui.askName = Triple("New folder", "") { n -> Music.newFolder(n) } } }
+                folderRows(ui)
                 if (lists.isEmpty()) item { Section("NO PLAYLISTS YET") }
+                else if (Music.playlistFolders.items.isNotEmpty()) item { Section("${SOURCES[key]?.uppercase()} PLAYLISTS") }
                 items(lists.size) { i ->
                     val pl = lists[i]
-                    PlaylistRow(pl) {
+                    PlaylistRow(pl, onLongClick = { ui.folderFor = FolderItem.service(pl, key) }) {
                         ui.openList = pl to null
                         Music.bg({ src.playlist(pl.id) }) { res, err ->
                             if (ui.openList?.first == pl) ui.openList = pl to (res ?: emptyList())
@@ -416,6 +422,54 @@ private fun androidx.compose.foundation.lazy.LazyListScope.grouped(list: List<Tr
     }
 }
 
+/** Your folders of playlists, as rows: in the Library tab and in Music › Playlists. */
+private fun androidx.compose.foundation.lazy.LazyListScope.folderRows(ui: Ui) {
+    val folders = Music.playlistFolders.all()
+    if (folders.isEmpty()) return
+    item { Section("FOLDERS") }
+    items(folders.size, key = { "folder-${folders[it].id}" }) { i ->
+        val f = folders[i]
+        val n = f.playlists.size
+        PlaylistRow(Album(f.id, f.name, "Folder · $n playlist${if (n != 1) "s" else ""}"), onLongClick = {
+            ui.askName = Triple("Rename folder", f.name) { name -> Music.renameFolder(f.id, name) }
+        }) { ui.openFolder = f.id }
+    }
+}
+
+/** A folder open: its playlists, yours and your services', each opening as it does anywhere. */
+private fun androidx.compose.foundation.lazy.LazyListScope.folderView(ui: Ui, f: org.omarchy.music.PlaylistFolder) {
+    item { BackRow(f.name) { ui.openFolder = null } }
+    item {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill("Rename", quiet = true) { ui.askName = Triple("Rename folder", f.name) { n -> Music.renameFolder(f.id, n) } }
+            Pill("Delete", quiet = true) { ui.confirm = "Delete the folder “${f.name}”? Its playlists stay where they are." to { Music.deleteFolder(f.id); ui.openFolder = null } }
+        }
+    }
+    val items = f.playlists.filter { it.kind != "mine" || Music.lists.get(it.id) != null }   // yours deleted since: gone
+    if (items.isEmpty()) { item { Empty("Nothing in it yet", "Long-press a playlist and pick this folder.") }; return }
+    item { Section("${items.size} PLAYLIST${if (items.size != 1) "S" else ""}") }
+    items(items.size, key = { "fi-${items[it].key}" }) { i ->
+        val it = items[i]
+        val mine = if (it.kind == "mine") Music.lists.get(it.id) else null
+        val sub = if (mine != null) "yours" else "Playlist · ${SOURCES[it.source] ?: it.source}"
+        PlaylistRow(Album(it.id, mine?.name ?: it.title, sub, it.thumb, mine?.tracks?.size?.toString() ?: ""),
+            mine?.tracks?.firstOrNull { t -> t.thumb.isNotEmpty() || t.isFile }?.let { t -> artModel(t) },
+            onLongClick = { ui.confirm = "Take “${mine?.name ?: it.title}” out of “${f.name}”?" to { Music.removeFromFolder(f.id, it) } }) {
+            ui.openFolder = null
+            if (mine != null) { ui.tab = "music"; ui.musicView = "playlists"; ui.openMine = mine.id; return@PlaylistRow }
+            Music.browse(it.source)
+            ui.tab = "library"
+            val al = Album(it.id, it.title, "", it.thumb)
+            ui.openList = al to null
+            val src = Music.sources[it.source]
+            Music.bg({ src?.playlist(it.id) ?: emptyList() }) { res, err ->
+                if (ui.openList?.first == al) ui.openList = al to (res ?: emptyList())
+                if (err != null) Music.toast("Couldn't open it: ${err.message?.take(80)}")
+            }
+        }
+    }
+}
+
 /** Chips to sort a playlist's songs by (PLAYLIST_SORTS), the same for every playlist. */
 @Composable
 private fun PlaylistSortChips() {
@@ -428,14 +482,19 @@ private fun PlaylistSortChips() {
 
 private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, import: () -> Unit) {
     val open = ui.openMine?.let { Music.lists.get(it) }
+    val folder = ui.openFolder?.let { Music.playlistFolders.get(it) }
+    if (open == null && folder != null) { folderView(ui, folder); return }
     if (open == null) {
         item { ActionRow("＋  New playlist") { ui.askName = Triple("New playlist", "") { n -> Music.newPlaylist(n) } } }
+        item { ActionRow("＋  New folder") { ui.askName = Triple("New folder", "") { n -> Music.newFolder(n) } } }
         item {
             val busy = Music.importing
             if (busy != null) Text(busy, style = T.sub.copy(color = C.accent), modifier = Modifier.padding(12.dp))
             else ActionRow("⤓  Import a playlist (.m3u8)") { import() }
         }
+        folderRows(ui)
         val lists = Music.lists.all()
+        if (lists.isNotEmpty() && Music.playlistFolders.items.isNotEmpty()) item { Section("YOUR PLAYLISTS") }
         if (lists.isEmpty()) item {
             Section("NO PLAYLISTS YET")
             Text("Make one here, or long-press any song (or select a few) and pick Add to playlist.", style = T.sub,
@@ -445,7 +504,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, i
             val pl = lists[i]
             val cover = pl.tracks.firstOrNull { it.thumb.isNotEmpty() || it.isFile }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PlaylistRow(Album(pl.id, pl.name, "", "", pl.tracks.size.toString()), cover?.let { artModel(it) }) { ui.openMine = pl.id }
+                PlaylistRow(Album(pl.id, pl.name, "", "", pl.tracks.size.toString()), cover?.let { artModel(it) },
+                    onLongClick = { ui.folderFor = FolderItem.mine(pl) }) { ui.openMine = pl.id }
             }
         }
         return

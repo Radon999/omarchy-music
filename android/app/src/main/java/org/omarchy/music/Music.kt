@@ -33,6 +33,7 @@ object Music {
     lateinit var lib: Library
     lateinit var plays: Plays
     lateinit var lists: Playlists
+    lateinit var playlistFolders: PlaylistFolders   // Library folders of playlists
     lateinit var local: LocalFiles
     lateinit var tidal: Tidal
     lateinit var dl: Downloader
@@ -107,6 +108,7 @@ object Music {
         lib = Library(ctx)
         plays = Plays(ctx)
         lists = Playlists(ctx)
+        playlistFolders = PlaylistFolders(File(ctx.filesDir, "playlist-folders.json"))
         local = LocalFiles(ctx)
         tidal = Tidal(ctx)
         dl = Downloader(ctx, lib, tidal)
@@ -535,8 +537,32 @@ object Music {
 
     fun removeFromPlaylist(id: String, ids: Set<String>) { lists.remove(id, ids); musicVersion++ }
     fun renamePlaylist(id: String, name: String) { lists.rename(id, name); musicVersion++ }
+    // ---- folders of playlists ----
+    fun newFolder(name: String, item: FolderItem? = null) {
+        val f = playlistFolders.create(name)
+        if (item != null) { playlistFolders.add(f.id, item); toast("Put “${item.title}” in the new folder “$name”") }
+        musicVersion++
+    }
+
+    fun renameFolder(id: String, name: String) { playlistFolders.rename(id, name); musicVersion++ }
+
+    fun deleteFolder(id: String) {
+        playlistFolders.get(id)?.let { toast("Deleted the folder “${it.name}”") }
+        playlistFolders.delete(id)
+        musicVersion++
+    }
+
+    fun addToFolder(id: String, item: FolderItem) {
+        val f = playlistFolders.get(id) ?: return
+        toast(if (playlistFolders.add(id, item)) "Put “${item.title}” in “${f.name}”" else "“${item.title}” is in “${f.name}” already")
+        musicVersion++
+    }
+
+    fun removeFromFolder(id: String, item: FolderItem) { playlistFolders.remove(id, item.key); musicVersion++ }
+
     fun deletePlaylist(id: String) {
         lists.get(id)?.let { toast("Deleted “${it.name}”") }
+        playlistFolders.forget("mine::$id")
         lists.delete(id)
         musicVersion++
     }

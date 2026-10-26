@@ -118,6 +118,7 @@ SONGS, ART = MUSIC / "songs", MUSIC / "art"
 LIBRARY = MUSIC / "library.json"
 MISSING = MUSIC / "missing.json"    # songs Tidal had no lossless copy of, and when we looked
 PLAYLISTS = MUSIC / "playlists.json"   # the playlists you make here
+PLAYLIST_FOLDERS = MUSIC / "playlist-folders.json"   # folders you name, holding playlists of yours and your services'
 CACHE = STATE_DIR / "cache" if WINDOWS else HOME / ".cache" / "omarchy-music"
 THUMBS = CACHE / "thumbs"
 STATE = HOME / ".local" / "state" / f"omarchy-music{SUFFIX}.json"
@@ -674,6 +675,73 @@ class Plays:
     def top(self, n=200):
         rows = sorted(self.items.values(), key=lambda e: (-e.get("plays", 0), -e.get("last", 0)))[:n]
         return [dict(e["track"], plays=e["plays"]) for e in rows]
+
+
+class PlaylistFolders:
+    """Folders you name in the Library, each holding playlists: yours (kind "mine") and your
+    services' (kind "service", with the service's key). A playlist is in a folder once."""
+
+    def __init__(self):
+        self.items = read_json(PLAYLIST_FOLDERS, [])   # [{"id", "name", "playlists": [item]}]
+
+    def save(self):
+        write_atomic(PLAYLIST_FOLDERS, json.dumps(self.items, indent=1))
+
+    def all(self):
+        return sorted(self.items, key=lambda f: norm(f["name"]))
+
+    def get(self, fid):
+        return next((f for f in self.items if f["id"] == fid), None)
+
+    def create(self, name):
+        f = {"id": secrets.token_hex(6), "name": name, "playlists": []}
+        self.items.append(f)
+        self.save()
+        return f
+
+    def rename(self, fid, name):
+        f = self.get(fid)
+        if f:
+            f["name"] = name
+            self.save()
+
+    def delete(self, fid):
+        self.items = [f for f in self.items if f["id"] != fid]
+        self.save()
+
+    @staticmethod
+    def item(pl, source=None):
+        """What a folder keeps of a playlist: one of yours ({"id", "name", "tracks"}) or a service's."""
+        if "tracks" in pl and "name" in pl:
+            return {"kind": "mine", "source": "", "id": pl["id"], "title": pl["name"], "thumb": ""}
+        return {"kind": "service", "source": pl.get("source") or source or "", "id": pl["id"],
+                "title": pl.get("title") or "", "thumb": pl.get("thumb") or ""}
+
+    @staticmethod
+    def key(item):
+        return f"{item['kind']}:{item['source']}:{item['id']}"
+
+    def add(self, fid, item):
+        """Put a playlist in the folder; False if it's there already."""
+        f = self.get(fid)
+        if not f or any(self.key(x) == self.key(item) for x in f["playlists"]):
+            return False
+        f["playlists"].append(item)
+        self.save()
+        return True
+
+    def remove(self, fid, key):
+        f = self.get(fid)
+        if f:
+            f["playlists"] = [x for x in f["playlists"] if self.key(x) != key]
+            self.save()
+
+    def forget(self, kind, source, pid):
+        """A playlist of yours was deleted: out of every folder."""
+        gone = f"{kind}:{source}:{pid}"
+        for f in self.items:
+            f["playlists"] = [x for x in f["playlists"] if self.key(x) != gone]
+        self.save()
 
 
 class Playlists:
@@ -5395,6 +5463,9 @@ class PlaylistRow(Gtk.ListBoxRow):
         arrow.add_css_class("sub")
         box.append(arrow)
         self.set_child(box)
+        menu = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)   # right-click: put it in a folder (or rename one)
+        menu.connect("pressed", lambda _g, _n, x, y: win.playlist_row_menu(self, x, y))
+        self.add_controller(menu)
 
 
 class LyricsView(Gtk.Box):
@@ -6735,10 +6806,17 @@ class MusicWindow(Adw.ApplicationWindow):
         if self.open_mine:
             self.refresh_mine()
             return
+        if self.open_folder and self.folder_in == "music":
+            self.render_folder(lst)
+            return
         lst.remove_all()
         lst.append(self.action_row("＋  New playlist", "new-playlist"))
+        lst.append(self.action_row("＋  New folder", "new-folder"))
         lst.append(self.action_row("⤓  Import a playlist (.m3u8)", "import-m3u"))
+        self.folder_rows(lst)
         lists = self.app.lists.all()
+        if lists and self.app.folders_of_lists.items:
+            self.section(lst, "YOUR PLAYLISTS")
         if not lists:
             self.section(lst, "NO PLAYLISTS YET")
             hint = Gtk.Label(label="Make one here, or right-click any song (or select a few)\nand pick Add to playlist.",
@@ -6776,6 +6854,111 @@ class MusicWindow(Adw.ApplicationWindow):
         self.section(lst, f"{len(tracks)} SONG{'S' if len(tracks) != 1 else ''} · {fmt_total(tracks)}")
         self.playlist_sort_row(lst, self.refresh_music)
         self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
+
+    # ---- folders of playlists (Library and Music › Playlists) ----
+    open_folder, folder_in = None, "music"   # the folder open, and in which tab's list
+
+    def folder_rows(self, lst):
+        """Your folders, as rows: in the Library tab and in Music › Playlists."""
+        folders = self.app.folders_of_lists.all()
+        if folders:
+            self.section(lst, "FOLDERS")
+        for f in folders:
+            n = len(f["playlists"])
+            lst.append(PlaylistRow(self, {"kind": "folder", "id": f["id"], "title": f["name"], "thumb": "",
+                                          "sub": f"Folder · {n} playlist{'s' if n != 1 else ''}"}, icon="folder-symbolic"))
+
+    def render_folder(self, lst):
+        """The open folder: its playlists, yours and your services', each opening as it does anywhere."""
+        a = self.app
+        f = a.folders_of_lists.get(self.open_folder)
+        if not f:
+            self.open_folder = None
+            return self.refresh_folder_list()
+        lst.remove_all()
+        lst.append(self.action_row(f"‹  {f['name']}", "folder-back"))
+        self.actions_row(lst, [("Rename", lambda _b: self.ask_name("Rename folder", f["name"],
+                                                                   lambda n: a.rename_folder(f["id"], n)), True),
+                               ("Delete", lambda _b: self.delete_folder(f), True)])
+        if not f["playlists"]:
+            self.section(lst, "EMPTY: RIGHT-CLICK A PLAYLIST › ADD TO FOLDER")
+            return
+        self.section(lst, f"{len(f['playlists'])} PLAYLIST{'S' if len(f['playlists']) != 1 else ''}")
+        for item in f["playlists"]:
+            mine = a.lists.get(item["id"]) if item["kind"] == "mine" else None
+            if item["kind"] == "mine" and not mine:
+                continue   # deleted since
+            cover = next((t for t in mine["tracks"] if t.get("thumb") or source_of(t) == "file"), None) if mine else None
+            lst.append(PlaylistRow(self, {"id": item["id"], "title": mine["name"] if mine else item["title"],
+                                          "thumb": item.get("thumb") or "", "source": item["source"], "folder_item": item,
+                                          "sub": (f"{len(mine['tracks'])} songs · yours" if mine
+                                                  else f"Playlist · {SOURCES.get(item['source'], item['source'])}")},
+                                   cover=cover, icon="view-list-symbolic"))
+
+    def refresh_folder_list(self):
+        (self.refresh_account if self.folder_in == "account" else self.refresh_music)()
+
+    def delete_folder(self, f):
+        dlg = Adw.AlertDialog(heading=f"Delete the folder “{f['name']}”?",
+                              body="Only the folder goes: its playlists stay where they are.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "delete" and self.app.delete_folder(f["id"]))
+        dlg.present(self)
+
+    def open_folder_item(self, item):
+        """A playlist in a folder: yours opens in Music › Playlists, a service's in the Library tab of that service."""
+        self.open_folder = None
+        if item["kind"] == "mine":
+            self.show_mine(item["id"])
+            return
+        if item["source"] in SOURCES:
+            self.app.browse(item["source"])
+        self.show_tab("account")
+        self.open_list({"id": item["id"], "title": item["title"], "thumb": item.get("thumb") or "", "source": item["source"]})
+
+    def playlist_row_menu(self, row, x, y):
+        """Right-click on a playlist: put it in a folder (or take it out); on a folder: rename or delete it."""
+        a, pl = self.app, row.playlist
+        if pl.get("kind") in ("artist", "album") or self.selecting:
+            return
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop = Gtk.Popover(child=box, has_arrow=False, position=Gtk.PositionType.BOTTOM)
+        pop.set_parent(row)
+        spot = Gdk.Rectangle()
+        spot.x, spot.y, spot.width, spot.height = int(x), int(y), 1, 1
+        pop.set_pointing_to(spot)
+
+        def item(label, cb):
+            b = Gtk.Button(label=label)
+            b.add_css_class("menu-item")
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda *_: (pop.popdown(), cb()))
+            box.append(b)
+        if pl.get("kind") == "folder":
+            f = a.folders_of_lists.get(pl["id"])
+            if not f:
+                return
+            item("Rename folder…", lambda: self.ask_name("Rename folder", f["name"], lambda n: a.rename_folder(f["id"], n)))
+            item("Delete folder", lambda: self.delete_folder(f))
+        else:
+            if pl.get("folder_item"):
+                it = pl["folder_item"]
+                item("Remove from this folder", lambda: a.remove_from_folder(self.open_folder, it))
+            else:
+                mine = a.lists.get(pl["id"])   # one of yours (their ids are ours), else the service's in view
+                it = PlaylistFolders.item(mine or pl, a.source)
+            head = Gtk.Label(label="ADD TO FOLDER", xalign=0)
+            head.add_css_class("section")
+            box.append(head)
+            for f in a.folders_of_lists.all():
+                if f["id"] != self.open_folder:
+                    item(f["name"], lambda f=f: a.add_to_folder(f["id"], it))
+            item("＋  New folder…", lambda: self.ask_name("New folder", "", lambda n: a.new_folder(n, it), ok="Make it"))
+        pop.connect("closed", lambda p: GLib.idle_add(lambda: (p.unparent(), False)[1]))
+        pop.popup()
 
     def rename_mine(self):
         pl = self.app.lists.get(self.open_mine)
@@ -7133,6 +7316,9 @@ class MusicWindow(Adw.ApplicationWindow):
             else:
                 lst.append(self.action_row("↻  Check again", "recheck"))
             return
+        if self.open_folder and self.folder_in == "account" and not self.open_playlist:
+            self.render_folder(lst)
+            return
         if self.open_playlist:
             pl, tracks = self.open_playlist
             lst.remove_all()
@@ -7164,8 +7350,12 @@ class MusicWindow(Adw.ApplicationWindow):
         self.tidal_paste_row(lst)
         if self.app.lastfm.connected:
             lst.append(self.action_row(f"✦  Your {wrapped_year()} Wrapped  ›", "wrapped"))
+        lst.append(self.action_row("＋  New folder", "new-folder"))
+        self.folder_rows(lst)
         if not self.playlists[key]:
             self.section(lst, "NO PLAYLISTS YET")
+        elif self.app.folders_of_lists.items:
+            self.section(lst, f"{SOURCES[key].upper()} PLAYLISTS")
         for pl in self.playlists[key]:
             lst.append(PlaylistRow(self, pl))
 
@@ -7350,6 +7540,20 @@ class MusicWindow(Adw.ApplicationWindow):
         if action == "mine-back":
             self.open_mine = None
             self.refresh_music()
+            return
+        if action == "new-folder":
+            self.ask_name("New folder", "", self.app.new_folder, ok="Make it")
+            return
+        if action == "folder-back":
+            self.open_folder = None
+            self.refresh_folder_list()
+            return
+        if isinstance(row, PlaylistRow) and row.playlist.get("kind") == "folder":
+            self.open_folder, self.folder_in = row.playlist["id"], "account" if key == "account" else "music"
+            self.refresh_folder_list()
+            return
+        if isinstance(row, PlaylistRow) and row.playlist.get("folder_item"):
+            self.open_folder_item(row.playlist["folder_item"])
             return
         if action == "artist-back":
             self.artist_back()
@@ -9006,6 +9210,7 @@ class MusicApp(Adw.Application):
         self.local = LocalFiles()
         self.plays = Plays()
         self.lists = Playlists()
+        self.folders_of_lists = PlaylistFolders()   # Library folders of playlists
         self.dl = Downloader(self.lib)
         self.art = ArtCache(self.lib)
         self.player = Player(self.on_mpv)
@@ -9972,9 +10177,48 @@ class MusicApp(Adw.Application):
         self.lists.rename(pid, name)
         self.playlists_changed()
 
+    # ---- folders of playlists ----
+    def new_folder(self, name, item=None):
+        f = self.folders_of_lists.create(name)
+        if item:
+            self.folders_of_lists.add(f["id"], item)
+            self.toast(f"Put “{item['title']}” in the new folder “{name}”")
+        self.folders_changed()
+
+    def rename_folder(self, fid, name):
+        self.folders_of_lists.rename(fid, name)
+        self.folders_changed()
+
+    def delete_folder(self, fid):
+        f = self.folders_of_lists.get(fid)
+        self.folders_of_lists.delete(fid)
+        if self.win and self.win.open_folder == fid:
+            self.win.open_folder = None
+        if f:
+            self.toast(f"Deleted the folder “{f['name']}”")
+        self.folders_changed()
+
+    def add_to_folder(self, fid, item):
+        f = self.folders_of_lists.get(fid)
+        added = self.folders_of_lists.add(fid, item)
+        if f:
+            self.toast(f"Put “{item['title']}” in “{f['name']}”" if added else f"“{item['title']}” is in “{f['name']}” already")
+        self.folders_changed()
+
+    def remove_from_folder(self, fid, item):
+        self.folders_of_lists.remove(fid, PlaylistFolders.key(item))
+        self.folders_changed()
+
+    def folders_changed(self):
+        if self.win:
+            self.win.refresh_account()
+            if self.win.music_view == "playlists":
+                self.win.refresh_music()
+
     def delete_playlist(self, pid):
         pl = self.lists.get(pid)
         self.lists.delete(pid)
+        self.folders_of_lists.forget("mine", "", pid)
         if self.win and self.win.open_mine == pid:
             self.win.open_mine = None
         if pl:

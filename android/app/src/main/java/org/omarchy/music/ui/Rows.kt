@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import org.omarchy.music.Album
+import org.omarchy.music.FolderItem
 import org.omarchy.music.Music
 import org.omarchy.music.Remote
 import org.omarchy.music.Track
@@ -53,6 +54,8 @@ class Ui {
     var tab by mutableStateOf("music")
     var musicView by mutableStateOf("all")
     var openMine by mutableStateOf<String?>(null)
+    var openFolder by mutableStateOf<String?>(null)   // a folder of playlists, open in the Library or Music › Playlists
+    var folderFor by mutableStateOf<FolderItem?>(null)   // a playlist being put in a folder
     var openList by mutableStateOf<Pair<Album, List<Track>?>?>(null)
     val pages = mutableStateListOf<Page>()            // artist and album pages, newest last
     var selecting by mutableStateOf(false)
@@ -190,9 +193,10 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PlaylistRow(p: Album, art: Any? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
+fun PlaylistRow(p: Album, art: Any? = null, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
         ArtImage(art ?: p.thumb.takeIf { it.isNotEmpty() }, 44.dp)
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {

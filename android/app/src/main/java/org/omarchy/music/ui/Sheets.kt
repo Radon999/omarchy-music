@@ -92,6 +92,7 @@ fun Sheets(ui: Ui) {
         "wrapped" -> WrappedScreen { ui.sheet = null }
     }
     ui.pickPlaylistFor?.let { tracks -> PlaylistPicker(ui, tracks) }
+    ui.folderFor?.let { item -> FolderPicker(ui, item) }
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -434,6 +435,31 @@ private fun PlaylistPicker(ui: Ui, tracks: List<org.omarchy.music.Track>) {
             }
         },
         confirmButton = { TextButton({ ui.pickPlaylistFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Long-press on a playlist: which folder to put it in (or a new one). */
+@Composable
+private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
+    AlertDialog(onDismissRequest = { ui.folderFor = null }, containerColor = C.light,
+        title = { Text("Put “${item.title}” in a folder", style = T.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            LazyColumn {
+                item {
+                    Text("＋  New folder", style = T.body.copy(color = C.accent), modifier = Modifier.fillMaxWidth().clickable {
+                        ui.folderFor = null
+                        ui.askName = Triple("New folder", "") { n -> Music.newFolder(n, item) }
+                    }.padding(vertical = 10.dp))
+                }
+                val folders = Music.playlistFolders.all()
+                items(folders.size) { i ->
+                    val f = folders[i]
+                    Text("${f.name}  ·  ${f.playlists.size}", style = T.body, modifier = Modifier.fillMaxWidth().clickable {
+                        ui.folderFor = null; Music.addToFolder(f.id, item)
+                    }.padding(vertical = 10.dp))
+                }
+            }
+        },
+        confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
 }
 
 @Composable

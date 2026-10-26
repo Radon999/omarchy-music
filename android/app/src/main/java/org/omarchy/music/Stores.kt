@@ -151,6 +151,57 @@ class Plays(ctx: Context) {
 @Serializable
 data class Playlist(val id: String, val name: String, val created: Double, val updated: Double, val tracks: List<Track> = emptyList())
 
+/** A playlist in a folder: one of yours (kind "mine") or a service's (kind "service", with the service's key). */
+@Serializable
+data class FolderItem(val kind: String, val source: String = "", val id: String, val title: String = "", val thumb: String = "") {
+    val key get() = "$kind:$source:$id"
+
+    companion object {
+        fun mine(p: Playlist) = FolderItem("mine", "", p.id, p.name)
+        fun service(a: Album, source: String) = FolderItem("service", source, a.id, a.title, a.thumb)
+    }
+}
+
+@Serializable
+data class PlaylistFolder(val id: String, val name: String, val playlists: List<FolderItem> = emptyList())
+
+/** Folders you name in the Library, each holding playlists: yours and your services'. A playlist is in a folder once. */
+class PlaylistFolders(private val file: File) {
+    private val ser = ListSerializer(PlaylistFolder.serializer())
+    var items: List<PlaylistFolder> = readText(file)?.let { runCatching { JSON.decodeFromString(ser, it) }.getOrNull() } ?: emptyList()
+        private set
+
+    private fun save() = writeAtomic(file, JSON.encodeToString(ser, items))
+    fun all() = items.sortedBy { norm(it.name) }
+    fun get(id: String) = items.firstOrNull { it.id == id }
+
+    @Synchronized
+    fun create(name: String): PlaylistFolder = PlaylistFolder(randomHex(6), name).also { items = items + it; save() }
+
+    @Synchronized
+    fun rename(id: String, name: String) { items = items.map { if (it.id == id) it.copy(name = name) else it }; save() }
+
+    @Synchronized
+    fun delete(id: String) { items = items.filter { it.id != id }; save() }
+
+    /** Put a playlist in the folder; false if it's there already. */
+    @Synchronized
+    fun add(id: String, item: FolderItem): Boolean {
+        val f = get(id) ?: return false
+        if (f.playlists.any { it.key == item.key }) return false
+        items = items.map { if (it.id == id) it.copy(playlists = it.playlists + item) else it }
+        save()
+        return true
+    }
+
+    @Synchronized
+    fun remove(id: String, key: String) { items = items.map { if (it.id == id) it.copy(playlists = it.playlists.filter { p -> p.key != key }) else it }; save() }
+
+    /** A playlist of yours was deleted: out of every folder. */
+    @Synchronized
+    fun forget(key: String) { items = items.map { it.copy(playlists = it.playlists.filter { p -> p.key != key }) }; save() }
+}
+
 /** The playlists you make here. Each song is in a playlist once; adding it again is a no-op. */
 class Playlists(ctx: Context) {
     private val file = File(ctx.filesDir, "playlists.json")
