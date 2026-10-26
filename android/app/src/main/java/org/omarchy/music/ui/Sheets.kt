@@ -93,6 +93,7 @@ fun Sheets(ui: Ui) {
     }
     ui.pickPlaylistFor?.let { tracks -> PlaylistPicker(ui, tracks) }
     ui.folderFor?.let { item -> FolderPicker(ui, item) }
+    ui.editTagsFor?.let { tracks -> TagsDialog(ui, tracks) }
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -460,6 +461,42 @@ private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
             }
         },
         confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Edit tags…: the downloaded FLACs' tags. With several songs, a field they disagree on is left
+ *  as it is in each unless you type in it. */
+@Composable
+private fun TagsDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val songs = remember(tracks) { tracks.filter { org.omarchy.music.Tags.editable(it) != null } }
+    var have by remember { mutableStateOf<Map<String, String?>?>(null) }
+    val typed = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
+    LaunchedEffect(songs) {
+        Music.bg({ org.omarchy.music.Tags.read(Music.ctx, songs.mapNotNull { org.omarchy.music.Tags.editable(it) }) }) { h, _ -> have = h ?: emptyMap() }
+    }
+    val close = { ui.editTagsFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (songs.size == 1) "Edit tags" else "Edit tags · ${songs.size} songs", style = T.title) },
+        text = {
+            val h = have
+            if (h == null) Text("Reading the tags…", style = T.sub)
+            else LazyColumn {
+                if (songs.size < tracks.size) item {
+                    Text("Only songs downloaded here can be edited: ${tracks.size - songs.size} of them are left out.", style = T.sub,
+                        modifier = Modifier.padding(bottom = 6.dp))
+                }
+                items(org.omarchy.music.Tags.FIELDS.size) { i ->
+                    val (k, label) = org.omarchy.music.Tags.FIELDS[i]
+                    Text(label, style = T.sub, modifier = Modifier.padding(top = 4.dp))
+                    Field(typed[k] ?: h[k] ?: "", if (h.containsKey(k) && h[k] == null) "Several (left as they are)" else "") { typed[k] = it }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton({ close(); Music.editTags(songs, typed.toMap()); ui.stopSelecting() }, enabled = have != null) {
+                Text("Save", color = C.accent)
+            }
+        },
+        dismissButton = { TextButton(close) { Text("Cancel", color = C.muted) } })
 }
 
 @Composable

@@ -244,6 +244,14 @@ class Playlists(ctx: Context) {
     @Synchronized
     fun remove(id: String, ids: Set<String>) = edit(id) { p -> p.copy(tracks = p.tracks.filter { it.id !in ids }, updated = now()) }
 
+    /** Songs ids, renamed by f in every playlist they're in (their tags were edited). */
+    @Synchronized
+    fun retitle(ids: Set<String>, f: (Track) -> Track) {
+        if (items.none { p -> p.tracks.any { it.id in ids } }) return
+        items = items.map { p -> p.copy(tracks = p.tracks.map { if (it.id in ids) f(it) else it }) }.toMutableList()
+        save()
+    }
+
     private fun edit(id: String, f: (Playlist) -> Playlist) {
         val i = items.indexOfFirst { it.id == id }
         if (i >= 0) {

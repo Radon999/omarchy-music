@@ -215,6 +215,7 @@ private fun SelectBar(ui: Ui, bar: Color) {
                 Music.removeFromPlaylist(place.playlistId, ui.selected.toSet()); ui.stopSelecting()
             }
             Pill("Download", quiet = true) { Music.download(picked()); ui.stopSelecting() }
+            if (picked().any { org.omarchy.music.Tags.editable(it) != null }) Pill("Tags", quiet = true) { ui.editTagsFor = picked() }
             Pill("All", quiet = true) { ui.selected.clear(); ui.selected.addAll(ui.selectPool.map { it.id }.distinct()) }
         }
         Text("✕", style = T.title, modifier = Modifier.clickable { ui.stopSelecting() }.padding(10.dp))
