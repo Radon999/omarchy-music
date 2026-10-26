@@ -55,9 +55,13 @@ object Eq {
 
     fun clamp(g: Double) = (max(-RANGE, min(RANGE, g)) * 2).roundToInt() / 2.0
 
+    /** Every correction there is to pick: the built-in ones, then the AutoEq ones you added. */
+    fun headphones(s: EqSettings): Map<String, Pair<String, List<Filter>>> =
+        HEADPHONES + s.profiles.mapValues { (_, p) -> p.name to p.toFilters() }
+
     /** Every filter the settings make, in order. */
     fun filters(s: EqSettings): List<Filter> =
-        (HEADPHONES[s.headphones]?.second ?: emptyList()) +
+        (headphones(s)[s.headphones]?.second ?: emptyList()) +
             BANDS.zip(s.bands).map { (hz, g) -> Filter("pk", hz.toDouble(), g, Q) } +
             listOf(Filter("ls", 100.0, s.bass, 0.71), Filter("hs", 8000.0, s.treble, 0.71))
 
@@ -105,6 +109,8 @@ data class EqSettings(
     val on: Boolean = false, val headphones: String = "off", val preset: String = "flat",
     val bands: List<Double> = List(10) { 0.0 }, val custom: List<Double> = List(10) { 0.0 },
     val bass: Double = 0.0, val treble: Double = 0.0,
+    val profiles: Map<String, AutoEq.Profile> = emptyMap(),   // AutoEq corrections you added
+    val devices: Map<String, String> = emptyMap(),            // an output's name: the correction you used on it
 )
 
 /** The EQ in the player: a cascade of biquads per channel, in double precision. New

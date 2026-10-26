@@ -2842,6 +2842,135 @@ def eq_graph(correction, bands, preamp, tone=None):
     return ",".join(parts)
 
 
+# ---- Auto EQ: any headphones' correction from AutoEq's results ----
+# The AutoEq project's own results on GitHub: an index of every profile, and each profile's
+# filters (ParametricEQ.txt). AutoEqApi (github.com/timschneeb/AutoEqApi) serves the same data,
+# but answers only RootlessJamesDSP; a copy of it you host yourself (with that check taken out)
+# can be used instead: Settings › AutoEq server.
+AUTOEQ_RESULTS = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
+AUTOEQ_INDEX = CACHE / "autoeq-index.md"
+AUTOEQ_INDEX_FOR = 7 * 86400   # seconds the index is kept before it's fetched again
+AUTOEQ_TYPES = {"PK": "pk", "LSC": "ls", "HSC": "hs", "LS": "ls", "HS": "hs"}
+
+
+def autoeq_index_entries(text):
+    """AutoEq's INDEX.md as [{"name", "path", "source"}]."""
+    out = []
+    for m in re.finditer(r"^- \[(.+?)\]\(\./(.+?)\) by (.+?)\s*$", text, re.M):
+        name, path, source = m.groups()
+        out.append({"name": name, "path": path, "source": re.sub(r" on .*$", "", source)})
+    return out
+
+
+def autoeq_index(refresh=False):
+    """(blocking) AutoEq's profiles, from the copy kept here when it's fresh enough."""
+    try:
+        fresh = not refresh and time.time() - AUTOEQ_INDEX.stat().st_mtime < AUTOEQ_INDEX_FOR
+    except OSError:
+        fresh = False
+    if not fresh:
+        try:
+            write_file(AUTOEQ_INDEX, http(AUTOEQ_RESULTS + "INDEX.md", timeout=30))
+        except (OSError, urllib.error.URLError):
+            if not AUTOEQ_INDEX.exists():
+                raise
+    return autoeq_index_entries(AUTOEQ_INDEX.read_text(encoding="utf-8"))
+
+
+def autoeq_search(entries, query, n=12):
+    """The profiles whose name has every word of query, the closest names first."""
+    words = norm(query).split()
+    if not words:
+        return []
+    hits = [e for e in entries if all(w in norm(e["name"]) for w in words)]
+    return sorted(hits, key=lambda e: (-difflib.SequenceMatcher(None, norm(query), norm(e["name"])).ratio(), e["name"]))[:n]
+
+
+def parse_parametric(text):
+    """An AutoEq ParametricEQ.txt as [(type, Hz, gain dB, Q)] (HEADPHONES' filters)."""
+    out = []
+    for m in re.finditer(r"Filter\s*\d*:\s*ON\s+([A-Z]+)\s+Fc\s+([\d.]+)\s*Hz\s+Gain\s+(-?[\d.]+)\s*dB\s+Q\s+([\d.]+)", text):
+        kind, hz, gain, q = m.groups()
+        if kind in AUTOEQ_TYPES:
+            out.append((AUTOEQ_TYPES[kind], round(float(hz)), float(gain), float(q)))
+    if not out:
+        raise ValueError("no filters in that profile")
+    return out
+
+
+def graphic_to_filters(text):
+    """A GraphicEQ ("GraphicEQ: 20 -1.2; 21 -1.1; …", what AutoEqApi gives) as a peak filter an
+    octave wide at each of the ten bands, at the curve's level there: close, not exact."""
+    points = sorted((float(f), float(g)) for f, g in re.findall(r"([\d.]+)\s+(-?[\d.]+)", text.split(":", 1)[-1]))
+    if not points:
+        raise ValueError("no curve in that profile")
+
+    def at(hz):
+        lo = max((p for p in points if p[0] <= hz), default=points[0])
+        hi = min((p for p in points if p[0] >= hz), default=points[-1])
+        if hi[0] == lo[0]:
+            return lo[1]
+        k = math.log(hz / lo[0]) / math.log(hi[0] / lo[0])
+        return lo[1] + (hi[1] - lo[1]) * k
+    return [("pk", hz, round(at(hz), 1), EQ_Q) for hz in EQ_BANDS]
+
+
+def autoeq_profile(entry, api=""):
+    """(blocking) The filters of an AutoEq profile: {"name", "path", "source"} from the index, or
+    {"name", "id", "source"} from your own AutoEqApi."""
+    if entry.get("id") is not None:
+        return graphic_to_filters(http(f"{api.rstrip('/')}/results/{entry['id']}", headers={"User-Agent": APP_UA}).decode())
+    name = entry["path"].rsplit("/", 1)[-1]
+    return parse_parametric(http(f"{AUTOEQ_RESULTS}{entry['path']}/{name}%20ParametricEQ.txt").decode())
+
+
+def autoeq_api_search(api, query):
+    rows = http_json(f"{api.rstrip('/')}/results/search/{urllib.parse.quote(query)}", headers={"User-Agent": APP_UA})
+    return [{"name": r["n"], "source": r.get("s", ""), "id": r["i"]} for r in rows or []]
+
+
+def output_devices():
+    """(blocking) The names of where the sound goes now: the default output on Linux
+    (PipeWire), the audio outputs Windows has connected. [] if it can't be told."""
+    try:
+        if WINDOWS:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                  "Get-PnpDevice -Class AudioEndpoint -Status OK | ForEach-Object FriendlyName"],
+                                 capture_output=True, text=True, timeout=10, **NO_WINDOW).stdout
+            return [l.strip() for l in out.splitlines() if l.strip()]
+        out = subprocess.run(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, timeout=5).stdout
+        names = re.findall(r'(?:node\.description|device\.description|node\.nick|device\.product\.name) = "([^"]+)"', out)
+        return list(dict.fromkeys(names))
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def match_device(names, entries):
+    """The AutoEq profile of the headphones named in names (an output's names), or None: every
+    word of the profile's name has to be in the output's name, but the brand may be left out
+    of a model with a number in it ("WH-1000XM6")."""
+    best, best_score = None, 0.0
+    for dev in names:
+        d = norm(dev)
+        for e in entries:
+            model = norm(re.sub(r"\(.*?\)", "", e["name"]))
+            words = model.split()
+            if len(words) < 2 and len(model) < 6:
+                continue
+            has = [w in d for w in words]
+            rest = " ".join(words[1:])
+            if all(has):
+                score = len(model) + 1
+            elif not has[0] and all(has[1:]) and len(rest) >= 5 and re.search(r"\d", rest):
+                score = len(rest)   # the model without the brand (Bluetooth names are often just that)
+            else:
+                continue
+            score += 0.5 if "(" not in e["name"] else 0
+            if score > best_score:
+                best, best_score = e, score
+    return best
+
+
 def fmt_db(g):
     return "0" if g == 0 else ("+" if g > 0 else "−") + f"{abs(g):.1f}".removesuffix(".0")
 
@@ -6075,9 +6204,10 @@ class MusicWindow(Adw.ApplicationWindow):
         box.append(head)
 
         grid = Gtk.Grid(column_spacing=10, row_spacing=6)
-        self.eq_phones = Gtk.DropDown.new_from_strings([name for name, _ in HEADPHONES.values()])
+        self.eq_phone_keys = list(a.headphones())
+        self.eq_phones = Gtk.DropDown.new_from_strings([name for name, _ in a.headphones().values()])
         self.eq_phones.connect("notify::selected", lambda dd, _p: self.syncing_eq
-                               or a.set_eq_headphones(list(HEADPHONES)[dd.get_selected()]))
+                               or a.set_eq_headphones(self.eq_phone_keys[dd.get_selected()]))
         self.eq_preset = Gtk.DropDown.new_from_strings([name for name, _ in EQ_PRESETS.values()])
         self.eq_preset.connect("notify::selected", lambda dd, _p: self.syncing_eq
                                or a.set_eq_preset(list(EQ_PRESETS)[dd.get_selected()]))
@@ -6088,6 +6218,7 @@ class MusicWindow(Adw.ApplicationWindow):
             grid.attach(name, 0, row, 1, 1)
             grid.attach(dd, 1, row, 1, 1)
         box.append(grid)
+        box.append(self.auto_eq_box())
 
         bands = Gtk.Box(homogeneous=True)
         self.eq_scales, self.eq_values = [], []
@@ -6150,11 +6281,104 @@ class MusicWindow(Adw.ApplicationWindow):
         self.update_eq()
         return self.eq_btn
 
+    def auto_eq_box(self):
+        """Auto EQ: find any headphones in AutoEq's results (as you type), or Detect the ones the
+        sound goes to now, and their correction is added to Headphones and used."""
+        a = self.app
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        row = Gtk.Box(spacing=6)
+        entry = Gtk.SearchEntry(placeholder_text="Auto EQ: find your headphones", hexpand=True)
+        detect = Gtk.Button(label="Detect", tooltip_text="Find the headphones the sound goes to now")
+        detect.add_css_class("pill")
+        detect.add_css_class("quiet")
+        row.append(entry)
+        row.append(detect)
+        results = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        results.add_css_class("tracks")
+        scroll = Gtk.ScrolledWindow(child=results, hscrollbar_policy=Gtk.PolicyType.NEVER, max_content_height=180,
+                                    propagate_natural_height=True, visible=False)
+        note = Gtk.Label(xalign=0, wrap=True, max_width_chars=44, visible=False)
+        note.add_css_class("sub")
+        for w in (row, note, scroll):
+            box.append(w)
+        seq = [0]
+
+        def say(text):
+            note.set_label(text)
+            note.set_visible(bool(text))
+
+        def show(found, lead=""):
+            results.remove_all()
+            for e in found:
+                b = Gtk.Button(label=f"{e['name']} · {e.get('source', '')}")
+                b.add_css_class("menu-item")
+                b.get_child().set_xalign(0)
+                b.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+                b.connect("clicked", lambda _b, e=e: use(e))
+                results.append(b)
+            scroll.set_visible(bool(found))
+            say(lead or ("" if found else "Nothing in AutoEq by that name"))
+
+        def use(e):
+            say(f"Getting {e['name']}…")
+
+            def done(filters, err):
+                if err:
+                    say(f"Couldn't get it: {str(err)[:80]}")
+                    return
+                show([])
+                say("")
+                a.add_autoeq(e, filters)
+            in_thread(autoeq_profile, e, a.api_keys.get("autoeq_api", ""), done=done)
+
+        def search(q):
+            api = a.api_keys.get("autoeq_api", "")
+            return autoeq_api_search(api, q) if api else autoeq_search(autoeq_index(), q)
+
+        def changed(_e):
+            q = entry.get_text().strip()
+            seq[0] += 1
+            n = seq[0]
+            if len(q) < 2:
+                show([])
+                say("")
+                return
+
+            def go():
+                if n == seq[0]:
+                    in_thread(search, q, done=lambda found, err: n == seq[0] and (
+                        say(f"AutoEq couldn't be reached: {str(err)[:80]}") if err else show(found or [])))
+                return False
+            GLib.timeout_add(300, go)
+
+        def detected(res, err):
+            names, match = res or ([], None)
+            if err:
+                say(f"AutoEq couldn't be reached: {str(err)[:80]}")
+            elif match:
+                show([match], f"The sound goes to {names[0] if not WINDOWS else 'these outputs'}: AutoEq has")
+            elif names:
+                say(f"The sound goes to {', '.join(names[:2])}: AutoEq has nothing by that name. Look yours up above"
+                    " (headphones on a mixer or DAC are found by their own name).")
+            else:
+                say("Couldn't tell where the sound goes. Look your headphones up above.")
+
+        def detect_now(_b):
+            say("Looking…")
+            in_thread(lambda: (lambda names: (names, match_device(names, autoeq_index())))(output_devices()), done=detected)
+        entry.connect("search-changed", changed)
+        detect.connect("clicked", detect_now)
+        return box
+
     def update_eq(self):
         eq = self.app.eq
         self.syncing_eq = True  # show the settings without the widgets setting them again
         self.eq_switch.set_active(eq["on"])
-        self.eq_phones.set_selected(list(HEADPHONES).index(eq["headphones"]))
+        phones = self.app.headphones()
+        if list(phones) != self.eq_phone_keys:   # an AutoEq profile was added
+            self.eq_phone_keys = list(phones)
+            self.eq_phones.set_model(Gtk.StringList.new([name for name, _ in phones.values()]))
+        self.eq_phones.set_selected(self.eq_phone_keys.index(eq["headphones"]) if eq["headphones"] in phones else 0)
         self.eq_preset.set_selected(list(EQ_PRESETS).index(eq["preset"]))
         for sc, value, g in zip(self.eq_scales, self.eq_values, eq["bands"]):
             if abs(sc.get_value() - g) > 0.01:
@@ -9978,6 +10202,7 @@ class MusicApp(Adw.Application):
             self.remote.start()
         self.player.set_volume(self.volume, self.muted)
         self.load_eq(state.get("eq") or {})
+        GLib.timeout_add_seconds(3, lambda: (self.watch_output(), False)[1])
         t = self.current_track()
         if t and (self.lib.has(t["id"]) or source_of(t) == "file"):
             self.load_current(autoplay=False)
@@ -11830,7 +12055,11 @@ class MusicApp(Adw.Application):
     # ---- equalizer ----
     def load_eq(self, saved):
         eq = self.eq
-        if saved.get("headphones") in HEADPHONES:
+        if isinstance(saved.get("profiles"), dict):
+            eq["profiles"] = {k: v for k, v in saved["profiles"].items() if isinstance(v, list) and len(v) == 2}
+        if isinstance(saved.get("devices"), dict):
+            eq["devices"] = {str(k): str(v) for k, v in saved["devices"].items()}
+        if saved.get("headphones") in self.headphones():
             eq["headphones"] = saved["headphones"]
         if saved.get("preset") in EQ_PRESETS:
             eq["preset"] = saved["preset"]
@@ -11845,8 +12074,54 @@ class MusicApp(Adw.Application):
         if eq["on"]:
             self.apply_eq()
 
+    def headphones(self):
+        """Every correction there is to pick: the built-in ones, then the AutoEq ones you added."""
+        return {**HEADPHONES, **{k: (v[0], tuple(tuple(f) for f in v[1])) for k, v in self.eq.get("profiles", {}).items()}}
+
     def eq_correction(self):
-        return HEADPHONES[self.eq["headphones"]][1]
+        return self.headphones().get(self.eq["headphones"], HEADPHONES["off"])[1]
+
+    def add_autoeq(self, entry, filters):
+        """Keep an AutoEq profile among your headphones and use it."""
+        key = "ae:" + norm(f"{entry['name']} {entry.get('source', '')}").replace(" ", "-")
+        self.eq.setdefault("profiles", {})[key] = [f"{entry['name']} · {entry.get('source') or 'AutoEq'}", [list(f) for f in filters]]
+        if self.win:
+            self.win.update_eq()
+        self.set_eq_headphones(key)
+        self.toast(f"{entry['name']}: corrected with AutoEq ({entry.get('source') or 'AutoEq'})")
+
+    def watch_output(self):
+        """Every so often: if the sound goes somewhere else now, use the correction you used there
+        last time, or say AutoEq has one for it."""
+        if WINDOWS:
+            return   # Windows doesn't say which output is the default one: Detect picks from all of them
+        def check():
+            names = output_devices()
+            GLib.idle_add(lambda: (self.output_changed(names), False)[1])
+        threading.Thread(target=check, daemon=True).start()
+        GLib.timeout_add_seconds(20, lambda: (self.watch_output(), False)[1])
+
+    def output_changed(self, names):
+        dev = names[0] if names else ""
+        if not dev or dev == getattr(self, "output", None):
+            return
+        first = getattr(self, "output", None) is None
+        self.output = dev
+        if self.win:
+            self.win.update_eq()
+        known = self.eq.get("devices", {}).get(dev)
+        if known and known in self.headphones():
+            if known != self.eq["headphones"]:
+                self.set_eq_headphones(known, remember=False)
+                self.toast(f"{dev}: using {self.headphones()[known][0]}")
+            return
+        if first or not self.eq.get("on"):
+            return
+
+        def found(match, _err):
+            if match:
+                self.toast(f"AutoEq has a correction for {match['name']}: Equalizer › Auto EQ › Detect")
+        in_thread(lambda: match_device(names, autoeq_index()), done=found)
 
     def eq_preamp(self):
         return eq_preamp([*self.eq_correction(), *(("pk", hz, g, EQ_Q) for hz, g in zip(EQ_BANDS, self.eq["bands"])),
@@ -11891,7 +12166,9 @@ class MusicApp(Adw.Application):
                 self.win.update_eq()
             self.save_soon()
 
-    def set_eq_headphones(self, key):
+    def set_eq_headphones(self, key, remember=True):
+        if remember and getattr(self, "output", None):   # this output gets it again next time
+            self.eq.setdefault("devices", {})[self.output] = key
         if key != self.eq["headphones"]:
             self.eq["headphones"] = key
             self.eq_changed(rebuild=True)  # a different set of filters

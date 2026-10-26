@@ -365,7 +365,8 @@ private fun EqSheet(ui: Ui) {
                 Switch(eq.on, { Music.setEqOn(it) }, colors = swColors())
             }
             Text("Headphones", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
-            ChipRow(Eq.HEADPHONES.map { (k, v) -> k to v.first }, eq.headphones) { Music.setEqHeadphones(it) }
+            ChipRow(Eq.headphones(eq).map { (k, v) -> k to v.first }, eq.headphones) { Music.setEqHeadphones(it) }
+            AutoEqFinder()
             Text("Sound", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
             ChipRow(Eq.PRESETS.map { (k, v) -> k to v.first }, eq.preset) { Music.setEqPreset(it) }
             Row(Modifier.fillMaxWidth().height(190.dp).padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -466,6 +467,52 @@ private fun FolderPicker(ui: Ui, item: org.omarchy.music.FolderItem) {
             }
         },
         confirmButton = { TextButton({ ui.folderFor = null }) { Text("Cancel", color = C.muted) } })
+}
+
+/** Auto EQ: find any headphones in AutoEq's results as you type, or Detect the ones connected;
+ *  their correction is added to Headphones and used (and comes back whenever they connect). */
+@Composable
+private fun AutoEqFinder() {
+    var q by remember { mutableStateOf("") }
+    var found by remember { mutableStateOf<List<org.omarchy.music.AutoEq.Entry>>(emptyList()) }
+    var note by remember { mutableStateOf("") }
+    val api = Music.apiKeys["autoeq_api"].orEmpty()
+    LaunchedEffect(q) {
+        if (q.trim().length < 2) { found = emptyList(); note = ""; return@LaunchedEffect }
+        kotlinx.coroutines.delay(300)
+        Music.bg({ if (api.isNotEmpty()) org.omarchy.music.AutoEq.apiSearch(api, q) else org.omarchy.music.AutoEq.search(org.omarchy.music.AutoEq.index(Music.ctx), q) }) { r, err ->
+            found = r ?: emptyList()
+            note = if (err != null) "AutoEq couldn't be reached: ${err.message?.take(80)}" else if (found.isEmpty()) "Nothing in AutoEq by that name" else ""
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+        Box(Modifier.weight(1f)) { Field(q, "Auto EQ: find your headphones") { q = it } }
+        Spacer(Modifier.width(6.dp))
+        Pill("Detect", quiet = true) {
+            val dev = org.omarchy.music.AutoEq.output(Music.ctx)
+            if (dev.isEmpty()) { note = "No headphones connected"; return@Pill }
+            note = "Looking…"
+            Music.bg({ org.omarchy.music.AutoEq.matchDevice(listOf(dev), org.omarchy.music.AutoEq.index(Music.ctx)) }) { m, err ->
+                found = listOfNotNull(m)
+                note = when {
+                    err != null -> "AutoEq couldn't be reached: ${err.message?.take(80)}"
+                    m != null -> "$dev is connected: AutoEq has"
+                    else -> "$dev is connected: AutoEq has nothing by that name. Look yours up."
+                }
+            }
+        }
+    }
+    if (note.isNotEmpty()) Text(note, style = T.sub, modifier = Modifier.padding(top = 4.dp))
+    found.take(8).forEach { e ->
+        Text("${e.name} · ${e.source}", style = T.body, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().clickable {
+                note = "Getting ${e.name}…"
+                Music.bg({ org.omarchy.music.AutoEq.profile(e, api) }) { f, err ->
+                    if (f != null) { found = emptyList(); note = ""; q = ""; Music.addAutoEq(e, f) }
+                    else note = "Couldn't get it: ${err?.message?.take(80)}"
+                }
+            }.padding(vertical = 8.dp))
+    }
 }
 
 /** Cover…: covers of the first album left to pick from (Google's, Genius's, Wikipedia's), or a

@@ -118,6 +118,12 @@ object Music {
         if (tidal.connected) sources["tidal"] = tidal
         bg({ lib.prune() }) { _, _ -> savedVersion++ }
         rescan()
+        // Headphones coming and going: their correction comes with them (see outputChanged).
+        (ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).registerAudioDeviceCallback(
+            object : android.media.AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>) = outputChanged()
+                override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>) = outputChanged()
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
         scope.launch {
             while (true) {   // the position, and what counts as played
                 val p = player
@@ -1130,7 +1136,37 @@ object Music {
     }
 
     fun setEqOn(on: Boolean) = setEq { it.copy(on = on) }
-    fun setEqHeadphones(key: String) = setEq { it.copy(headphones = key, on = true) }
+    fun setEqHeadphones(key: String, remember: Boolean = true) = setEq {
+        val out = output
+        it.copy(headphones = key, on = true, devices = if (remember && out.isNotEmpty()) it.devices + (out to key) else it.devices)
+    }
+
+    /** Keep an AutoEq profile among your headphones and use it. */
+    fun addAutoEq(e: AutoEq.Entry, filters: List<Filter>) {
+        val key = "ae:" + norm("${e.name} ${e.source}").replace(" ", "-")
+        setEq { it.copy(profiles = it.profiles + (key to AutoEq.profileOf("${e.name} · ${e.source.ifEmpty { "AutoEq" }}", filters))) }
+        setEqHeadphones(key)
+        toast("${e.name}: corrected with AutoEq (${e.source.ifEmpty { "AutoEq" }})")
+    }
+
+    var output by mutableStateOf("")   // the headphones the sound goes to now ("" for the phone's own speaker)
+        private set
+
+    /** The sound goes somewhere else: use the correction you used there last time, or say AutoEq has one. */
+    fun outputChanged() {
+        val dev = AutoEq.output(ctx)
+        if (dev == output) return
+        output = dev
+        if (dev.isEmpty()) return
+        val known = eq.devices[dev]
+        if (known != null && known in Eq.headphones(eq)) {
+            if (known != eq.headphones) { setEqHeadphones(known, remember = false); toast("$dev: using ${Eq.headphones(eq)[known]?.first}") }
+            return
+        }
+        bg({ AutoEq.matchDevice(listOf(dev), AutoEq.index(ctx)) }) { m, _ ->
+            if (m != null) toast("AutoEq has a correction for ${m.name}: Equalizer › Auto EQ")
+        }
+    }
     fun setEqPreset(key: String) = setEq { it.copy(preset = key, bands = Eq.PRESETS[key]?.second ?: it.custom, on = true) }
     fun setEqBand(i: Int, gain: Double) = setEq {
         val b = it.bands.toMutableList().also { l -> l[i] = Eq.clamp(gain) }
