@@ -3,42 +3,45 @@
 Performing Streamed Install
 Success
 + python3 -m pip install --quiet pillow lameenc mutagen
+
+[notice] A new release of pip is available: 26.2.1 -> 26.2.2
+[notice] To update, run: pip install --upgrade pip
 + python3 -
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 1.mp3' ']'
 + adb push '/tmp/Test Song 1.mp3' /sdcard/Music/
-/tmp/Test Song 1.mp3: 1 file pushed, 0 skipped. 13.0 MB/s (1097303 bytes in 0.081s)
+/tmp/Test Song 1.mp3: 1 file pushed, 0 skipped. 27.4 MB/s (1097303 bytes in 0.038s)
 + break
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 2.mp3' ']'
 + adb push '/tmp/Test Song 2.mp3' /sdcard/Music/
-/tmp/Test Song 2.mp3: 1 file pushed, 0 skipped. 146.7 MB/s (1097303 bytes in 0.007s)
+/tmp/Test Song 2.mp3: 1 file pushed, 0 skipped. 340.0 MB/s (1097303 bytes in 0.003s)
 + break
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 3.mp3' ']'
 + adb push '/tmp/Test Song 3.mp3' /sdcard/Music/
-/tmp/Test Song 3.mp3: 1 file pushed, 0 skipped. 143.0 MB/s (1097303 bytes in 0.007s)
+/tmp/Test Song 3.mp3: 1 file pushed, 0 skipped. 191.1 MB/s (1097303 bytes in 0.005s)
 + break
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 4.mp3' ']'
 + adb push '/tmp/Test Song 4.mp3' /sdcard/Music/
-/tmp/Test Song 4.mp3: 1 file pushed, 0 skipped. 132.4 MB/s (1097866 bytes in 0.008s)
+/tmp/Test Song 4.mp3: 1 file pushed, 0 skipped. 62.3 MB/s (1097866 bytes in 0.017s)
 + break
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 5.mp3' ']'
 + adb push '/tmp/Test Song 5.mp3' /sdcard/Music/
-/tmp/Test Song 5.mp3: 1 file pushed, 0 skipped. 140.7 MB/s (1097866 bytes in 0.007s)
+/tmp/Test Song 5.mp3: 1 file pushed, 0 skipped. 374.6 MB/s (1097866 bytes in 0.003s)
 + break
 + for i in 1 2 3 4 5 6
 + for e in mp3 wav
 + '[' -f '/tmp/Test Song 6.mp3' ']'
 + adb push '/tmp/Test Song 6.mp3' /sdcard/Music/
-/tmp/Test Song 6.mp3: 1 file pushed, 0 skipped. 229.8 MB/s (1097866 bytes in 0.005s)
+/tmp/Test Song 6.mp3: 1 file pushed, 0 skipped. 445.1 MB/s (1097866 bytes in 0.002s)
 + break
 + adb shell content call --method scan_volume --uri content://media --arg external_primary
 Result: Bundle[{}]
@@ -64,26 +67,34 @@ args: [-p, org.omarchy.music.test, -c, android.intent.category.LAUNCHER, 1]
 data="org.omarchy.music.test"
 data="android.intent.category.LAUNCHER"
 Events injected: 1
-## Network stats: elapsed time=56ms (0ms mobile, 0ms wifi, 56ms not connected)
+## Network stats: elapsed time=131ms (0ms mobile, 0ms wifi, 131ms not connected)
 + sleep 12
 + python3 work/ci/tap.py Wait
 not found: wait
 + sleep 1
 + shot 01-home
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + shot 01-player-empty
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
 tap menu 66 186 
 + sleep 3
 + shot 02-drawer
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap 'My music'
 + python3 work/ci/tap.py 'My music'
 tap my music 258 710 
 + sleep 3
 + shot 03-songs
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --left 'Test Song 1'
 + python3 work/ci/tap.py --left 'Test Song 1'
@@ -91,6 +102,8 @@ tap test song 1 240 606
 + sleep 3
 + WAIT=5
 + shot 04-songs-playing
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + menu 'Now playing'
 + front
@@ -98,77 +111,52 @@ tap test song 1 240 606
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll 'Now playing'
 + python3 work/ci/tap.py --scroll 'Now playing'
-not found: now playing
+tap now playing 281 454 
 + sleep 3
 + WAIT=4
 + shot 05-player
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + sleep 3
 + shot 05b-player-bars
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --desc Queue
 + python3 work/ci/tap.py --desc Queue
-not found: queue
+tap queue 714 2173 
 + sleep 3
 + shot 06-queue
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --desc Queue
 + python3 work/ci/tap.py --desc Queue
-not found: queue
+tap queue 714 2173 
 + sleep 3
 + tap --desc Lyrics
 + python3 work/ci/tap.py --desc Lyrics
-not found: lyrics
+tap lyrics 366 2173 
 + sleep 3
 + shot 07-lyrics
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --desc Lyrics
 + python3 work/ci/tap.py --desc Lyrics
-not found: lyrics
+tap lyrics 366 2173 
 + sleep 3
 + menu Visualizer
 + front
@@ -176,54 +164,23 @@ not found: lyrics
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + grep -q 'content-desc="Menu"'
 + adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 66 186 
 + sleep 3
 + tap --scroll Visualizer
 + python3 work/ci/tap.py --scroll Visualizer
-not found: visualizer
+tap visualizer 260 2302 
 + sleep 3
 + WAIT=4
 + shot 08-vis-tab
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + menu Albums
 + front
@@ -231,63 +188,34 @@ not found: visualizer
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll Albums
 + python3 work/ci/tap.py --scroll Albums
-not found: albums
+tap albums 241 254 
 + sleep 3
 + shot 09-albums
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap 'Ocean Glass'
 + python3 work/ci/tap.py 'Ocean Glass'
-not found: ocean glass
+tap ocean glass 668 788 
 + sleep 3
 + shot 09b-album
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + tap --left --last 'Test Song 4'
 + python3 work/ci/tap.py --left --last 'Test Song 4'
-not found: test song 4
+tap test song 4 240 901 
 + sleep 3
 + sleep 2
 + menu 'Now playing'
@@ -296,6 +224,8 @@ not found: test song 4
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
 + back
@@ -306,44 +236,23 @@ not found: test song 4
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 202 
 + sleep 3
 + tap --scroll 'Now playing'
 + python3 work/ci/tap.py --scroll 'Now playing'
-not found: now playing
+tap now playing 281 213 
 + sleep 3
 + WAIT=4
 + shot 05c-player-ocean
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + menu 'My music'
 + front
@@ -351,65 +260,38 @@ not found: now playing
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 66 186 
 + sleep 3
 + tap --scroll 'My music'
 + python3 work/ci/tap.py --scroll 'My music'
-not found: my music
+tap my music 258 469 
 + sleep 3
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-tap settings 1012 195 
+tap settings 1012 199 
 + sleep 3
 + shot 10-settings
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + adb shell input swipe 540 1700 540 600 300
 + sleep 2
 + shot 11-settings-2
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + adb shell input swipe 540 1700 540 600 300
 + sleep 2
 + shot 12-settings-3
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -420,51 +302,18 @@ tap settings 1012 195
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll 'Now playing'
 + python3 work/ci/tap.py --scroll 'Now playing'
-not found: now playing
+tap now playing 281 213 
 + sleep 3
 + for L in "Apple Music dark" "Apple Music"
 + menu 'My music'
@@ -473,59 +322,26 @@ not found: now playing
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 66 186 
 + sleep 3
 + tap --scroll 'My music'
 + python3 work/ci/tap.py --scroll 'My music'
-not found: my music
+tap my music 258 469 
 + sleep 3
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-tap settings 1012 195 
+tap settings 1012 199 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-tap ▾ 859 1937 
+tap ▾ 859 2020 
 + sleep 3
 + tap 'Apple Music dark'
 + python3 work/ci/tap.py 'Apple Music dark'
@@ -536,6 +352,8 @@ tap apple music dark 888 338
 + sleep 2
 + sleep 2
 + shot 30-look-Apple-Music-dark
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out screencap -p
 + menu 'My music'
 + front
@@ -543,47 +361,159 @@ tap apple music dark 888 338
 + sleep 2
 + for k in 1 2 3 4
 + has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
 + adb exec-out uiautomator dump /dev/tty
 + grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ grep -q 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
-+ for k in 1 2 3 4
-+ has 'content-desc="Menu"'
-+ adb exec-out uiautomator dump /dev/tty
-+ grep -q 'content-desc="Menu"'
-+ back
-+ adb shell input keyevent KEYCODE_BACK
-+ sleep 2
-+ front
-+ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
-+ sleep 2
++ break
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll 'My music'
 + python3 work/ci/tap.py --scroll 'My music'
+tap my music 258 469 
++ sleep 3
++ sleep 1
++ shot 31-songs-Apple-Music-dark
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out screencap -p
++ menu 'Now playing'
++ front
++ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
++ sleep 2
++ for k in 1 2 3 4
++ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out uiautomator dump /dev/tty
++ grep -q 'content-desc="Menu"'
++ break
++ tap --desc Menu
++ python3 work/ci/tap.py --desc Menu
+tap menu 69 199 
++ sleep 3
++ tap --scroll 'Now playing'
++ python3 work/ci/tap.py --scroll 'Now playing'
+tap now playing 281 213 
++ sleep 3
++ sleep 3
++ shot 32-player-Apple-Music-dark
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out screencap -p
++ for L in "Apple Music dark" "Apple Music"
++ menu 'My music'
++ front
++ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
++ sleep 2
++ for k in 1 2 3 4
++ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out uiautomator dump /dev/tty
++ grep -q 'content-desc="Menu"'
++ break
++ tap --desc Menu
++ python3 work/ci/tap.py --desc Menu
+tap menu 66 186 
++ sleep 3
++ tap --scroll 'My music'
++ python3 work/ci/tap.py --scroll 'My music'
+tap my music 258 469 
++ sleep 3
++ tap --desc Settings
++ python3 work/ci/tap.py --desc Settings
+tap settings 1012 199 
++ sleep 3
++ tap --scroll --contains ▾
++ python3 work/ci/tap.py --scroll --contains ▾
+tap ▾ 822 2102 
++ sleep 3
++ tap 'Apple Music'
++ python3 work/ci/tap.py 'Apple Music'
+tap apple music 774 212 
++ sleep 3
++ back
++ adb shell input keyevent KEYCODE_BACK
++ sleep 2
++ sleep 2
++ shot 30-look-Apple-Music
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out screencap -p
++ menu 'My music'
++ front
++ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
++ sleep 2
++ for k in 1 2 3 4
++ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out uiautomator dump /dev/tty
++ grep -q 'content-desc="Menu"'
++ break
++ tap --desc Menu
++ python3 work/ci/tap.py --desc Menu
+tap menu 69 199 
++ sleep 3
++ tap --scroll 'My music'
++ python3 work/ci/tap.py --scroll 'My music'
+tap my music 258 469 
++ sleep 3
++ sleep 1
++ shot 31-songs-Apple-Music
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out screencap -p
++ menu 'Now playing'
++ front
++ adb shell monkey -p org.omarchy.music.test -c android.intent.category.LAUNCHER 1
++ sleep 2
++ for k in 1 2 3 4
++ has 'content-desc="Menu"'
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out uiautomator dump /dev/tty
++ grep -q 'content-desc="Menu"'
++ break
++ tap --desc Menu
++ python3 work/ci/tap.py --desc Menu
+tap menu 69 199 
++ sleep 3
++ tap --scroll 'Now playing'
++ python3 work/ci/tap.py --scroll 'Now playing'
+tap now playing 281 213 
++ sleep 3
++ sleep 3
++ shot 32-player-Apple-Music
++ calm
++ python3 work/ci/tap.py Wait
++ adb exec-out screencap -p
++ ls -la /home/runner/work/omarchy-music/omarchy-music/shots
+total 7116
+drwxr-xr-x 2 runner runner    4096 Oct 27 13:05 .
+drwxr-xr-x 5 runner runner    4096 Oct 27 12:57 ..
+-rw-r--r-- 1 runner runner  151596 Oct 27 12:58 01-home.png
+-rw-r--r-- 1 runner runner  151596 Oct 27 12:58 01-player-empty.png
+-rw-r--r-- 1 runner runner  174367 Oct 27 12:58 02-drawer.png
+-rw-r--r-- 1 runner runner  160652 Oct 27 12:58 03-songs.png
+-rw-r--r-- 1 runner runner  173031 Oct 27 12:58 04-songs-playing.png
+-rw-r--r-- 1 runner runner  388447 Oct 27 12:59 05-player.png
+-rw-r--r-- 1 runner runner  388271 Oct 27 12:59 05b-player-bars.png
+-rw-r--r-- 1 runner runner  373797 Oct 27 13:02 05c-player-ocean.png
+-rw-r--r-- 1 runner runner  448069 Oct 27 12:59 06-queue.png
+-rw-r--r-- 1 runner runner  363824 Oct 27 12:59 07-lyrics.png
+-rw-r--r-- 1 runner runner   75032 Oct 27 13:00 08-vis-tab.png
+-rw-r--r-- 1 runner runner  120660 Oct 27 13:00 09-albums.png
+-rw-r--r-- 1 runner runner  138081 Oct 27 13:01 09b-album.png
+-rw-r--r-- 1 runner runner  199389 Oct 27 13:02 10-settings.png
+-rw-r--r-- 1 runner runner  249367 Oct 27 13:02 11-settings-2.png
+-rw-r--r-- 1 runner runner  243371 Oct 27 13:02 12-settings-3.png
+-rw-r--r-- 1 runner runner  175495 Oct 27 13:03 30-look-Apple-Music-dark.png
+-rw-r--r-- 1 runner runner  171922 Oct 27 13:05 30-look-Apple-Music.png
+-rw-r--r-- 1 runner runner  175152 Oct 27 13:04 31-songs-Apple-Music-dark.png
+-rw-r--r-- 1 runner runner  213401 Oct 27 13:05 31-songs-Apple-Music.png
+-rw-r--r-- 1 runner runner  351412 Oct 27 13:04 32-player-Apple-Music-dark.png
+-rw-r--r-- 1 runner runner 2348315 Oct 27 13:05 32-player-Apple-Music.png
