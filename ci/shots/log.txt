@@ -5,22 +5,22 @@ Success
 + python3 -
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 1.wav' /sdcard/Music/
-/tmp/Test Song 1.wav: 1 file pushed, 0 skipped. 5.9 MB/s (882044 bytes in 0.142s)
+/tmp/Test Song 1.wav: 1 file pushed, 0 skipped. 53.2 MB/s (882044 bytes in 0.016s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 2.wav' /sdcard/Music/
-/tmp/Test Song 2.wav: 1 file pushed, 0 skipped. 791.2 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 2.wav: 1 file pushed, 0 skipped. 826.1 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 3.wav' /sdcard/Music/
-/tmp/Test Song 3.wav: 1 file pushed, 0 skipped. 652.0 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 3.wav: 1 file pushed, 0 skipped. 741.3 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 4.wav' /sdcard/Music/
-/tmp/Test Song 4.wav: 1 file pushed, 0 skipped. 972.4 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 4.wav: 1 file pushed, 0 skipped. 741.3 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 5.wav' /sdcard/Music/
-/tmp/Test Song 5.wav: 1 file pushed, 0 skipped. 683.2 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 5.wav: 1 file pushed, 0 skipped. 837.8 MB/s (882044 bytes in 0.001s)
 + for i in 1 2 3 4 5 6
 + adb push '/tmp/Test Song 6.wav' /sdcard/Music/
-/tmp/Test Song 6.wav: 1 file pushed, 0 skipped. 728.1 MB/s (882044 bytes in 0.001s)
+/tmp/Test Song 6.wav: 1 file pushed, 0 skipped. 889.4 MB/s (882044 bytes in 0.001s)
 + adb shell content call --method scan_volume --uri content://media --arg external_primary
 Result: Bundle[{}]
 + sleep 3
@@ -45,27 +45,30 @@ args: [-p, org.omarchy.music.test, -c, android.intent.category.LAUNCHER, 1]
 data="org.omarchy.music.test"
 data="android.intent.category.LAUNCHER"
 Events injected: 1
-## Network stats: elapsed time=253ms (0ms mobile, 0ms wifi, 253ms not connected)
+## Network stats: elapsed time=51ms (0ms mobile, 0ms wifi, 51ms not connected)
 + sleep 12
++ python3 work/ci/tap.py Wait
+not found: wait
++ sleep 1
 + shot 01-home
 + adb exec-out screencap -p
 + shot 01-player-empty
 + adb exec-out screencap -p
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 191 
 + sleep 3
 + shot 02-drawer
 + adb exec-out screencap -p
 + tap 'My music'
 + python3 work/ci/tap.py 'My music'
-not found: my music
+tap my music 258 710 
 + sleep 3
 + shot 03-songs
 + adb exec-out screencap -p
 + tap 'Test Song 1'
 + python3 work/ci/tap.py 'Test Song 1'
-not found: test song 1
+tap test song 1 304 606 
 + sleep 3
 + shot 04-songs-playing
 + adb exec-out screencap -p
@@ -75,48 +78,48 @@ not found: test song 1
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll 'Now playing'
 + python3 work/ci/tap.py --scroll 'Now playing'
-not found: now playing
+tap now playing 281 454 
 + sleep 3
 + shot 05-player
 + adb exec-out screencap -p
 + tap --desc Lyrics
 + python3 work/ci/tap.py --desc Lyrics
-not found: lyrics
+tap lyrics 460 2192 
 + sleep 3
 + shot 06-lyrics
 + adb exec-out screencap -p
 + tap --desc Lyrics
 + python3 work/ci/tap.py --desc Lyrics
-not found: lyrics
+tap lyrics 460 2192 
 + sleep 3
 + tap --desc 'Up next'
 + python3 work/ci/tap.py --desc 'Up next'
-not found: up next
+tap up next 779 2192 
 + sleep 3
 + shot 07-upnext
 + adb exec-out screencap -p
 + tap --desc 'Up next'
 + python3 work/ci/tap.py --desc 'Up next'
-not found: up next
+tap up next 779 2192 
 + sleep 3
 + tap --desc Visualizer
 + python3 work/ci/tap.py --desc Visualizer
-not found: visualizer
+tap visualizer 620 2192 
 + sleep 3
 + WAIT=4
 + shot 08-vis
 + adb exec-out screencap -p
 + tap --desc Visualizer
 + python3 work/ci/tap.py --desc Visualizer
-not found: visualizer
+tap visualizer 620 2192 
 + sleep 3
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + shot 09-settings
 + adb exec-out screencap -p
@@ -137,17 +140,17 @@ not found: settings
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 191 
 + sleep 3
 + tap --scroll Equalizer
 + python3 work/ci/tap.py --scroll Equalizer
-not found: equalizer
+tap equalizer 255 2277 
 + sleep 3
 + shot 12-eq
 + adb exec-out screencap -p
 + tap --contains bands
 + python3 work/ci/tap.py --contains bands
-not found: bands
+tap bands 203 655 
 + sleep 3
 + shot 13-eq-bands
 + adb exec-out screencap -p
@@ -163,11 +166,11 @@ not found: bands
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 191 
 + sleep 3
 + tap --scroll Albums
 + python3 work/ci/tap.py --scroll Albums
-not found: albums
+tap albums 241 184 
 + sleep 3
 + shot 14-albums
 + adb exec-out screencap -p
@@ -177,11 +180,11 @@ not found: albums
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 202 
 + sleep 3
 + tap --scroll Genres
 + python3 work/ci/tap.py --scroll Genres
-not found: genres
+tap genres 236 440 
 + sleep 3
 + shot 15-genres
 + adb exec-out screencap -p
@@ -191,11 +194,11 @@ not found: genres
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll Folders
 + python3 work/ci/tap.py --scroll Folders
-not found: folders
+tap folders 239 696 
 + sleep 3
 + shot 16-folders
 + adb exec-out screencap -p
@@ -205,7 +208,7 @@ not found: folders
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 199 
 + sleep 3
 + tap --scroll 'Up next & queues'
 + python3 work/ci/tap.py --scroll 'Up next & queues'
@@ -268,11 +271,11 @@ not found: options
 + sleep 2
 + tap --desc Menu
 + python3 work/ci/tap.py --desc Menu
-not found: menu
+tap menu 69 191 
 + sleep 3
 + tap --scroll 'Now playing'
 + python3 work/ci/tap.py --scroll 'Now playing'
-not found: now playing
+tap now playing 281 454 
 + sleep 3
 + for L in Galaxy Sunset Ocean Aurora "Midnight gold" Sakura Candy "Stellio dark"
 + front
@@ -280,15 +283,15 @@ not found: now playing
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 943 1437 
 + sleep 3
 + tap Galaxy
 + python3 work/ci/tap.py Galaxy
-not found: galaxy
+tap galaxy 830 464 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -302,15 +305,15 @@ not found: galaxy
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 940 2047 
 + sleep 3
 + tap Sunset
 + python3 work/ci/tap.py Sunset
-not found: sunset
+tap sunset 831 716 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -324,15 +327,15 @@ not found: sunset
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 938 1972 
 + sleep 3
 + tap Ocean
 + python3 work/ci/tap.py Ocean
-not found: ocean
+tap ocean 827 842 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -346,15 +349,15 @@ not found: ocean
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 943 1954 
 + sleep 3
 + tap Aurora
 + python3 work/ci/tap.py Aurora
-not found: aurora
+tap aurora 829 590 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -368,15 +371,15 @@ not found: aurora
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 940 2076 
 + sleep 3
 + tap 'Midnight gold'
 + python3 work/ci/tap.py 'Midnight gold'
-not found: midnight gold
+tap midnight gold 886 968 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -390,15 +393,15 @@ not found: midnight gold
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 886 1951 
 + sleep 3
 + tap Sakura
 + python3 work/ci/tap.py Sakura
-not found: sakura
+tap sakura 822 1220 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -412,15 +415,15 @@ not found: sakura
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 938 1395 
 + sleep 3
 + tap Candy
 + python3 work/ci/tap.py Candy
-not found: candy
+tap candy 826 1346 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -434,15 +437,15 @@ not found: candy
 + sleep 2
 + tap --desc Settings
 + python3 work/ci/tap.py --desc Settings
-not found: settings
+tap settings 1012 191 
 + sleep 3
 + tap --scroll --contains ▾
 + python3 work/ci/tap.py --scroll --contains ▾
-not found: ▾
+tap ▾ 943 1930 
 + sleep 3
 + tap 'Stellio dark'
 + python3 work/ci/tap.py 'Stellio dark'
-not found: stellio dark
+tap stellio dark 865 338 
 + sleep 3
 + back
 + adb shell input keyevent KEYCODE_BACK
@@ -451,36 +454,36 @@ not found: stellio dark
 + shot 30-look-Stellio-dark
 + adb exec-out screencap -p
 + ls -la /home/runner/work/omarchy-music/omarchy-music/shots
-total 3128
-drwxr-xr-x 2 runner runner   4096 Oct 26 23:49 .
-drwxr-xr-x 5 runner runner   4096 Oct 26 23:37 ..
--rw-r--r-- 1 runner runner 103963 Oct 26 23:38 01-home.png
--rw-r--r-- 1 runner runner 104356 Oct 26 23:38 01-player-empty.png
--rw-r--r-- 1 runner runner 104356 Oct 26 23:38 02-drawer.png
--rw-r--r-- 1 runner runner 104356 Oct 26 23:38 03-songs.png
--rw-r--r-- 1 runner runner 104356 Oct 26 23:38 04-songs-playing.png
--rw-r--r-- 1 runner runner 104302 Oct 26 23:38 05-player.png
--rw-r--r-- 1 runner runner 104302 Oct 26 23:38 06-lyrics.png
--rw-r--r-- 1 runner runner 104242 Oct 26 23:39 07-upnext.png
--rw-r--r-- 1 runner runner 104242 Oct 26 23:39 08-vis.png
--rw-r--r-- 1 runner runner 104242 Oct 26 23:39 09-settings.png
--rw-r--r-- 1 runner runner 104242 Oct 26 23:39 10-settings-2.png
--rw-r--r-- 1 runner runner 104242 Oct 26 23:39 11-settings-3.png
--rw-r--r-- 1 runner runner 103876 Oct 26 23:40 12-eq.png
--rw-r--r-- 1 runner runner 103876 Oct 26 23:40 13-eq-bands.png
--rw-r--r-- 1 runner runner 103824 Oct 26 23:40 14-albums.png
--rw-r--r-- 1 runner runner 103161 Oct 26 23:41 15-genres.png
--rw-r--r-- 1 runner runner 103773 Oct 26 23:42 16-folders.png
--rw-r--r-- 1 runner runner 103819 Oct 26 23:42 17-queues.png
--rw-r--r-- 1 runner runner 103939 Oct 26 23:43 18-longpress.png
--rw-r--r-- 1 runner runner 103939 Oct 26 23:43 19-selecting.png
--rw-r--r-- 1 runner runner 103939 Oct 26 23:43 20-advanced.png
--rw-r--r-- 1 runner runner 103939 Oct 26 23:43 21-options.png
--rw-r--r-- 1 runner runner 103553 Oct 26 23:47 30-look-Aurora.png
--rw-r--r-- 1 runner runner 103962 Oct 26 23:49 30-look-Candy.png
--rw-r--r-- 1 runner runner 103149 Oct 26 23:44 30-look-Galaxy.png
--rw-r--r-- 1 runner runner 103553 Oct 26 23:47 30-look-Midnight-gold.png
--rw-r--r-- 1 runner runner 103941 Oct 26 23:46 30-look-Ocean.png
--rw-r--r-- 1 runner runner 104031 Oct 26 23:48 30-look-Sakura.png
--rw-r--r-- 1 runner runner 103910 Oct 26 23:49 30-look-Stellio-dark.png
--rw-r--r-- 1 runner runner 103821 Oct 26 23:45 30-look-Sunset.png
+total 6432
+drwxr-xr-x 2 runner runner   4096 Oct 27 04:06 .
+drwxr-xr-x 5 runner runner   4096 Oct 27 03:57 ..
+-rw-r--r-- 1 runner runner  86055 Oct 27 03:58 01-home.png
+-rw-r--r-- 1 runner runner  86055 Oct 27 03:58 01-player-empty.png
+-rw-r--r-- 1 runner runner 143065 Oct 27 03:58 02-drawer.png
+-rw-r--r-- 1 runner runner 139871 Oct 27 03:58 03-songs.png
+-rw-r--r-- 1 runner runner 164078 Oct 27 03:59 04-songs-playing.png
+-rw-r--r-- 1 runner runner  92499 Oct 27 03:59 05-player.png
+-rw-r--r-- 1 runner runner 109730 Oct 27 03:59 06-lyrics.png
+-rw-r--r-- 1 runner runner 176241 Oct 27 03:59 07-upnext.png
+-rw-r--r-- 1 runner runner 117075 Oct 27 03:59 08-vis.png
+-rw-r--r-- 1 runner runner 273986 Oct 27 03:59 09-settings.png
+-rw-r--r-- 1 runner runner 283154 Oct 27 04:00 10-settings-2.png
+-rw-r--r-- 1 runner runner 283154 Oct 27 04:00 11-settings-3.png
+-rw-r--r-- 1 runner runner 152181 Oct 27 04:00 12-eq.png
+-rw-r--r-- 1 runner runner 156830 Oct 27 04:00 13-eq-bands.png
+-rw-r--r-- 1 runner runner  75174 Oct 27 04:00 14-albums.png
+-rw-r--r-- 1 runner runner  73111 Oct 27 04:00 15-genres.png
+-rw-r--r-- 1 runner runner  73057 Oct 27 04:01 16-folders.png
+-rw-r--r-- 1 runner runner 133333 Oct 27 04:01 17-queues.png
+-rw-r--r-- 1 runner runner 133755 Oct 27 04:02 18-longpress.png
+-rw-r--r-- 1 runner runner 133755 Oct 27 04:02 19-selecting.png
+-rw-r--r-- 1 runner runner 133755 Oct 27 04:02 20-advanced.png
+-rw-r--r-- 1 runner runner  73533 Oct 27 04:02 21-options.png
+-rw-r--r-- 1 runner runner 589152 Oct 27 04:04 30-look-Aurora.png
+-rw-r--r-- 1 runner runner 318558 Oct 27 04:05 30-look-Candy.png
+-rw-r--r-- 1 runner runner 570027 Oct 27 04:03 30-look-Galaxy.png
+-rw-r--r-- 1 runner runner 411296 Oct 27 04:05 30-look-Midnight-gold.png
+-rw-r--r-- 1 runner runner 526626 Oct 27 04:04 30-look-Ocean.png
+-rw-r--r-- 1 runner runner 340462 Oct 27 04:05 30-look-Sakura.png
+-rw-r--r-- 1 runner runner 164526 Oct 27 04:06 30-look-Stellio-dark.png
+-rw-r--r-- 1 runner runner 497289 Oct 27 04:03 30-look-Sunset.png
