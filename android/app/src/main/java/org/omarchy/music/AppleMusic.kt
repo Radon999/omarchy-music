@@ -58,7 +58,7 @@ fun trackFromApple(res: JsonElement): Track {
 class AppleMusic(private val ctx: Context, cookie: String?) : Source {
     override val key = "apple"
     override val name = "Apple Music"
-    override val hint = "Sign in to Apple Music in the accounts menu (☰)\nto see your playlists and favourites."
+    override val hint = "Sign in to Apple Music in Settings (⚙)\nto see your playlists and favourites."
     private var token = appleWebToken(ctx)
     private var userToken = cookie?.let { Regex("(?:^|;\\s*)media-user-token=([^;]+)").find(it)?.groupValues?.get(1) }
     private var storefront = "us"

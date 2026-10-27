@@ -36,6 +36,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.graphicsLayer
 import coil.compose.AsyncImage
 import org.omarchy.music.Album
 import org.omarchy.music.FolderItem
@@ -51,7 +53,12 @@ data class RowPlace(val group: List<Track>, val index: Int, val kind: String = "
 
 /** What the screens share: the tab, the open pages, what's selected, the open sheets. */
 class Ui {
-    var tab by mutableStateOf("music")
+    var tab by mutableStateOf("player")                // what's in front: the player, or a list (from the ☰ menu)
+    var player by mutableStateOf(false)                // (kept for the screens that close it: the player is a tab now)
+    var drawer by mutableStateOf(false)                // the ☰ menu is out
+    var showQueues by mutableStateOf(false)            // the queues switcher is open
+    var lyricsSearch by mutableStateOf(false)          // the lyrics' search box is open
+    var pane by mutableStateOf("art")                  // what the player shows: art, lyrics, visualizer, queue
     var musicView by mutableStateOf("all")
     var openMine by mutableStateOf<String?>(null)
     var openFolder by mutableStateOf<String?>(null)   // a folder of playlists, open in the Library or Music › Playlists
@@ -59,8 +66,12 @@ class Ui {
     var openList by mutableStateOf<Pair<Album, List<Track>?>?>(null)
     val pages = mutableStateListOf<Page>()            // artist and album pages, newest last
     var selecting by mutableStateOf(false)
-    val selected = mutableStateListOf<String>()
-    var selectPool by mutableStateOf(listOf<Track>())  // the list being selected from
+    // Advanced multi-select: what you pick stays picked as you go from list to list, and the
+    // Options can be used one after another on it (unless "close after an option" is on).
+    val selected = androidx.compose.runtime.mutableStateMapOf<String, Track>()
+    var selectPool by mutableStateOf(listOf<Track>())  // the list in front, to select from
+    var closeAfter by mutableStateOf(true)
+    var showOptions by mutableStateOf(false)
     var selectPlace by mutableStateOf<RowPlace?>(null)
     var query by mutableStateOf("")
     var found by mutableStateOf<org.omarchy.music.Found?>(null)
@@ -74,6 +85,10 @@ class Ui {
     var editTagsFor by mutableStateOf<List<Track>?>(null)
     var deleteFor by mutableStateOf<List<Track>?>(null)
     var speedFor by mutableStateOf<List<Track>?>(null)
+    var volumeFor by mutableStateOf<List<Track>?>(null)     // Volume…: a song's own boost
+    var moodsFor by mutableStateOf<List<Track>?>(null)      // Moods…: set by hand
+    var upgradeFor by mutableStateOf<List<Track>?>(null)    // Upgrade…: these songs (empty: all of yours)
+    var exportFor by mutableStateOf<Pair<String, List<Track>>?>(null)   // Export…: a playlist as .m3u8
     var coverFor by mutableStateOf<List<List<Track>>?>(null)   // the albums still to pick a cover for
     var artistPictureFor by mutableStateOf<String?>(null)
 
@@ -88,21 +103,36 @@ class Ui {
     sealed class Page {
         data class Artist(val name: String, val prefer: String? = null) : Page()
         data class AlbumPage(val album: Album, val source: String, val tracks: List<Track>? = null) : Page()
+        /** A list of songs with a name: a genre, a folder. */
+        data class Songs(val title: String, val tracks: List<Track>, val kind: String = "") : Page()
     }
 
     fun startSelecting(pool: List<Track>, place: RowPlace?, first: Track?) {
+        if (!selecting) selected.clear()
         selecting = true
         selectPool = pool
         selectPlace = place
-        selected.clear()
-        first?.let { selected += it.id }
+        first?.let { selected[it.id] = it }
+    }
+
+    /** An option was used on the songs picked: the selection closes, unless you keep it for more. */
+    fun afterOption() { if (closeAfter) stopSelecting() }
+
+    fun selectAllHere() { selectPool.forEach { selected[it.id] = it } }
+    fun deselectAllHere() { selectPool.forEach { selected.remove(it.id) } }
+    fun invertHere() { selectPool.forEach { if (it.id in selected) selected.remove(it.id) else selected[it.id] = it } }
+    /** The songs between the first and the last picked one in the list in front. */
+    fun selectBetween() {
+        val at = selectPool.indices.filter { selectPool[it].id in selected }
+        if (at.size < 2) return
+        for (i in at.first()..at.last()) selected[selectPool[i].id] = selectPool[i]
     }
 
     /** Start the DJ on f (see [org.omarchy.music.Dj.From]) and show it. */
     fun djFrom(f: org.omarchy.music.Dj.From) {
         Music.djStart(f)
         stopSelecting()
-        tab = "music"; pages.clear(); openMine = null; musicView = "dj"
+        tab = "music"; pages.clear(); openMine = null; musicView = "dj"; player = false
     }
 
     fun stopSelecting() {
@@ -110,13 +140,14 @@ class Ui {
         selected.clear()
     }
 
-    fun toggle(t: Track) { if (t.id in selected) selected -= t.id else selected += t.id }
-    fun selectedTracks() = selectPool.filter { it.id in selected }.distinctBy { it.id }
+    fun toggle(t: Track) { if (t.id in selected) selected.remove(t.id) else selected[t.id] = t }
+    fun selectedTracks() = selected.values.toList()
 }
 
 @Composable
 fun ArtImage(model: Any?, size: Dp, modifier: Modifier = Modifier) {
-    Box(modifier.size(size).clip(androidx.compose.foundation.shape.RoundedCornerShape(0.dp)).background(C.light)) {
+    Box(modifier.size(size).clip(if (size >= 120.dp) R.card else R.small).background(C.light), contentAlignment = Alignment.Center) {
+        Icon(Ico.NOTE, C.muted.copy(alpha = 0.6f), size * 0.42f)   // under the cover: shows when there's none
         if (model != null) AsyncImage(model = model, contentDescription = null, contentScale = ContentScale.Crop,
             modifier = Modifier.size(size))
     }
@@ -148,23 +179,28 @@ fun TrackRow(t: Track, place: RowPlace, ui: Ui, extra: String = "", onPlay: () -
     Music.savedVersion   // redraw when downloads change
     val saved = Music.lib.items[t.id]
     val checked = t.id in ui.selected
+    if (ui.selecting) androidx.compose.runtime.SideEffect { if (ui.selectPool !== place.group) { ui.selectPool = place.group; ui.selectPlace = place } }
     Box {
         Row(
             Modifier.fillMaxWidth()
-                .background(if (playing || checked) C.accent.copy(alpha = 0.10f) else Color.Transparent)
-                .border(width = 0.dp, color = Color.Transparent)
+                .padding(horizontal = 6.dp, vertical = 1.dp)
+                .clip(R.card)
+                .background(if (playing || checked) C.accent.copy(alpha = 0.14f) else if (C.isLight) C.light else Color.Transparent)
                 .combinedClickable(
                     onClick = { if (ui.selecting) ui.toggle(t) else onPlay() },
                     onLongClick = { if (ui.selecting) ui.toggle(t) else menu = true },
                 )
-                .padding(horizontal = 10.dp, vertical = 5.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (playing) Box(Modifier.width(2.dp).size(2.dp, 44.dp).background(C.accent))
             if (ui.selecting) Checkbox(checked = checked, onCheckedChange = { ui.toggle(t) },
                 colors = CheckboxDefaults.colors(checkedColor = C.accent, checkmarkColor = C.darker, uncheckedColor = C.muted))
-            ArtImage(if (place.kind == "queue" && Remote.active) Remote.artModel(t) else artModel(t), 44.dp, Modifier.padding(start = 6.dp))
-            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                ArtImage(if (place.kind == "queue" && Remote.active) Remote.artModel(t) else artModel(t), 48.dp, Modifier.padding(start = 2.dp))
+                if (playing) Box(Modifier.padding(start = 2.dp).size(48.dp).clip(R.small).background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center) { Icon(if (Music.paused) Ico.PAUSE else Ico.PLAY, C.accent, 20.dp) }
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(t.title, style = T.title.copy(color = if (playing) C.accent else C.fg), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val bits = buildList {
                     if (t.duration > 0) add(fmtTime(t.duration))
@@ -172,8 +208,9 @@ fun TrackRow(t: Track, place: RowPlace, ui: Ui, extra: String = "", onPlay: () -
                 }.joinToString(" · ")
                 ArtistLinks(t.artist, ui, t.source, suffix = if (bits.isNotEmpty()) "  · $bits" else "")
             }
-            if (saved != null) Text(if (saved.format == "flac") "FLAC" else "✓", style = T.time.copy(color = C.accent))
+            if (saved != null) Badge(if (saved.format == "flac") "FLAC" else "✓")
             else if (Music.dl.busy(t.id) || Music.downloads.any { it.id == t.id }) Text("…", style = T.time)
+            if (!ui.selecting) Box(Modifier.clip(R.pill).clickable { menu = true }.padding(6.dp)) { Icon(Ico.MORE, C.muted, 18.dp) }
         }
         TrackMenu(t, place, ui, menu) { menu = false }
     }
@@ -201,6 +238,10 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
         }()
         else if (Music.phoneFile(t) != null) item("Delete…") { ui.deleteFor = listOf(t) }()
         if (org.omarchy.music.Tags.editable(t) != null) item("Edit tags…") { ui.editTagsFor = listOf(t) }()
+        if (org.omarchy.music.upgradable(t) && Music.upgrading == null) item("Upgrade to FLAC…") { ui.upgradeFor = listOf(t) }()
+        item(if (Music.favorites.has(t)) "Unfavorite" else "Favorite") { Music.setFavorite(listOf(t)) }()
+        item("Moods…") { ui.moodsFor = listOf(t) }()
+        Music.gains.get(t).let { g -> item(if (g == 0.0) "Volume…" else "Volume (${"%+.1f".format(g)} dB)…") { ui.volumeFor = listOf(t) }() }
         item("Cover…") { ui.pickCovers(listOf(t)) }()
         Music.speeds.get(t).speed.let { s -> item(if (s == 1.0) "Speed…" else "Speed (${org.omarchy.music.fmtSpeed(s)})…") { ui.speedFor = listOf(t) }() }
         item("Select…") { ui.startSelecting(place.group, place, t) }()
@@ -210,32 +251,44 @@ fun TrackMenu(t: Track, place: RowPlace, ui: Ui, open: Boolean, dismiss: () -> U
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PlaylistRow(p: Album, art: Any? = null, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 10.dp, vertical = 6.dp),
+    Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 1.dp).clip(R.card)
+        .combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        ArtImage(art ?: p.thumb.takeIf { it.isNotEmpty() }, 44.dp)
-        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+        ArtImage(art ?: p.thumb.takeIf { it.isNotEmpty() }, 52.dp)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(p.title, style = T.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val sub = listOf(p.sub, if (p.count.isNotEmpty()) "${p.count} songs" else "").filter { it.isNotEmpty() }.joinToString(" · ")
             if (sub.isNotEmpty()) Text(sub, style = T.sub, maxLines = 1)
         }
-        Text("›", style = T.title.copy(color = C.muted))
+        Icon(Ico.BACK, C.muted, 16.dp, Modifier.graphicsLayer(rotationZ = 180f))
     }
+}
+
+/** A small mark: FLAC, ✓, a quality. */
+@Composable
+fun Badge(text: String, on: Boolean = true) {
+    Text(text, style = T.time.copy(color = if (on) C.accent else C.muted, fontSize = 10.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+        modifier = Modifier.border(1.dp, (if (on) C.accent else C.muted).copy(alpha = 0.55f), R.small).padding(horizontal = 5.dp, vertical = 1.dp))
 }
 
 @Composable
 fun Section(text: String) {
-    Text(text, style = T.section, modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp))
+    Text(text, style = T.section, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp))
 }
 
 @Composable
 fun BackRow(text: String, onClick: () -> Unit) {
-    Text("‹  $text", style = T.title.copy(color = C.accent), maxLines = 1, overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(12.dp))
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Icon(Ico.BACK, C.accent, 18.dp)
+        Text(text, style = T.title.copy(color = C.accent), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp))
+    }
 }
 
 @Composable
 fun ActionRow(text: String, onClick: () -> Unit) {
-    Text(text, style = T.body.copy(color = C.accent), modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(12.dp))
+    Text(text, style = T.body.copy(color = C.accent, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp).clip(R.card).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 13.dp))
 }
 
 @Composable
@@ -249,18 +302,22 @@ fun Empty(title: String, sub: String = "") {
 /** The desktop's chips: a quiet word, the accent with a frame when on. */
 @Composable
 fun Chip(text: String, on: Boolean, onClick: () -> Unit) {
-    Text(text, style = T.tab.copy(color = if (on) C.accent else C.muted),
+    Text(text, style = T.tab.copy(color = if (on) C.accent else C.muted, shadow = if (on) C.shadow else null),
         modifier = Modifier
-            .background(if (on) C.accent.copy(alpha = 0.12f) else Color.Transparent)
-            .border(1.dp, if (on) C.accent.copy(alpha = 0.45f) else Color.Transparent)
-            .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp))
+            .clip(R.pill)
+            .background(if (on) C.accent.copy(alpha = 0.16f) else C.fg.copy(alpha = 0.05f))
+            .border(1.dp, if (on) C.accent.copy(alpha = 0.5f) else Color.Transparent, R.pill)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp))
 }
 
 @Composable
 fun Pill(text: String, quiet: Boolean = false, onClick: () -> Unit) {
-    Text(text, style = T.tab.copy(color = if (quiet) C.muted else C.accent, fontSize = T.tab.fontSize * 0.92f),
-        modifier = Modifier.border(1.dp, if (quiet) C.line else C.accent.copy(alpha = 0.5f))
-            .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 5.dp))
+    Text(text, style = T.tab.copy(color = if (quiet) C.fg else if (C.isLight) C.light else C.darker,
+        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+        modifier = Modifier.clip(R.pill)
+            .background(if (quiet) C.fg.copy(alpha = 0.07f) else C.accent)
+            .border(1.dp, if (quiet) C.line else C.accent, R.pill)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 7.dp))
 }
 
 fun LazyListScope.tracks(list: List<Track>, ui: Ui, kind: String = "", playlistId: String? = null, radio: Boolean = false,

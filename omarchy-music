@@ -7,7 +7,7 @@ services always comes from Tidal in FLAC (hi-res where Tidal has it): each
 song is matched there (by its ISRC when the service has one, else by title,
 artist and length) and streamed. Download (the FLAC mark by the controls, or
 a song's menu) saves it to play from disk. Nothing downloads on its own: "Keep"
-in the accounts menu saves every song you play, and each service has a Sync
+in Settings saves every song you play, and each service has a Sync
 switch that saves all of its playlists, all off to start. Apple Music's own
 audio is locked with DRM, so its songs play from the same recording on Tidal.
 Songs Tidal has no lossless copy of are skipped. The next song in the queue
@@ -23,7 +23,7 @@ Lyrics tab shows Genius's lyrics (or lines timed to the music), and Wrapped
 looks back on any week, month or year of your Last.fm history (or all of it).
 
 The Android app (android/ in the repository) does all of this on a phone, and
-can play here instead: switch on "Phone" in the accounts menu and pair the
+can play here instead: switch on "Phone" in Settings and pair the
 phone with the code it shows. The phone then shows what's playing here and
 every play, queue and button press goes to this app. The remote listens on
 port 8897 of your network (allow it in your firewall) and is off to start.
@@ -37,16 +37,16 @@ port 8897 of your network (allow it in your firewall) and is off to start.
   omarchy-music search WORDS...     open the popup on a search
   omarchy-music show [TAB]          open the popup on search, library, music, playlists, recent,
                                     added, top, queue or lyrics
-  omarchy-music accounts            the accounts menu: sign-ins, folders, Last.fm, the tagger
+  omarchy-music accounts            Settings: sign-ins, folders, Last.fm, the tagger
   omarchy-music wrapped [YEAR|month|week|all]   your year (month, week or every year) in music,
                                     from your Last.fm history
   omarchy-music source youtube|tidal|apple|spotify   switch the library you browse and search
   omarchy-music tag [all]           tag the saved songs not tagged yet (or all of them) now
   omarchy-music status              what's playing, what's next, how far the tagging is
   omarchy-music quit                stop the music and quit
-  omarchy-music --tidal-login       connect Tidal from a terminal (the accounts menu can too)
-  omarchy-music --lastfm-login      connect Last.fm from a terminal (the accounts menu can too)
-  omarchy-music --spotify-login     connect Spotify from a terminal (the accounts menu can too)
+  omarchy-music --tidal-login       connect Tidal from a terminal (Settings can too)
+  omarchy-music --lastfm-login      connect Last.fm from a terminal (Settings can too)
+  omarchy-music --spotify-login     connect Spotify from a terminal (Settings can too)
   Commands run while it isn't running start it in the background first.
   Files: ~/Music/Omarchy Music/  (songs/ with a .lrc of timed lyrics beside each song, art/,
          library.json, playlists.json, missing.json); logins in ~/.local/state/omarchy-music-*.json
@@ -99,8 +99,8 @@ gi.require_version("Graphene", "1.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
-VERSION = "1.1.9"            # the release this is; GitHub's latest release is compared with it
-REPO = "Varixxl/omarchy-music"
+VERSION = "1.2.0"            # the release this is; GitHub's latest release is compared with it
+REPO = "Radon999/omarchy-music"   # updates come from here: its releases, and its code (Linux)
 
 # OMARCHY_MUSIC_PROFILE=dev runs a second copy beside the real one, with its own
 # window, state, mpv and media-key name; OMARCHY_MUSIC_DIR points it at a test
@@ -190,6 +190,12 @@ def fmt_total(tracks):
     """How long a list of songs plays: "42 min", "2 h 5 min"."""
     m = round(sum(t.get("duration") or 0 for t in tracks) / 60)
     return f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min"
+
+
+def track_no(t):
+    """A song's number on its album ("3/12" is 3), for sorting; songs without one go last."""
+    m = re.match(r"\s*(\d+)", str(t.get("track") or t.get("tracknumber") or ""))
+    return int(m.group(1)) if m else 9999
 
 
 def short_path(path):
@@ -385,6 +391,82 @@ for _k, (_label, _col) in NEON.items():
     LOOKS[_k] = neon_palette(_col)
 
 
+# Stellio's own looks (light and dark), and colourful ones that stay simple: the window is a soft
+# gradient (and the galaxy ones have a few stars over it). key: (name, accent, background, cards,
+# text, quiet text, selection, light?, gradient, stars?)
+STYLED = {
+    "stellio": ("Stellio", "#4a86f7", "#eef0f6", "#ffffff", "#2b3141", "#8a90a6", "#c9d3ea", True, None, False),
+    "stellio-dark": ("Stellio dark", "#5b8def", "#1c2030", "#262b3d", "#e6e9f5", "#8a90a8", "#343b54", False, None, False),
+    "galaxy": ("Galaxy", "#b57bff", "#0b0820", "#1c1544", "#ede7ff", "#9a8fc4", "#3a2c70", False,
+               ("#0b0820", "#1e0f4a", "#3a1260", "#0b1a3f"), True),
+    "aurora": ("Aurora", "#3cf0b0", "#07141a", "#10292f", "#e6fff6", "#7fb5a8", "#1e4a48", False,
+               ("#061a1f", "#0b3b3a", "#2a1e5c", "#07141a"), True),
+    "sunset": ("Sunset", "#ff8a5b", "#2a0e2e", "#3d1636", "#ffede6", "#c99aa5", "#5a2440", False,
+               ("#2a0e2e", "#5a1840", "#8a2a40", "#b5523a"), False),
+    "ocean": ("Ocean", "#38c6f4", "#06182b", "#0e2a45", "#e3f6ff", "#7fa8c4", "#15405f", False,
+              ("#041526", "#073056", "#0a4c6e", "#06263f"), False),
+    "midnight": ("Midnight gold", "#f2c14e", "#0d1220", "#18203a", "#f3efe2", "#9aa0b5", "#2a3350", False,
+                 ("#0d1220", "#141b33", "#0d1220"), True),
+    "forest": ("Forest", "#7bd389", "#0e1a14", "#18291f", "#e8f5ec", "#8fae98", "#24402f", False,
+               ("#0e1a14", "#15301f", "#0e1a14"), False),
+    "sakura": ("Sakura", "#e85a8b", "#fff3f7", "#ffffff", "#3a2430", "#a07f8e", "#f4c9d9", True,
+               ("#fff5f8", "#ffe3ee", "#f7e8ff"), False),
+    "candy": ("Candy", "#7c5cff", "#f5f2ff", "#ffffff", "#2a2440", "#8e88a8", "#dcd3ff", True,
+              ("#fde2f3", "#e9e4ff", "#ddf5ff"), False),
+}
+
+
+def styled_palette(key):
+    _n, acc, bg, light, fg, muted, sel, is_light, grad, stars = STYLED[key]
+    c = {"mode": "light" if is_light else "dark", "accent": acc, "selection": sel, "muted": muted,
+         "background": bg, "dark_background": mix_hex(bg, "#000000", 0.03 if is_light else 0.25),
+         "darker_background": mix_hex(bg, "#000000", 0.07 if is_light else 0.45), "lighter_background": light,
+         "foreground": fg, "red": "#e5484d", "yellow": mix_hex(acc, "#ffcc00", 0.6), "green": "#3fb97a",
+         "blue": mix_hex(acc, "#3b82f6", 0.5), "magenta": mix_hex(acc, "#d946ef", 0.5), "cyan": mix_hex(acc, "#06b6d4", 0.5),
+         "orange": mix_hex(acc, "#f97316", 0.5), "styled": "yes"}
+    if grad:
+        c["gradient"] = ",".join(grad)
+    if stars:
+        c["stars"] = "yes"
+    return c
+
+
+for _k in STYLED:
+    LOOKS[_k] = styled_palette(_k)
+
+# The Look menu: Stellio's and the colourful ones first, then the plain and neon ones.
+LOOK_NAMES = [(k, v[0]) for k, v in STYLED.items()] + [("default", "Default"), ("dark", "Dark"), ("light", "Light")] + [
+    (k, f"Neon {label.lower()}") for k, (label, _c) in NEON.items()]
+
+
+def styled_css(c):
+    """A colourful look's gradient window (and stars), and Stellio's cards and round buttons."""
+    acc, fg, light, bg = c["accent"], c["foreground"], c["lighter_background"], c["background"]
+    light_mode = c["mode"] == "light"
+    out = f"""
+.player {{ background-color: {rgba(light, 0.92 if light_mode else 0.55)}; border-top: none; border-radius: 18px;
+  margin: 0 10px 10px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, {0.10 if light_mode else 0.35}); }}
+.player.expanded {{ margin: 0; border-radius: 0; box-shadow: none; }}
+.drawer {{ background-color: {rgba(light, 0.98 if light_mode else 0.96)}; }}
+.bigart {{ border-radius: 22px; }}
+"""
+    if c.get("gradient"):
+        cols = c["gradient"].split(",")
+        stops = ", ".join(f"{col} {round(i * 100 / (len(cols) - 1))}%" for i, col in enumerate(cols))
+        layers = []
+        if c.get("stars"):
+            import random as _r
+            rnd = _r.Random(7)   # the same sky each time
+            for _ in range(46):
+                x, y, size = rnd.randint(0, 100), rnd.randint(0, 100), rnd.choice((1, 1, 1, 1.5, 2))
+                alpha = rnd.choice((0.35, 0.5, 0.7, 0.9))
+                layers.append(f"radial-gradient(circle {size}px at {x}% {y}%, rgba(255,255,255,{alpha}), rgba(255,255,255,0))")
+        layers.append(f"linear-gradient(165deg, {stops})")
+        out += f"window.main {{ background-image: {', '.join(layers)}; }}\n"
+        out += f".drawer {{ background-image: linear-gradient(180deg, {rgba(cols[0], 0.97)}, {rgba(cols[-1], 0.97)}); }}\n"
+    return out
+
+
 def load_theme(look="default"):
     colors = dict(DEFAULT_COLORS)
     try:
@@ -394,18 +476,19 @@ def load_theme(look="default"):
         pass
     if look in LOOKS:
         colors = dict(LOOKS[look])
+    # A clean sans-serif and rounded corners, Poweramp-like (the colours are the look's, as ever).
     if WINDOWS:
-        return {"c": colors, "font": "Consolas", "radius": 4}
+        return {"c": colors, "font": "Segoe UI", "radius": 10}
     try:
-        font = subprocess.run(["fc-match", "monospace", "-f", "%{family}"], capture_output=True,
-                              text=True, timeout=2).stdout.split(",")[0] or "monospace"
+        font = subprocess.run(["fc-match", "sans-serif", "-f", "%{family}"], capture_output=True,
+                              text=True, timeout=2).stdout.split(",")[0] or "sans-serif"
     except (OSError, subprocess.SubprocessError):
-        font = "monospace"
-    radius = 0
+        font = "sans-serif"
+    radius = 10
     try:
         out = subprocess.run(["hyprctl", "-j", "getoption", "decoration:rounding"],
                              capture_output=True, text=True, timeout=2).stdout
-        radius = max(0, min(int(json.loads(out).get("int", 0)), 14))
+        radius = max(10, min(int(json.loads(out).get("int", 0)), 16))
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return {"c": colors, "font": font, "radius": radius}
@@ -446,7 +529,11 @@ button.ctl:checked, button.ctl.on, button.ctl.liked {{ text-shadow: 0 0 8px {acc
 .tabs button:checked, toggle-group.sources > toggle:checked {{ box-shadow: 0 0 8px {rgba(acc, 0.55)}; text-shadow: 0 0 6px {rgba(acc, 0.7)}; }}
 listview.tracks > row > .song.playing {{ box-shadow: inset 3px 0 6px -2px {acc}; }}
 listview.tracks > row > .song.playing .title {{ text-shadow: 0 0 6px {rgba(acc, 0.7)}; }}
-.brand {{ color: {acc}; text-shadow: 0 0 8px {rgba(acc, 0.8)}; }}
+.brand, .nav-title {{ color: {acc}; text-shadow: 0 0 8px {rgba(acc, 0.8)}; }}
+.bigart {{ border: 1px solid {rgba(acc, 0.6)}; box-shadow: 0 0 26px {rgba(acc, 0.45)}; }}
+.cat-icon {{ box-shadow: 0 0 8px {rgba(acc, 0.35)}; }}
+.np-title {{ text-shadow: 0 0 10px {rgba(acc, 0.55)}; }}
+button.tool.on {{ -gtk-icon-shadow: 0 0 6px {acc}; }}
 progressbar progress {{ background-color: {acc}; box-shadow: 0 0 8px {acc}; }}
 entry:focus-within {{ box-shadow: 0 0 0 1px {acc}, 0 0 10px {rgba(acc, 0.5)}; }}
 """
@@ -468,7 +555,7 @@ def theme_css(t):
     defs = "\n".join(f"@define-color {n} {v};" for n, v in named.items())
     return f"""
 {defs}
-window, window * {{ font-family: "{t['font']}", monospace; }}
+window, window * {{ font-family: "{t['font']}", sans-serif; }}
 window {{ background-color: {rgba(bg, OPACITY)}; color: {fg}; font-size: 10.5pt; }}
 .top {{ padding: 14px 14px 6px 14px; }}
 .brand {{ font-weight: 800; letter-spacing: 1px; color: {fg}; }}
@@ -590,8 +677,71 @@ checkbutton.pick {{ padding: 0; margin: 0 2px 0 0; }}
 .actions {{ padding: 2px 8px 6px 8px; }}
 scale.tone {{ padding: 4px 0; }}
 scale.tone > trough > slider {{ opacity: 1; }}
+.nav {{ padding: 0; }}
+.nav-sub {{ color: {muted}; font-size: 0.8em; }}
+.queue-head {{ padding: 10px 10px 6px 10px; }}
+.drawer {{ background-color: {light}; border-right: 1px solid {line}; }}
+.drawer-list {{ padding: 12px 10px 14px 10px; }}
+.source-card {{ background-color: {rgba(fg, 0.05)}; border-radius: 16px; padding: 12px 12px 10px 12px; }}
+.drawer-src {{ font-weight: 700; font-size: 1.08em; color: {fg}; }}
+.accent {{ color: {acc}; }}
+list.drawer-items {{ background: transparent; }}
+list.drawer-items > row.drawer-item {{ border-radius: 14px; padding: 10px 14px; margin: 1px 0; color: {fg}; outline: none; }}
+list.drawer-items > row.drawer-item image, list.drawer-items > row.drawer-item drawingarea {{ color: {acc}; }}
+list.drawer-items > row.drawer-item:hover {{ background-color: {rgba(acc, 0.08)}; }}
+list.drawer-items > row.drawer-item.on {{ background-color: {acc}; color: {darker if c["mode"] != "light" else "#ffffff"};
+  box-shadow: 0 4px 14px {rgba(acc, 0.35)}; }}
+list.drawer-items > row.drawer-item.on drawingarea {{ color: {darker if c["mode"] != "light" else "#ffffff"}; }}
+list.drawer-items > row.drawer-item.quiet, list.drawer-items > row.drawer-item.quiet drawingarea {{ color: {muted}; }}
+list.drawer-items > row.drawer-sep {{ padding: 6px 4px; }}
+list.drawer-items label {{ font-weight: 500; font-size: 1.02em; }}
+.settings-page .accounts {{ padding: 6px 16px 30px 16px; }}
+.eq-page .eq {{ padding: 6px 16px 30px 16px; }}
+.eq-output {{ background-color: {rgba(fg, 0.05)}; border-radius: 16px; padding: 10px 12px; }}
+.out-chip {{ background-color: {rgba(acc, 0.10)}; border-radius: 999px; padding: 2px 4px 2px 10px; color: {fg}; font-size: 0.86em; }}
+.out-chip drawingarea {{ color: {acc}; }}
+menubutton.pill > button {{ background: transparent; color: {muted}; border: 1px solid {line}; border-radius: {R}px;
+  padding: 2px 10px; min-height: 0; box-shadow: none; font-weight: 700; font-size: 0.86em; }}
+menubutton.pill > button:hover {{ color: {fg}; }}
+button.option {{ padding: 9px 12px; }}
+button.option drawingarea {{ color: {acc}; }}
+.nav-title {{ font-weight: 800; font-size: 1.35em; color: {fg}; }}
+.nav-title.home {{ font-size: 1.6em; }}
+list.home {{ background: transparent; padding: 2px 8px 14px 8px; }}
+list.home > row {{ border-radius: {R}px; padding: 7px 10px; margin: 1px 0; background: transparent; outline: none; }}
+list.home > row:hover {{ background-color: {rgba(acc, 0.08)}; }}
+list.home > row:focus-visible {{ background-color: {rgba(acc, 0.12)}; }}
+list.home > row.head {{ padding: 12px 8px 4px 8px; }}
+list.home > row.head:hover {{ background: transparent; }}
+.cat-icon {{ background-color: {rgba(acc, 0.14)}; border-radius: {R}px; color: {acc}; }}
+.cat-label {{ font-weight: 700; font-size: 1.06em; color: {fg}; }}
+.cat-count {{ color: {muted}; font-feature-settings: "tnum"; }}
+.chev {{ color: {muted}; }}
+.nowplaying {{ padding: 4px 22px 4px 22px; }}
+.bigart {{ border-radius: {max(R, 16)}px; background-color: {light}; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }}
+.np-kicker {{ color: {muted}; font-size: 0.74em; font-weight: 700; letter-spacing: 1.5px; }}
+.np-from {{ color: {fg}; font-size: 0.86em; }}
+.np-title {{ font-weight: 800; font-size: 1.45em; color: {fg}; }}
+.np-artist {{ color: {acc}; font-size: 1.04em; }}
+.np-album {{ color: {muted}; }}
+.badge {{ color: {acc}; border: 1px solid {rgba(acc, 0.55)}; border-radius: 6px; padding: 0 5px; font-size: 0.74em; font-weight: 800; }}
+.badge.quiet {{ color: {muted}; border-color: {rgba(muted, 0.55)}; }}
+.wave {{ color: {acc}; }}
+.np-times {{ color: {muted}; font-size: 0.8em; font-feature-settings: "tnum"; }}
+button.tool {{ background: transparent; border: none; box-shadow: none; border-radius: {R}px; padding: 4px 8px;
+  color: {rgba(fg, 0.85)}; min-height: 0; }}
+button.tool:hover {{ background-color: {rgba(acc, 0.08)}; color: {fg}; }}
+button.tool.on {{ color: {acc}; }}
+.tool-label {{ font-size: 0.72em; color: {muted}; }}
+button.tool.on .tool-label {{ color: {acc}; }}
+.player.expanded {{ background: transparent; border-top: none; padding-top: 0; }}
+.player.expanded button.play {{ min-width: 64px; min-height: 64px; border-radius: 999px; box-shadow: 0 6px 18px {rgba(acc, 0.35)}; }}
+.player.expanded button.play image {{ -gtk-icon-size: 26px; }}
+.player.expanded button.ctl image {{ -gtk-icon-size: 20px; }}
+.player button.play {{ border-radius: 999px; }}
+.player .mini-art {{ border-radius: {R}px; }}
 window.wrapped {{ background-color: {darker}; }}
-window.wrapped, window.wrapped * {{ font-family: "{t['font']}", monospace; }}
+window.wrapped, window.wrapped * {{ font-family: "{t['font']}", sans-serif; }}
 .slide {{ padding: 104px 30px 40px 30px; }}
 """ + "".join(f".slide.s{i} {{ background-color: {darker}; "
               f"background-image: radial-gradient(circle at 92% 8%, {rgba(c[k2], 0.30)}, {rgba(darker, 0.0)} 38%), "
@@ -643,7 +793,7 @@ window.wrapped.big .w-sub {{ font-size: 1.35em; }}
 window.wrapped.big .w-small {{ font-size: 1.05em; }}
 window.wrapped.big .w-name {{ font-size: 1.35em; }}
 window.wrapped.big .w-rank {{ font-size: 1.6em; min-width: 40px; }}
-""" + (neon_css(acc) if c.get("glow") else "") + f"""
+""" + (neon_css(acc) if c.get("glow") else "") + (styled_css(c) if c.get("styled") else "") + f"""
 window.wrapped.ws-neon, window.wrapped.ws-neon .slide {{ background-color: #05050a; }}
 """ + "".join(f"window.wrapped.ws-neon .slide.s{i} {{ background-image: radial-gradient(circle at 85% 15%, "
               f"{rgba(c[k], 0.45)}, rgba(0,0,0,0) 40%), radial-gradient(circle at 10% 90%, {rgba(c[k2], 0.35)}, "
@@ -953,6 +1103,7 @@ class Favorites:
 
 # A song left with more than this much of it still to go was skipped; heard to here, it counts as heard out.
 SKIP_LEFT = 15
+MAX_QUEUES = 12   # queues kept to go back to (one for each list you played from), the oldest dropped
 
 
 class SongStats:
@@ -1205,7 +1356,7 @@ class LocalFiles:
                         continue
                     key = str(path.resolve())
                     old = self.files.get(key)
-                    if old and old["mtime"] == st.st_mtime and old["size"] == st.st_size:
+                    if old and old["mtime"] == st.st_mtime and old["size"] == st.st_size and "genre" in old["track"]:
                         seen[key] = old
                         continue
                     t = track_from_file(path)
@@ -1585,7 +1736,7 @@ class Tidal:
 
     # ---- as a library: your favourites and playlists, search and radio ----
     key, name = "tidal", "Tidal"
-    hint = "Connect Tidal in the accounts menu (top right)\nto see your favourites and playlists."
+    hint = "Connect Tidal in Settings (top right)\nto see your favourites and playlists."
 
     @property
     def signed_in(self):
@@ -2004,7 +2155,7 @@ class Downloader:
                 if trouble:
                     raise RuntimeError(f"not on YouTube Music, and Tidal: {trouble}")
                 raise NoLosslessMatch("not on Tidal or YouTube Music" if tidal else
-                                      "not on YouTube Music (connect Tidal in the accounts menu for more)")
+                                      "not on YouTube Music (connect Tidal in Settings for more)")
             return (*got, "YouTube")
 
         def finish(res, err):
@@ -2076,7 +2227,7 @@ class Downloader:
     def _download(self, track):
         vid = track["id"]
         if not (self.tidal and self.tidal.connected):
-            raise RuntimeError("connect Tidal in the accounts menu first")
+            raise RuntimeError("connect Tidal in Settings first")
         match = self.tidal.resolve(track)
         if not match:
             self.lib.mark_missing(vid)
@@ -2760,7 +2911,7 @@ def track_from_spotify(t, album=None):
 class Spotify:
     """Your Spotify library: liked songs, playlists, search and artists' albums."""
     key, name = "spotify", "Spotify"
-    hint = "Connect Spotify in the accounts menu (top right).\nIt needs a Spotify developer app of yours."
+    hint = "Connect Spotify in Settings (top right).\nIt needs a Spotify developer app of yours."
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -3268,7 +3419,141 @@ EQ_PRESETS = {
 # Bass and treble: a low and a high shelf on top of the bands, (type, Hz, Q).
 TONE = {"bass": ("ls", 100, 0.71), "treble": ("hs", 8000, 0.71)}
 EQ_DEFAULT = {"on": False, "headphones": "off", "preset": "flat", "bands": [0.0] * 10, "custom": [0.0] * 10,
-              "bass": 0.0, "treble": 0.0}
+              "bass": 0.0, "treble": 0.0, "count": 10, "per_output": True, "outputs": {}}
+# How many bands: 3, 5, 10, 15 or 31 (a third of an octave each, like a graphic EQ's).
+EQ_COUNTS = (3, 5, 10, 15, 31)
+# What each output keeps of its own: the whole EQ, as it was set there last.
+EQ_OUTPUT_KEYS = ("on", "headphones", "preset", "bands", "custom", "bass", "treble", "count")
+
+
+def eq_bands_for(n):
+    return {3: (100, 1000, 10000), 5: (60, 230, 910, 3600, 14000),
+            15: (25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000),
+            31: (20, 25, 31, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600,
+                 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000)}.get(n, EQ_BANDS)
+
+
+def eq_q_for(n):
+    """Each band's width: narrower the more bands there are, so they still blend."""
+    return {3: 0.45, 5: 0.75, 15: 2.15, 31: 4.32}.get(n, EQ_Q)
+
+
+def eq_label(hz):
+    return (f"{hz // 1000}k" if hz % 1000 == 0 else f"{hz / 1000:.1f}k") if hz >= 1000 else str(hz)
+
+
+def eq_resample(gains, frm, n):
+    """gains (at the frequencies frm) moved onto n bands: read off the curve, in log frequency."""
+    to = eq_bands_for(n)
+    if len(gains) == len(to) and tuple(frm) == tuple(to):
+        return [float(g) for g in gains]
+    xs = [math.log(f) for f in frm]
+    out = []
+    for hz in to:
+        x = math.log(hz)
+        if x <= xs[0]:
+            out.append(float(gains[0]))
+        elif x >= xs[-1]:
+            out.append(float(gains[-1]))
+        else:
+            j = next(k for k in range(1, len(xs)) if xs[k] >= x)
+            t = (x - xs[j - 1]) / (xs[j] - xs[j - 1])
+            out.append(round((gains[j - 1] + (gains[j] - gains[j - 1]) * t) * 2) / 2)
+    return out
+
+
+def eq_preset_bands(key, n):
+    """A preset's bands on n bands (None for Custom)."""
+    g = EQ_PRESETS.get(key, (None, None))[1]
+    return None if g is None else eq_resample(list(g), EQ_BANDS, n)
+
+
+CAR_WORDS = re.compile(r"(?i)\b(car|auto|sync|uconnect|carplay|toyota|ford|honda|bmw|audi|mazda|kia|hyundai|chevy|"
+                       r"nissan|tesla|subaru|jeep|dodge|mercedes|lexus|volvo|vw|volkswagen|peugeot|renault|skoda)\b")
+
+
+def output_info():
+    """(blocking) Where the sound goes now: (key, name, kind), kind one of speaker, wired, bluetooth,
+    car or usb; None if it can't be told. The speakers and the headphone jack of one sound card are
+    two outputs (each keeps its own EQ)."""
+    try:
+        if WINDOWS:
+            return windows_output()
+        out = subprocess.run(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    props = dict(re.findall(r'^\s*\*?\s*([\w.\-]+) = "([^"]*)"', out, re.M))
+    name = props.get("node.description") or props.get("device.description") or props.get("node.nick")
+    if not name:
+        return None
+    bus, ff = props.get("device.bus", ""), props.get("device.form-factor", "")
+    if bus == "bluetooth" or props.get("device.api") == "bluez5":
+        return f"bt:{name}", name, "car" if ff == "car" or CAR_WORDS.search(name) else "bluetooth"
+    if bus == "usb":
+        return f"usb:{name}", name, "usb"
+    port = ""
+    try:   # a sound card's jack or its speakers: which port is on
+        sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5).stdout.strip()
+        listing = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True, timeout=5).stdout
+        for block in listing.split("\nSink #"):
+            if f"Name: {sink}" in block:
+                m = re.search(r"Active Port:\s*(\S+)", block)
+                port = m.group(1) if m else ""
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if "headphone" in port or ff in ("headphone", "headset"):
+        return f"wired:{name}", f"{name} · headphones", "wired"
+    return f"out:{name}" + (f":{port}" if port else ""), name, "speaker"
+
+
+def windows_output():
+    """Windows' default output, from the registry: the active one most recently made the default."""
+    import winreg
+    base = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
+    best = None
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
+        for i in range(winreg.QueryInfoKey(root)[0]):
+            guid = winreg.EnumKey(root, i)
+            try:
+                with winreg.OpenKey(root, guid) as k:
+                    if winreg.QueryValueEx(k, "DeviceState")[0] != 1:
+                        continue
+                    try:
+                        raw = winreg.QueryValueEx(k, "Role:0")[0]
+                        st = struct.unpack("<8H", raw[:16])
+                        when = (st[0], st[1], st[3], st[4], st[5], st[6], st[7])
+                    except OSError:
+                        when = (0,)
+                    with winreg.OpenKey(k, "Properties") as pk:
+                        def prop(name):
+                            try:
+                                return winreg.QueryValueEx(pk, name)[0]
+                            except OSError:
+                                return None
+                        desc = prop("{a45c254e-df1c-4efd-8020-67d146a850e0},2") or "Speakers"
+                        iface = prop("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") or ""
+                        form = prop("{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},0")
+                        everything = " ".join(str(prop(n) or "") for n in (
+                            "{b3f8fa53-0004-438e-9003-51a46e139bfc},2", "{a45c254e-df1c-4efd-8020-67d146a850e0},24",
+                            "{233164c8-1b2c-4c7d-bc68-b671687a2567},1")) + " " + iface
+                    if best is None or when > best[0]:
+                        best = (when, desc, iface, form, everything)
+            except OSError:
+                continue
+    if not best:
+        return None
+    _w, desc, iface, form, everything = best
+    name = f"{desc} ({iface})" if iface else desc
+    low = everything.lower()
+    if "bth" in low or "bluetooth" in low:
+        kind = "car" if CAR_WORDS.search(iface) else "bluetooth"
+    elif "usb" in low:
+        kind = "usb"
+    elif form in (3, 5):   # headphones, a headset
+        kind = "wired"
+    else:
+        kind = "speaker"
+    return f"{kind}:{name}", name, kind
 
 
 def biquad_db(kind, hz, gain, q, f, rate=48000):
@@ -3301,7 +3586,8 @@ def eq_graph(correction, bands, preamp, tone=None):
     names = {"pk": "equalizer", "ls": "lowshelf", "hs": "highshelf"}
     parts = ["aformat=sample_fmts=dblp", f"volume@pre=volume={preamp}dB:precision=double"]
     parts += [f"{names[k]}@c{i}=f={hz}:t=q:w={q}:g={g}" for i, (k, hz, g, q) in enumerate(correction)]
-    parts += [f"equalizer@g{i}=f={hz}:t=q:w={EQ_Q}:g={g}" for i, (hz, g) in enumerate(zip(EQ_BANDS, bands))]
+    q = eq_q_for(len(bands))
+    parts += [f"equalizer@g{i}=f={hz}:t=q:w={q}:g={g}" for i, (hz, g) in enumerate(zip(eq_bands_for(len(bands)), bands))]
     parts += [f"{names[k]}@{name}=f={hz}:t=q:w={q}:g={(tone or {}).get(name, 0)}" for name, (k, hz, q) in TONE.items()]
     return ",".join(parts)
 
@@ -3677,7 +3963,7 @@ class DiscordPresence:
         self.app = app
         self.want, self.sent = None, None   # the activity to show, and what Discord shows (None: nothing)
         self.conn = None
-        self.status = ""                    # for the accounts menu: "" (not tried yet), "on", or why not
+        self.status = ""                    # for Settings: "" (not tried yet), "on", or why not
         self.cond = threading.Condition()
         self.soon = None
         threading.Thread(target=self.run, daemon=True, name="discord").start()
@@ -4098,6 +4384,25 @@ class Lyrics:
             except (OSError, ValueError):
                 pass
         return got, reached
+
+    def search(self, track, artist, title):
+        """(blocking) The lyrics by another artist and title (a song whose names don't match what the
+        lyrics sites have), kept as the song's own, offline too. None if nobody has them."""
+        m = dict(song_meta(self.app.lib, track), artist=artist.strip(), title=title.strip(), tidal=None)
+        got, reached = self.fetch(m)
+        if reached and self.has(got):
+            write_atomic(LYRICS_CACHE / f"{safe_name(track['id'])}.json", json.dumps(got | {"time": time.time()}))
+        return got if self.has(got) else None
+
+    @staticmethod
+    def words(got):
+        """Just the words of what was found: the plain lyrics, else the timed ones without their times."""
+        if not got:
+            return ""
+        plain = (got.get("plain") or "").strip()
+        if plain:
+            return plain
+        return "\n".join(line for _t, line in parse_lrc(got.get("synced") or "")).strip()
 
     def notes(self, got):
         """(blocking) Genius's annotations of the song whose lyrics are got (see genius_notes),
@@ -5529,7 +5834,7 @@ def greeting():
 
 # =============================================================================
 # Phone remote: the Android app plays here instead of on the phone. Off until
-# you switch it on in the accounts menu; then a small HTTP API on your network
+# you switch it on in Settings; then a small HTTP API on your network
 # (port REMOTE_PORT) answers phones paired once with the code the menu shows.
 # =============================================================================
 
@@ -5568,7 +5873,7 @@ class Updater:
         return next((x["browser_download_url"] for x in rel.get("assets", []) if x.get("name") == "OmarchyMusic-Setup.exe"), None)
 
     def check_soon(self):
-        """The accounts menu opened: look again if the last look is over ten minutes old."""
+        """The Settings opened: look again if the last look is over ten minutes old."""
         if time.time() - self.checked_at > 600:
             self.check()
 
@@ -5590,7 +5895,7 @@ class Updater:
                 return
             tag = rel["tag_name"]
             if tag != self.latest:
-                self.app.toast(f"VarMusic {tag.lstrip('v')} is out: update it in the accounts menu (☰)")
+                self.app.toast(f"VarMusic {tag.lstrip('v')} is out: update it in Settings (⚙)")
             self.latest = tag
             self.installer = self.setup_of(rel)
             self.app.accounts_changed()
@@ -5610,7 +5915,8 @@ class Updater:
             raise RuntimeError("this copy isn't a git clone: get it again from GitHub")
         if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
             raise RuntimeError("this copy has changes of yours: update it with git")
-        for args in (("fetch", "--tags", "origin"), ("merge", "--ff-only", self.latest)):
+        # From the repository the releases come from, whichever one this copy was cloned from.
+        for args in (("fetch", "--tags", f"https://github.com/{REPO}.git"), ("merge", "--ff-only", self.latest)):
             r = git(*args)
             if r.returncode:
                 raise RuntimeError((r.stderr.strip().splitlines() or ["git " + args[0] + " failed"])[-1])
@@ -5652,7 +5958,7 @@ class Updater:
             return
         self.state = "restart"
         self.app.accounts_changed()
-        self.app.toast(f"Updated to {self.latest.lstrip('v')}: restart it from the accounts menu")
+        self.app.toast(f"Updated to {self.latest.lstrip('v')}: restart it from Settings")
 
     def restart(self):
         """Start the new copy once this one has quit."""
@@ -5987,6 +6293,310 @@ def scroll_sideways(row):
     wheel.connect("scroll", scrolled)
     sw.add_controller(wheel)
     return sw
+
+
+ICONS = ("play", "pause", "next", "prev", "skip", "shuffle", "repeat", "repeat_one", "heart", "heart_line", "star",
+         "star_line", "eq", "lyrics", "vis", "queue", "more", "back", "down", "search", "menu", "note", "person", "clock",
+         "chart", "mood", "copy", "disc", "playlist", "sparkle", "cloud", "folder", "check", "close", "plus", "chev")
+
+
+def draw_icon(cr, name, size):
+    """One of the app's icons on a 24 x 24 grid scaled to size, in the current colour (the phone draws the same)."""
+    import math
+    u = size / 24.0
+    cr.set_line_width(2 * u)
+    cr.set_line_cap(1)    # round
+    cr.set_line_join(1)
+
+    def line(*p, close=False, fill=False):
+        cr.move_to(p[0] * u, p[1] * u)
+        for i in range(2, len(p), 2):
+            cr.line_to(p[i] * u, p[i + 1] * u)
+        if close:
+            cr.close_path()
+        cr.fill() if fill else cr.stroke()
+
+    def rect(x, y, w, h, r=1.2):
+        x, y, w, h, r = x * u, y * u, w * u, h * u, r * u
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 1.5 * math.pi)
+        cr.close_path()
+        cr.fill()
+
+    def ring(x, y, r):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, 0, 2 * math.pi)
+        cr.stroke()
+
+    def dot(x, y, r):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, 0, 2 * math.pi)
+        cr.fill()
+
+    def arc(x, y, r, a0, a1):
+        cr.new_sub_path()
+        cr.arc(x * u, y * u, r * u, math.radians(a0), math.radians(a1))
+        cr.stroke()
+
+    def heart(fill):
+        cr.move_to(12 * u, 20.5 * u)
+        cr.curve_to(5 * u, 15 * u, 2 * u, 11.5 * u, 2 * u, 8.2 * u)
+        cr.curve_to(2 * u, 5.5 * u, 4.2 * u, 3.5 * u, 6.8 * u, 3.5 * u)
+        cr.curve_to(8.8 * u, 3.5 * u, 10.8 * u, 4.6 * u, 12 * u, 6.5 * u)
+        cr.curve_to(13.2 * u, 4.6 * u, 15.2 * u, 3.5 * u, 17.2 * u, 3.5 * u)
+        cr.curve_to(19.8 * u, 3.5 * u, 22 * u, 5.5 * u, 22 * u, 8.2 * u)
+        cr.curve_to(22 * u, 11.5 * u, 19 * u, 15 * u, 12 * u, 20.5 * u)
+        cr.close_path()
+        cr.fill() if fill else cr.stroke()
+
+    def star(fill):
+        for i in range(10):
+            r = 10 if i % 2 == 0 else 4.3
+            a = -math.pi / 2 + i * math.pi / 5
+            x, y = 12 + r * math.cos(a), 12.6 + r * math.sin(a)
+            (cr.move_to if i == 0 else cr.line_to)(x * u, y * u)
+        cr.close_path()
+        if fill:
+            cr.fill()
+        else:
+            cr.set_line_width(1.8 * u)
+            cr.stroke()
+
+    n = name
+    if n == "play":
+        line(7, 4.5, 19.5, 12, 7, 19.5, close=True, fill=True)
+    elif n == "pause":
+        rect(6, 4.5, 4, 15); rect(14, 4.5, 4, 15)
+    elif n == "next":
+        line(4.5, 5.5, 14.5, 12, 4.5, 18.5, close=True, fill=True); rect(16.5, 5.5, 3, 13)
+    elif n == "prev":
+        line(19.5, 5.5, 9.5, 12, 19.5, 18.5, close=True, fill=True); rect(4.5, 5.5, 3, 13)
+    elif n == "skip":
+        line(5, 6, 11, 12, 5, 18); line(12, 6, 18, 12, 12, 18); line(20, 6, 20, 18)
+    elif n == "shuffle":
+        line(3, 7, 7.5, 7, 15.5, 17, 20, 17); line(3, 17, 7.5, 17, 15.5, 7, 20, 7)
+        line(17.5, 4.5, 20, 7, 17.5, 9.5); line(17.5, 14.5, 20, 17, 17.5, 19.5)
+    elif n in ("repeat", "repeat_one"):
+        line(4, 11, 4, 7, 19.5, 7); line(17, 4.5, 19.5, 7, 17, 9.5)
+        line(20, 13, 20, 17, 4.5, 17); line(7, 14.5, 4.5, 17, 7, 19.5)
+        if n == "repeat_one":
+            line(11, 10.5, 12.5, 9.8, 12.5, 14.2)
+    elif n in ("heart", "heart_line"):
+        heart(n == "heart")
+    elif n in ("star", "star_line"):
+        star(n == "star")
+    elif n == "eq":
+        line(6, 4, 6, 20); line(12, 4, 12, 20); line(18, 4, 18, 20)
+        dot(6, 14, 2.6); dot(12, 8, 2.6); dot(18, 15.5, 2.6)
+    elif n == "lyrics":
+        line(4, 6, 20, 6); line(4, 11, 17, 11); line(4, 16, 11, 16); dot(17, 18, 2.2); line(19, 18, 19, 12, 21, 12.6)
+    elif n == "vis":
+        rect(3.5, 12, 3, 8, 1); rect(8.5, 6, 3, 14, 1); rect(13.5, 9.5, 3, 10.5, 1); rect(18.5, 3.5, 3, 16.5, 1)
+    elif n == "queue":
+        line(4, 6, 16, 6); line(4, 11, 16, 11); line(4, 16, 10.5, 16); line(14, 13.5, 20.5, 17, 14, 20.5, close=True, fill=True)
+    elif n == "more":
+        dot(12, 5, 2); dot(12, 12, 2); dot(12, 19, 2)
+    elif n == "back":
+        line(15, 4.5, 7.5, 12, 15, 19.5)
+    elif n == "chev":
+        line(9, 4.5, 16.5, 12, 9, 19.5)
+    elif n == "down":
+        line(5, 9, 12, 16, 19, 9)
+    elif n == "search":
+        ring(10.5, 10.5, 6.5); line(15.5, 15.5, 20.5, 20.5)
+    elif n == "menu":
+        line(4, 6.5, 20, 6.5); line(4, 12, 20, 12); line(4, 17.5, 20, 17.5)
+    elif n == "note":
+        dot(7.5, 17.5, 3); dot(17.5, 15.5, 3); line(10.2, 17.5, 10.2, 5.5, 20.2, 3.5, 20.2, 15.5)
+    elif n == "person":
+        ring(12, 8, 4); arc(12, 20.5, 7.5, 180, 360)
+    elif n == "clock":
+        ring(12, 12, 9); line(12, 7, 12, 12, 15.5, 14)
+    elif n == "chart":
+        rect(4, 13, 4, 7); rect(10, 8, 4, 12); rect(16, 3.5, 4, 16.5)
+    elif n == "mood":
+        ring(12, 12, 9); dot(9, 10, 1.4); dot(15, 10, 1.4); arc(12, 12.5, 4.5, 20, 160)
+    elif n == "copy":
+        cr.save(); rect_path = (8, 8, 12, 12)
+        x, y, w, h = (v * u for v in rect_path)
+        cr.rectangle(x, y, w, h); cr.stroke(); cr.restore()
+        line(16, 4.5, 6, 4.5, 4, 6.5, 4, 16)
+    elif n == "disc":
+        ring(12, 12, 9); dot(12, 12, 2.2); arc(12, 12, 6, 200, 260)
+    elif n == "playlist":
+        line(4, 6, 15, 6); line(4, 11, 15, 11); line(4, 16, 10, 16); dot(15.5, 18, 2.4); line(17.9, 18, 17.9, 9, 21, 10)
+    elif n == "sparkle":
+        line(12, 2.5, 14, 10, 21.5, 12, 14, 14, 12, 21.5, 10, 14, 2.5, 12, 10, 10, close=True, fill=True); dot(19, 5, 1.4)
+    elif n == "cloud":
+        cr.move_to(7 * u, 18.5 * u)
+        cr.curve_to(3.8 * u, 18.5 * u, 2.5 * u, 15.8 * u, 3.4 * u, 13.6 * u)
+        cr.curve_to(4.1 * u, 11.9 * u, 5.6 * u, 11.2 * u, 7 * u, 11.4 * u)
+        cr.curve_to(7.5 * u, 7.8 * u, 10 * u, 5.5 * u, 13 * u, 5.5 * u)
+        cr.curve_to(16.5 * u, 5.5 * u, 18.6 * u, 8.2 * u, 18.8 * u, 10.8 * u)
+        cr.curve_to(21 * u, 11.2 * u, 22 * u, 13.2 * u, 21.6 * u, 15.2 * u)
+        cr.curve_to(21.2 * u, 17.2 * u, 19.6 * u, 18.5 * u, 17.5 * u, 18.5 * u)
+        cr.close_path(); cr.stroke()
+    elif n == "folder":
+        line(3, 18.5, 3, 5.5, 9, 5.5, 11, 8, 21, 8, 21, 18.5, 3, 18.5)
+    elif n == "check":
+        line(4.5, 12.5, 9.5, 17.5, 19.5, 6.5)
+    elif n == "close":
+        line(5.5, 5.5, 18.5, 18.5); line(18.5, 5.5, 5.5, 18.5)
+    elif n == "plus":
+        line(12, 4.5, 12, 19.5); line(4.5, 12, 19.5, 12)
+    elif n == "settings":
+        ring(12, 12, 3.2); ring(12, 12, 7)
+        for k in range(8):
+            ang = k * math.pi / 4
+            line(12 + 7 * math.cos(ang), 12 + 7 * math.sin(ang), 12 + 9.8 * math.cos(ang), 12 + 9.8 * math.sin(ang))
+    elif n == "genre":
+        ring(8.5, 15.5, 4.5); dot(8.5, 15.5, 1.3); line(11.8, 12.2, 19, 5); line(17, 3.5, 20.5, 7)
+    elif n == "select":
+        line(4, 8, 4, 4, 8, 4); line(16, 4, 20, 4, 20, 8); line(20, 16, 20, 20, 16, 20); line(8, 20, 4, 20, 4, 16)
+        line(8.5, 12, 11, 14.5, 15.5, 9.5)
+    elif n == "edit":
+        line(4, 20, 4.5, 15.5, 15.5, 4.5, 19.5, 8.5, 8.5, 19.5, 4, 20); line(13, 7, 17, 11)
+    elif n == "trash":
+        line(4, 6.5, 20, 6.5); line(9, 6.5, 9, 3.8, 15, 3.8, 15, 6.5); line(6, 6.5, 7, 20.5, 17, 20.5, 18, 6.5)
+        line(10, 10, 10, 17); line(14, 10, 14, 17)
+    elif n == "headphones":
+        arc(12, 12, 8, 180, 360)
+        cr.set_line_width(2 * u)
+        rect(3, 12, 4.5, 8, 1.5); rect(16.5, 12, 4.5, 8, 1.5)
+    elif n == "car":
+        line(3, 15, 4.5, 9.5, 7, 6, 17, 6, 19.5, 9.5, 21, 15, 21, 18, 3, 18, 3, 15)
+        line(4.5, 10, 19.5, 10); dot(7.5, 14.5, 1.4); dot(16.5, 14.5, 1.4)
+    elif n == "bluetooth":
+        line(7, 7.5, 17, 16.5, 12, 21, 12, 3, 17, 7.5, 7, 16.5)
+    elif n == "speaker":
+        line(4, 9.5, 8, 9.5, 13, 5, 13, 19, 8, 14.5, 4, 14.5, close=True)
+        arc(13, 12, 4, -50, 50); arc(13, 12, 7.5, -50, 50)
+    elif n == "usb":
+        line(12, 3, 12, 18); line(9.5, 5.5, 12, 3, 14.5, 5.5); ring(12, 19.5, 1.8)
+        line(12, 13, 7, 10, 7, 7.5); line(12, 15, 17, 12, 17, 9); dot(7, 6.5, 1.3); rect(15.8, 7, 2.4, 2.4, 0.3)
+    elif n == "art":
+        cr.new_sub_path(); cr.rectangle(3.5 * u, 3.5 * u, 17 * u, 17 * u); cr.stroke()
+        ring(12, 12, 4); dot(12, 12, 1.2)
+
+
+def widget_color(w):
+    """A widget's CSS colour, as (r, g, b, a)."""
+    try:
+        c = w.get_color()
+    except AttributeError:   # GTK before 4.10
+        c = w.get_style_context().get_color()
+    return c.red, c.green, c.blue, c.alpha
+
+
+class Icon(Gtk.DrawingArea):
+    """A drawn icon in its CSS colour (draw_icon)."""
+
+    def __init__(self, name, size=22, **kw):
+        kw.setdefault("content_width", size)
+        kw.setdefault("content_height", size)
+        super().__init__(can_target=False, **kw)
+        self.name, self.size = name, size
+        self.set_draw_func(self._draw)
+
+    def set_name(self, name):
+        if name != self.name:
+            self.name = name
+            self.queue_draw()
+
+    def set_size(self, size):
+        if size != self.size:
+            self.size = size
+            self.set_content_width(size)
+            self.set_content_height(size)
+            self.queue_draw()
+
+    def _draw(self, _area, cr, w, h):
+        cr.set_source_rgba(*widget_color(self))
+        cr.translate((w - self.size) / 2, (h - self.size) / 2)
+        draw_icon(cr, self.name, self.size)
+
+
+def draw_button(icon, css, tip, cb, size=18):
+    """A button with a drawn icon (b.icon), the same on every system."""
+    b = Gtk.Button(child=Icon(icon, size), tooltip_text=tip)
+    b.icon = b.get_child()
+    b.add_css_class(css)
+    b.connect("clicked", lambda *_: cb())
+    return b
+
+
+class Wave(Gtk.DrawingArea):
+    """The seek bar as a waveform (its shape made up from the song's id: the same each time it plays).
+    Click or drag on it to go there."""
+    BARS = 64
+
+    def __init__(self, win):
+        super().__init__(content_height=52, hexpand=True)
+        self.add_css_class("wave")
+        self.win, self.pos, self.dur, self.drag = win, 0.0, 0.0, None
+        self.bars = [0.5] * self.BARS
+        self.set_draw_func(self._draw)
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click.connect("released", lambda _g, _n, x, _y: self.drag is None and self._seek(x / max(self.get_width(), 1)))
+        self.add_controller(click)
+        drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        drag.connect("drag-begin", lambda _g, x, _y: self._drag_to(x))
+        drag.connect("drag-update", lambda g, dx, _dy: self._drag_to(g.get_start_point()[1] + dx))
+        drag.connect("drag-end", lambda *_: self._drag_end())
+        self.add_controller(drag)
+        self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+
+    def set_song(self, vid):
+        import random
+        r = random.Random(vid or "")
+        raw = [0.25 + r.random() * 0.75 for _ in range(self.BARS)]
+        n = self.BARS
+        self.bars = [max(0.15, min(1.0, (raw[max(i - 1, 0)] + raw[i] * 2 + raw[min(i + 1, n - 1)]) / 4)) for i in range(n)]
+        self.queue_draw()
+
+    def set_position(self, pos, dur):
+        self.pos, self.dur = pos or 0.0, dur or 0.0
+        if self.drag is None:
+            self.queue_draw()
+
+    def _drag_to(self, x):
+        self.drag = min(max(x / max(self.get_width(), 1), 0.0), 1.0)
+        self.win.np_times[0].set_label(fmt_time(self.drag * self.dur))
+        self.queue_draw()
+
+    def _drag_end(self):
+        if self.drag is not None:
+            f, self.drag = self.drag, None
+            self._seek(f)
+
+    def _seek(self, f):
+        if self.dur > 0:
+            self.win.on_seek(None, None, min(max(f, 0.0), 1.0) * self.dur)
+            self.pos = f * self.dur
+            self.queue_draw()
+
+    def _draw(self, _area, cr, w, h):
+        r, g, b, a = widget_color(self)
+        frac = self.drag if self.drag is not None else (self.pos / self.dur if self.dur > 0 else 0.0)
+        step = w / self.BARS
+        bw = step * 0.55
+        for i, v in enumerate(self.bars):
+            bh = h * v
+            x, y = i * step + (step - bw) / 2, (h - bh) / 2
+            played = (i + 0.5) / self.BARS <= frac
+            cr.set_source_rgba(r, g, b, a if played else 0.22)
+            rad = bw / 2
+            cr.new_sub_path()
+            cr.arc(x + rad, y + rad, rad, 3.14159, 0)
+            cr.arc(x + rad, y + bh - rad, rad, 0, 3.14159)
+            cr.close_path()
+            cr.fill()
+        cr.set_source_rgba(r, g, b, a)
+        cr.rectangle(frac * w - 1.5, 0, 3, h)
+        cr.fill()
 
 
 def art_widget(px):
@@ -6726,7 +7336,22 @@ class LyricsView(Gtk.Box):
         self.mode.connect("notify::active-name", self.on_mode)
         head.append(self.from_label)
         head.append(self.mode)
+        find = draw_button("search", "ctl", "Search the lyrics by another artist or title", self.toggle_search, 16)
+        head.append(find)
         self.append(head)
+        # Search by hand: for songs whose names don't match the lyrics sites' (found ones are kept, offline too).
+        self.search_box = Gtk.Box(spacing=6, visible=False, margin_start=16, margin_end=16, margin_bottom=6)
+        self.s_artist = Gtk.Entry(placeholder_text="Artist", hexpand=True)
+        self.s_title = Gtk.Entry(placeholder_text="Title", hexpand=True)
+        go = Gtk.Button(label="Search lyrics", valign=Gtk.Align.CENTER)
+        go.add_css_class("pill")
+        for w in (self.s_artist, self.s_title):
+            w.add_css_class("search")
+            w.connect("activate", lambda *_: self.search_now())
+        go.connect("clicked", lambda *_: self.search_now())
+        for w in (self.s_artist, self.s_title, go):
+            self.search_box.append(w)
+        self.append(self.search_box)
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.body.add_css_class("lyrics")
         self.scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, child=self.body)
@@ -6761,6 +7386,33 @@ class LyricsView(Gtk.Box):
         overlay.add_overlay(self.card)
         self.append(overlay)
 
+    def toggle_search(self, show=None):
+        t = self.app.current_track()
+        show = not self.search_box.get_visible() if show is None else show
+        if show and t:
+            m = song_meta(self.app.lib, t)
+            self.s_artist.set_text(m["artist"] or t["artist"])
+            self.s_title.set_text(m["title"] or t["title"])
+        self.search_box.set_visible(show and t is not None)
+
+    def search_now(self):
+        t = self.app.current_track()
+        artist, title = self.s_artist.get_text().strip(), self.s_title.get_text().strip()
+        if not t or not title:
+            return
+        self.seq += 1
+        seq = self.seq
+        self.message("Searching…", f"{title} · {artist}")
+
+        def done(got, err):
+            if seq != self.seq:
+                return
+            if got:
+                self.search_box.set_visible(False)
+                self.app.toast("Found: kept for offline")
+            self.render(got, err, searched=True)
+        in_thread(self.app.lyrics.search, t, artist, title, done=done)
+
     def clear(self):
         while (child := self.body.get_first_child()):
             self.body.remove(child)
@@ -6794,12 +7446,15 @@ class LyricsView(Gtk.Box):
         self.message("Finding the lyrics…", f"{track['title']} · {track['artist']}")
         in_thread(self.app.lyrics.get, track, refresh, done=lambda got, err: seq == self.seq and self.render(got, err))
 
-    def render(self, got, err):
+    def render(self, got, err, searched=False):
         if err:
             self.message("Couldn't get the lyrics", str(err)[:140])
             return
         if not got:
-            self.message("No lyrics found", "Genius, Tidal and LRCLIB don't have this song.")
+            self.message("No lyrics found", ("Genius, Tidal and LRCLIB don't have this song by those names."
+                         if searched else "Genius, Tidal and LRCLIB don't have this song.") + "\nSearch by another artist or title:")
+            if not self.search_box.get_visible():   # what you typed stays, to change and try again
+                self.toggle_search(True)
             return
         if got.get("instrumental") and not (got.get("plain") or got.get("synced")):
             self.message("Instrumental", "No words in this one.")
@@ -6936,6 +7591,23 @@ class LyricsView(Gtk.Box):
         self.anim.play()
 
 
+class PagePop:
+    """What was a popover and is a page of the window now (Settings): popup shows it, popdown leaves it."""
+
+    def __init__(self, win, key):
+        self.win, self.key = win, key
+
+    def popup(self):
+        self.win.show_tab(self.key)
+
+    def popdown(self):
+        if self.win.shown(self.key):
+            self.win.nav_back()
+
+    def get_visible(self):
+        return self.win.stack.get_visible_child_name() == self.key
+
+
 class MusicWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Music", default_width=420, default_height=680)
@@ -6947,12 +7619,17 @@ class MusicWindow(Adw.ApplicationWindow):
         self.add_css_class("main")   # the window the album art colours
         self.results, self.search_seq = [], 0
         self.dragging_until = 0.0
-        self.selecting, self.select_list, self.selected = False, None, {}   # picking songs: {row index: song}
+        # Picking songs: {song id: song}, from any lists (open another list and pick on; it all adds up).
+        self.selecting, self.select_list, self.selected = False, None, {}
         self.music_view, self.open_mine = "all", None   # the Music tab: which list, and which playlist of yours is open
         self.artist_pages, self.artist_from = [], "music"   # artist and album pages open, and the tab they opened over
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.toasts = Adw.ToastOverlay(child=root)
+        # Stellio-like: the player fills the window; ☰ slides out the menu with every list in it.
+        self.split = Adw.OverlaySplitView(collapsed=True, show_sidebar=False, content=root,
+                                          max_sidebar_width=300, sidebar_width_fraction=0.8)
+        self.split.connect("notify::show-sidebar", lambda *_: self.split.get_show_sidebar() and self.refresh_drawer())
+        self.toasts = Adw.ToastOverlay(child=self.split)
         if WINDOWS:
             # Windows: a title bar to move and close it by, and closing it quits (there is no
             # bar icon or keybind there to bring a hidden window back).
@@ -6964,16 +7641,31 @@ class MusicWindow(Adw.ApplicationWindow):
         else:
             self.set_content(self.toasts)
 
-        # ---- top: brand + search ----
+        # ---- top: ☰, where you are, search and settings ----
         top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         top.add_css_class("top")
-        brand = Gtk.Box(spacing=6)
-        mark = Gtk.Label(label="▶")
-        mark.add_css_class("brand-mark")
-        name = Gtk.Label(label="MUSIC", xalign=0, hexpand=True)
-        name.add_css_class("brand")
-        brand.append(mark)
-        brand.append(name)
+        brand = Gtk.Box(spacing=2)
+        brand.add_css_class("nav")
+        # ☰ opens the menu (every list); ‹ goes back when you're past a list's front; the gear opens Settings.
+        self.nav, self.nav_back_going, self.nav_last = [], False, "nowplaying"
+        self.menu_btn = draw_button("menu", "ctl", "Menu: every list  (F9, Ctrl+M)", self.toggle_drawer, 20)
+        self.menu_btn.set_valign(Gtk.Align.CENTER)
+        self.back_btn = Gtk.Button(child=Icon("back", 20), valign=Gtk.Align.CENTER, tooltip_text="Back (Esc)", visible=False)
+        self.back_btn.add_css_class("ctl")
+        self.back_btn.connect("clicked", lambda *_: self.nav_back())
+        self.nav_title = Gtk.Label(label="Now playing", xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.nav_title.add_css_class("nav-title")
+        self.nav_sub = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False)
+        self.nav_sub.add_css_class("nav-sub")
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        titles.append(self.nav_title)
+        titles.append(self.nav_sub)
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)   # the queue's name: tap for your queues
+        click.connect("released", lambda *_: self.stack.get_visible_child_name() == "nowplaying" and self.queues_dialog())
+        titles.add_controller(click)
+        brand.append(self.menu_btn)
+        brand.append(self.back_btn)
+        brand.append(titles)
         # Where the Library and Search tabs look; the audio is Tidal's FLAC whichever it is.
         self.syncing_source = False
         self.source_group = Adw.ToggleGroup(valign=Gtk.Align.CENTER, homogeneous=False)
@@ -6985,8 +7677,14 @@ class MusicWindow(Adw.ApplicationWindow):
         self.source_group.set_active_name("local" if app.browse_local else app.source)
         self.source_group.connect("notify::active-name",
                                   lambda g, _p: self.syncing_source or app.browse(g.get_active_name()))
-        brand.append(self.source_group)
-        brand.append(self.accounts_button())
+        self.accounts_button()
+        self.search_btn = draw_button("search", "ctl", "Search  (/)", lambda: self.show_tab("search"), 18)
+        self.search_btn.set_valign(Gtk.Align.CENTER)
+        brand.append(self.search_btn)
+        self.settings_btn = draw_button("settings", "ctl", "Settings: accounts, Last.fm, folders, look…  (Ctrl+,)",
+                                        lambda: self.nav_back() if self.shown("settings") else self.show_tab("settings"), 20)
+        self.settings_btn.set_valign(Gtk.Align.CENTER)
+        brand.append(self.settings_btn)
         top.append(brand)
         self.entry = Gtk.SearchEntry(placeholder_text=self.search_hint(), hexpand=True)
         self.entry.add_css_class("search")
@@ -7000,9 +7698,10 @@ class MusicWindow(Adw.ApplicationWindow):
         self.search_in.set_valign(Gtk.Align.CENTER)
         self.search_in.set_selected(list(SEARCH_IN).index(app.search_in))
         self.search_in.connect("notify::selected", lambda d, _p: self.set_search_in(list(SEARCH_IN)[d.get_selected()]))
-        bar = Gtk.Box(spacing=6)
+        bar = Gtk.Box(spacing=6, visible=False)   # on the Search page only
         bar.append(self.entry)
         bar.append(self.search_in)
+        self.search_bar = bar
         top.append(bar)
         root.append(top)
 
@@ -7030,7 +7729,9 @@ class MusicWindow(Adw.ApplicationWindow):
             sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=lst, vexpand=True)
             if key == "music":   # all your songs, your playlists, recent, added, most played
                 page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                page.append(self.music_chips())
+                chips = self.music_chips()
+                chips.set_visible(False)   # which list is picked from the library's front page
+                page.append(chips)
                 page.append(sw)
                 self.stack.add_named(page, key)
             else:
@@ -7051,7 +7752,15 @@ class MusicWindow(Adw.ApplicationWindow):
         # Artist and album pages have no tab of their own: they open over the tab you were on.
         self.track_list("artist")
         self.stack.add_named(Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.artist_list), "artist")
-        root.append(scroll_sideways(tabs))
+        # The library's front page and Now playing: the tabs above are reached from there (the
+        # row of them stays for Alt+1…7 and is hidden).
+        self.stack.add_named(self.home_page(), "home")
+        self.stack.add_named(self.now_page(), "nowplaying")
+        self.stack.add_named(self.settings_page(), "settings")   # the gear: the whole window
+        self.stack.connect("notify::visible-child-name", lambda *_: self.page_changed())
+        self.tabs_strip = scroll_sideways(tabs)
+        self.tabs_strip.set_visible(False)
+        root.append(self.tabs_strip)
         root.append(self.stack)
         root.append(self.select_bar())
 
@@ -7060,7 +7769,14 @@ class MusicWindow(Adw.ApplicationWindow):
         player.add_css_class("player")
         self.player_bar = player   # the cover's colour goes on it (App.apply_tint)
         row = Gtk.Box(spacing=12)
-        frame, self.np_art = art_widget(56)
+        self.np_row = row
+        frame, self.np_art = art_widget(52)
+        frame.add_css_class("mini-art")
+        frame.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        frame.set_tooltip_text("Now playing")
+        opener = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        opener.connect("released", lambda *_: self.show_now())
+        frame.add_controller(opener)
         row.append(frame)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True, spacing=1)
         self.np_title = Gtk.Label(label="Nothing playing", xalign=0, ellipsize=Pango.EllipsizeMode.END)
@@ -7101,17 +7817,20 @@ class MusicWindow(Adw.ApplicationWindow):
         prog.append(self.t_pos)
         prog.append(self.scale)
         prog.append(self.t_len)
+        self.np_prog = prog
         player.append(prog)
         controls = Gtk.CenterBox()
         mid = Gtk.Box(spacing=10)
-        mid.append(icon_button("media-skip-backward-symbolic", "ctl", "Previous", app.previous))
-        self.play_btn = icon_button("media-playback-start-symbolic", "play", "Play / pause", app.toggle_pause)
+        self.prev_btn = draw_button("prev", "ctl", "Previous", app.previous)
+        mid.append(self.prev_btn)
+        self.play_btn = draw_button("play", "play", "Play / pause", app.toggle_pause, 18)
         mid.append(self.play_btn)
-        mid.append(icon_button("media-skip-forward-symbolic", "ctl", "Next", app.next))
+        self.next_btn = draw_button("next", "ctl", "Next", app.next)
+        mid.append(self.next_btn)
         controls.set_center_widget(mid)
         modes = Gtk.Box(spacing=2)
-        modes.append(icon_button("media-playlist-shuffle-symbolic", "ctl", "Shuffle up next", app.shuffle))
-        self.repeat_btn = icon_button("media-playlist-repeat-symbolic", "ctl", "", app.cycle_repeat)
+        modes.append(draw_button("shuffle", "ctl", "Shuffle up next", app.shuffle))
+        self.repeat_btn = draw_button("repeat", "ctl", "", app.cycle_repeat)
         modes.append(self.repeat_btn)
         controls.set_start_widget(modes)
         self.saved_label = Gtk.Label(valign=Gtk.Align.CENTER)
@@ -7136,7 +7855,8 @@ class MusicWindow(Adw.ApplicationWindow):
         self.refresh_music()
         self.refresh_queue()
         self.refresh_account()
-        self.show_tab("music" if self.lib.items or app.local.files else "search")
+        self.split.set_sidebar(self.drawer())
+        self.show_tab("nowplaying")
         self.art.on_loaded = lambda vid, _path: vid == (app.current_track() or {}).get("id") and self.update_tint()
         self.set_empty(self.search_list, "Find something to play",
                        "Type a song or artist and press Enter.\nPaste a playlist, album or song link to load it.")
@@ -7186,6 +7906,29 @@ class MusicWindow(Adw.ApplicationWindow):
         head.append(self.eq_switch)
         box.append(head)
 
+        # Where the sound goes: each output keeps an EQ of its own, switched to when you plug in or connect it.
+        out = Gtk.Box(spacing=10)
+        out.add_css_class("eq-output")
+        self.eq_out_icon = Icon("speaker", 22)
+        self.eq_out_icon.add_css_class("accent")
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        self.eq_out_name = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        self.eq_out_name.add_css_class("title")
+        self.eq_out_note = Gtk.Label(xalign=0, wrap=True)
+        self.eq_out_note.add_css_class("sub")
+        texts.append(self.eq_out_name)
+        texts.append(self.eq_out_note)
+        self.eq_per_output = Gtk.Switch(valign=Gtk.Align.CENTER, tooltip_text="A separate equalizer for each output")
+        self.eq_per_output.connect("notify::active", lambda sw, _p: self.syncing_eq or a.set_eq_per_output(sw.get_active()))
+        out.append(self.eq_out_icon)
+        out.append(texts)
+        out.append(self.eq_per_output)
+        box.append(out)
+        self.eq_saved = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3, column_spacing=6,
+                                    row_spacing=6)
+        self.eq_saved.add_css_class("eq-saved")
+        box.append(self.eq_saved)
+
         grid = Gtk.Grid(column_spacing=10, row_spacing=6)
         self.eq_phone_keys = list(a.headphones())
         self.eq_phones = Gtk.DropDown.new_from_strings([name for name, _ in a.headphones().values()])
@@ -7194,7 +7937,11 @@ class MusicWindow(Adw.ApplicationWindow):
         self.eq_preset = Gtk.DropDown.new_from_strings([name for name, _ in EQ_PRESETS.values()])
         self.eq_preset.connect("notify::selected", lambda dd, _p: self.syncing_eq
                                or a.set_eq_preset(list(EQ_PRESETS)[dd.get_selected()]))
-        for row, (label, dd) in enumerate((("Headphones", self.eq_phones), ("Sound", self.eq_preset))):
+        self.eq_count = Gtk.DropDown.new_from_strings([f"{n} bands" for n in EQ_COUNTS])
+        self.eq_count.connect("notify::selected", lambda dd, _p: self.syncing_eq
+                              or a.set_eq_count(EQ_COUNTS[dd.get_selected()]))
+        for row, (label, dd) in enumerate((("Headphones", self.eq_phones), ("Sound", self.eq_preset),
+                                           ("Bands", self.eq_count))):
             name = Gtk.Label(label=label, xalign=0)
             name.add_css_class("sub")
             dd.set_hexpand(True)
@@ -7203,30 +7950,9 @@ class MusicWindow(Adw.ApplicationWindow):
         box.append(grid)
         box.append(self.auto_eq_box())
 
-        bands = Gtk.Box(homogeneous=True)
-        self.eq_scales, self.eq_values = [], []
-        for i, hz in enumerate(EQ_BANDS):
-            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            value = Gtk.Label(width_chars=4)
-            value.add_css_class("time")
-            sc = Gtk.Scale(orientation=Gtk.Orientation.VERTICAL, inverted=True, draw_value=False,
-                           halign=Gtk.Align.CENTER, tooltip_text=f"{hz} Hz")
-            sc.add_css_class("volume")
-            sc.add_css_class("eqband")
-            sc.set_range(-EQ_RANGE, EQ_RANGE)
-            sc.set_increments(0.5, 1)
-            sc.connect("value-changed", lambda s, i=i: self.syncing_eq or a.set_eq_band(i, s.get_value()))
-            reset = Gtk.GestureClick(button=Gdk.BUTTON_MIDDLE)  # middle-click a band: back to 0
-            reset.connect("pressed", lambda *_, i=i: a.set_eq_band(i, 0))
-            sc.add_controller(reset)
-            hz_label = Gtk.Label(label=f"{hz // 1000}k" if hz >= 1000 else str(hz))
-            hz_label.add_css_class("hz")
-            for w in (value, sc, hz_label):
-                col.append(w)
-            bands.append(col)
-            self.eq_scales.append(sc)
-            self.eq_values.append(value)
-        box.append(bands)
+        self.eq_bands_box = Gtk.ScrolledWindow(vscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True)
+        box.append(self.eq_bands_box)
+        self.build_eq_bands()
         tones = Gtk.Grid(column_spacing=8, row_spacing=2)
         self.eq_tones = {}
         for row, (name, (_k, hz, _q)) in enumerate(TONE.items()):
@@ -7255,14 +7981,49 @@ class MusicWindow(Adw.ApplicationWindow):
         self.eq_note.add_css_class("sub")
         box.append(self.eq_note)
 
-        pop = Gtk.Popover(child=box)
-        pop.connect("closed", lambda *_: a.eq_settled())
-        self.eq_btn = Gtk.MenuButton(popover=pop, label="EQ", valign=Gtk.Align.CENTER, direction=Gtk.ArrowType.UP,
-                                     tooltip_text="Equalizer (e)")
+        # A page of its own (the whole window), from ☰ or the EQ button.
+        page = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True,
+                                  child=Adw.Clamp(maximum_size=640, child=box))
+        page.add_css_class("eq-page")
+        self.stack.add_named(page, "eq")
+        self.eq_btn = Gtk.Button(label="EQ", valign=Gtk.Align.CENTER, tooltip_text="Equalizer (e)")
+        self.eq_btn.connect("clicked", lambda *_: self.toggle_page("eq"))
+        self.eq_btn.popup = lambda: self.show_tab("eq")
         self.eq_btn.add_css_class("ctl")
         self.eq_btn.add_css_class("eq-btn")
         self.update_eq()
         return self.eq_btn
+
+    def build_eq_bands(self):
+        """The band sliders, as many as the EQ has (3 to 31)."""
+        a = self.app
+        n = a.eq["count"]
+        bands = Gtk.Box(homogeneous=True, spacing=0 if n > 15 else 2)
+        self.eq_scales, self.eq_values = [], []
+        for i, hz in enumerate(eq_bands_for(n)):
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            value = Gtk.Label(width_chars=3 if n > 15 else 4)
+            value.add_css_class("time")
+            sc = Gtk.Scale(orientation=Gtk.Orientation.VERTICAL, inverted=True, draw_value=False,
+                           halign=Gtk.Align.CENTER, tooltip_text=f"{eq_label(hz)} Hz")
+            sc.add_css_class("volume")
+            sc.add_css_class("eqband")
+            sc.set_range(-EQ_RANGE, EQ_RANGE)
+            sc.set_increments(0.5, 1)
+            sc.connect("value-changed", lambda s, i=i: self.syncing_eq or a.set_eq_band(i, s.get_value()))
+            reset = Gtk.GestureClick(button=Gdk.BUTTON_MIDDLE)  # middle-click a band: back to 0
+            reset.connect("pressed", lambda *_, i=i: a.set_eq_band(i, 0))
+            sc.add_controller(reset)
+            hz_label = Gtk.Label(label=eq_label(hz))
+            hz_label.add_css_class("hz")
+            for w in (value, sc, hz_label):
+                col.append(w)
+            bands.append(col)
+            self.eq_scales.append(sc)
+            self.eq_values.append(value)
+        if n > 15:
+            bands.set_size_request(n * 26, -1)
+        self.eq_bands_box.set_child(bands)
 
     def auto_eq_box(self):
         """Auto EQ: find any headphones in AutoEq's results (as you type), or Detect the ones the
@@ -7363,6 +8124,32 @@ class MusicWindow(Adw.ApplicationWindow):
             self.eq_phones.set_model(Gtk.StringList.new([name for name, _ in phones.values()]))
         self.eq_phones.set_selected(self.eq_phone_keys.index(eq["headphones"]) if eq["headphones"] in phones else 0)
         self.eq_preset.set_selected(list(EQ_PRESETS).index(eq["preset"]))
+        self.eq_count.set_selected(EQ_COUNTS.index(eq["count"]))
+        if len(self.eq_scales) != eq["count"]:
+            self.build_eq_bands()
+        a = self.app
+        key = getattr(a, "output_key", None)
+        self.eq_out_icon.set_name(a.OUT_ICONS.get(getattr(a, "output_kind", ""), "speaker"))
+        self.eq_out_name.set_label(getattr(a, "output_label", None) or "This output")
+        self.eq_per_output.set_active(eq.get("per_output", True))
+        self.eq_out_note.set_label("Its own equalizer: it changes when the sound goes somewhere else (headphones, "
+                                   "Bluetooth, the car…)" if eq.get("per_output", True) else "One equalizer for every output")
+        while (child := self.eq_saved.get_first_child()):
+            self.eq_saved.remove(child)
+        others = {k: v for k, v in eq.get("outputs", {}).items() if k != key}
+        self.eq_saved.set_visible(bool(others) and eq.get("per_output", True))
+        for k, v in others.items():
+            chip = Gtk.Box(spacing=6)
+            chip.add_css_class("out-chip")
+            chip.append(Icon(a.OUT_ICONS.get(v.get("kind"), "speaker"), 14))
+            lab = Gtk.Label(label=v.get("label") or k, ellipsize=Pango.EllipsizeMode.END, max_width_chars=18)
+            chip.append(lab)
+            x = draw_button("close", "row-action", f"Forget {v.get('label') or k}'s equalizer",
+                            lambda k=k: a.forget_eq_output(k), 12)
+            chip.append(x)
+            chip.set_tooltip_text(f"{v.get('label') or k}: {'on' if v.get('on') else 'off'}, "
+                                  f"{EQ_PRESETS.get(v.get('preset'), ('Custom',))[0]}, {v.get('count', 10)} bands")
+            self.eq_saved.append(chip)
         for sc, value, g in zip(self.eq_scales, self.eq_values, eq["bands"]):
             if abs(sc.get_value() - g) > 0.01:
                 sc.set_value(g)
@@ -7381,20 +8168,421 @@ class MusicWindow(Adw.ApplicationWindow):
             self.eq_note.set_label("Off: the music plays untouched.")
 
     # ---- accounts: the services, Last.fm, the tagger, lyrics ----
+    # ---- the library's front page, Poweramp-like ----
+    HOME_ICONS = {"all": "note", "playlists": "playlist", "recent": "clock", "top": "chart", "moods": "mood",
+                  "favorites": "star", "unfavorited": "star_line", "skips": "skip", "dupes": "copy", "dj": "disc"}
+    HOME_NAMES = {"all": "All songs", "recent": "Recently played"}
+
+    def home_page(self):
+        self.home_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.home_list.add_css_class("home")
+        self.home_list.connect("row-activated", lambda _l, row: getattr(row, "go", None) and row.go())
+        self.refresh_home()
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=self.home_list, vexpand=True)
+
+    def home_row(self, label, icon, go, count=None, sub=""):
+        box = Gtk.Box(spacing=14)
+        tile = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.CENTER, hexpand=False)
+        tile.add_css_class("cat-icon")
+        tile.set_size_request(40, 40)
+        tile.append(Icon(icon, 22, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, content_width=40, content_height=40))
+        box.append(tile)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER, hexpand=True)
+        name = Gtk.Label(label=label, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        name.add_css_class("cat-label")
+        text.append(name)
+        if sub:
+            s = Gtk.Label(label=sub, xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            s.add_css_class("sub")
+            text.append(s)
+        box.append(text)
+        if count is not None:
+            c = Gtk.Label(label=f"{count:,}")
+            c.add_css_class("cat-count")
+            box.append(c)
+        chev = Icon("chev", 14)
+        chev.add_css_class("chev")
+        box.append(chev)
+        row = Gtk.ListBoxRow(child=box)
+        row.go = go
+        return row
+
+    def home_head(self, text):
+        lab = Gtk.Label(label=text, xalign=0)
+        lab.add_css_class("section")
+        row = Gtk.ListBoxRow(child=lab, activatable=False, selectable=False)
+        row.add_css_class("head")
+        return row
+
+    def refresh_home(self):
+        lst = getattr(self, "home_list", None)
+        if lst is None:
+            return
+        a = self.app
+        lst.remove_all()
+        if not a.browse_local:
+            name = SOURCES.get(a.source, "Service")
+            lst.append(self.home_row(f"{name} library", "cloud", lambda: self.show_tab("account"), sub=f"Your playlists on {name}"))
+        if a.lastfm.connected or a.spotify_history.plays:
+            lst.append(self.home_row(f"Your {wrapped_year()} Wrapped", "sparkle", lambda: a.open_wrapped(),
+                                     sub="Your year, week or month in music"))
+        lst.append(self.home_head("MY MUSIC"))
+        songs = len({t["file"] for t in self.lib.items.values()}) + len(a.local.files)
+        counts = {"all": songs, "favorites": len(a.favorites.items)}
+        views = list(self.MUSIC_VIEWS)
+        for name, label, _tip in views[:2]:
+            lst.append(self.home_row(self.HOME_NAMES.get(name, label), self.HOME_ICONS[name],
+                                     lambda n=name: self.open_view(n), counts.get(name)))
+        lst.append(self.home_row("Artists", "person", lambda: self.show_tab("artists")))
+        for name, label, _tip in views[2:]:
+            lst.append(self.home_row(self.HOME_NAMES.get(name, label), self.HOME_ICONS.get(name, "note"),
+                                     lambda n=name: self.open_view(n), counts.get(name)))
+        lst.append(self.home_row("Up next", "queue", lambda: self.show_tab("queue")))
+        lst.append(self.home_head("NOW PLAYING"))
+        lst.append(self.home_row("Now playing", "play", self.show_now))
+        lst.append(self.home_row("Lyrics", "lyrics", lambda: self.show_tab("lyrics")))
+        lst.append(self.home_row("Visualizer", "vis", lambda: self.show_tab("visualizer")))
+        lst.append(self.home_row("Equalizer", "eq", lambda: self.eq_btn.popup(), sub="On" if a.eq.get("on") else "Off"))
+
+    def open_view(self, view):
+        """One of the Music tab's lists (All, Playlists, Favorites…), from the front page."""
+        self.show_tab("music")
+        if view != self.music_view or self.open_mine or self.open_group:
+            self.set_music_view(view)
+        self.page_changed()
+
+    def page_title(self, key):
+        a = self.app
+        if key == "music":
+            if self.music_view in self.GROUP_VIEWS:
+                return self.GROUP_VIEWS[self.music_view]
+            return self.HOME_NAMES.get(self.music_view) or dict((k, l) for k, l, _t in self.MUSIC_VIEWS).get(self.music_view, "My music")
+        if key == "account":
+            return f"{SOURCES.get(a.source, 'Service')} library"
+        return {"home": "Library", "search": "Search", "artists": "Artists", "queue": "Up next & queues", "lyrics": "Lyrics",
+                "visualizer": "Visualizer", "artist": "Artist", "nowplaying": "Now playing", "settings": "Settings",
+                "eq": "Equalizer"}.get(key, "Library")
+
+    def page_changed(self):
+        """The stack moved: remember where from (for ‹), and the header says where you are."""
+        key = self.stack.get_visible_child_name() or "home"
+        if key != self.nav_last and not self.nav_back_going:
+            self.nav.append(self.nav_last)
+            del self.nav[:-30]
+        self.nav_last = key
+        now = key == "nowplaying"
+        inside = key in ("artist", "settings", "eq") or (key == "music" and bool(self.open_mine or self.open_group)) \
+            or (key in ("lyrics", "visualizer", "queue") and self.nav[-1:] == ["nowplaying"])
+        self.back_btn.set_visible(inside)
+        self.menu_btn.set_visible(not inside)
+        self.search_btn.set_visible(key != "search")
+        self.search_bar.set_visible(key == "search")
+        self.nav_title.set_label(self.page_title(key))
+        self.update_nav_sub()
+        if self.split.get_show_sidebar():
+            self.refresh_drawer()
+        self.np_row.set_visible(not now)
+        self.np_prog.set_visible(not now)
+        (self.player_bar.add_css_class if now else self.player_bar.remove_css_class)("expanded")
+        self.play_btn.icon.set_size(28 if now else 18)
+        self.prev_btn.icon.set_size(26 if now else 18)
+        self.next_btn.icon.set_size(26 if now else 18)
+        for k, b in (("lyrics", self.tool_lyrics), ("visualizer", self.tool_vis), ("queue", self.tool_queue)):
+            (b.add_css_class if key == k else b.remove_css_class)("on")
+        if now:
+            self.nav.clear()
+        if now:
+            self.update_now_page(self.app.current_track())
+            self.wave.set_position(self.scale.get_value(), self.scale.get_adjustment().get_upper())
+            self.np_times[0].set_label(self.t_pos.get_label())
+            self.np_times[1].set_label(self.t_len.get_label())
+
+    def nav_back(self):
+        key = self.stack.get_visible_child_name()
+        self.nav_back_going = True
+        try:
+            if key == "artist" and len(self.artist_pages) > 1:
+                self.artist_back()
+                return
+            if key == "music" and self.open_mine:
+                self.open_mine = None
+                self.refresh_music()
+                return
+            if key == "music" and self.open_group is not None:
+                self.open_group = None
+                self.refresh_music()
+                self.page_changed()
+                return
+            while self.nav and self.nav[-1] in (key, "artist"):
+                self.nav.pop()
+            if key == "artist":
+                self.artist_pages.clear()
+            self.show_tab(self.nav.pop() if self.nav else "nowplaying")
+        finally:
+            self.nav_back_going = False
+
+    def show_now(self):
+        self.show_tab("nowplaying")
+
+    def update_nav_sub(self):
+        """Under the title on Now playing: which song of how many, and the queue it's in."""
+        if not hasattr(self, "nav_sub"):
+            return
+        a = self.app
+        text = ""
+        if self.stack.get_visible_child_name() == "nowplaying" and a.queue:
+            n, i = len(a.queue), a.index
+            name = a.queue_name() if hasattr(a, "queue_name") else ""
+            text = f"{i + 1} of {n}" + (f"  ·  {name}" if name else "") if 0 <= i < n else name
+        self.nav_sub.set_label(text)
+        self.nav_sub.set_visible(bool(text))
+
+    # ---- Now playing: the cover big, a waveform to seek on, and the controls under it ----
+    def now_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("nowplaying")
+        self.np_kicker = Gtk.Label(label="NOW PLAYING")
+        self.np_kicker.add_css_class("np-kicker")
+        self.np_from = Gtk.Label(ellipsize=Pango.EllipsizeMode.END)
+        self.np_from.add_css_class("np-from")
+        self.np_kicker.set_visible(False)   # the header says Now playing
+        box.append(self.np_kicker)
+        box.append(self.np_from)
+        self.big_pic = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True, hexpand=True, vexpand=True)
+        holder = Gtk.Box(overflow=Gtk.Overflow.HIDDEN)
+        holder.add_css_class("bigart")
+        holder.append(self.big_pic)
+        self.big_frame = Gtk.AspectFrame(ratio=1.0, obey_child=False, child=holder, vexpand=True,
+                                         margin_top=6, margin_bottom=8)
+        self.big_frame.set_size_request(120, 120)
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click.connect("released", lambda _g, n, _x, _y: n == 2 and self.app.toggle_pause())
+        self.big_frame.add_controller(click)
+        swipe = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        swipe.connect("drag-end", lambda _g, dx, _dy: dx < -80 and self.app.next() or dx > 80 and self.app.previous())
+        self.big_frame.add_controller(swipe)
+        self.big_frame.set_tooltip_text("Drag sideways for the next or last song · double-click to pause")
+        box.append(self.big_frame)
+        self.np2_title = Gtk.Label(ellipsize=Pango.EllipsizeMode.END, justify=Gtk.Justification.CENTER)
+        self.np2_title.add_css_class("np-title")
+        self.np2_artist = artist_link(self, "", css="np-artist")
+        self.np2_artist.set_xalign(0.5)
+        self.np2_album = Gtk.Label(ellipsize=Pango.EllipsizeMode.END)
+        self.np2_album.add_css_class("np-album")
+        self.np_badges = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        for w in (self.np2_title, self.np2_artist, self.np2_album, self.np_badges):
+            box.append(w)
+        self.wave = Wave(self)
+        box.append(self.wave)
+        times = Gtk.Box()
+        self.np_times = (Gtk.Label(label="0:00", xalign=0, hexpand=True), Gtk.Label(label="0:00", xalign=1))
+        for w in self.np_times:
+            w.add_css_class("np-times")
+            times.append(w)
+        box.append(times)
+        tools = Gtk.Box(homogeneous=True, margin_top=4)
+        self.tool_fav = self.tool("star_line", "Favorite", lambda: self.app.toggle_favorite_playing())
+        self.tool_like = self.tool("heart_line", "Like", lambda: self.app.toggle_like())
+        self.tool_lyrics = self.tool("lyrics", "Lyrics", lambda: self.toggle_page("lyrics"))
+        self.tool_vis = self.tool("vis", "Visualizer", lambda: self.toggle_page("visualizer"))
+        self.tool_queue = self.tool("queue", "Up next", lambda: self.toggle_page("queue"))
+        for b in (self.tool_fav, self.tool_like, self.tool_lyrics, self.tool_vis, self.tool_queue):
+            tools.append(b)
+        box.append(tools)
+        return box
+
+    def tool(self, icon, label, cb):
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        ic = Icon(icon, 22, halign=Gtk.Align.CENTER)
+        inner.append(ic)
+        lab = Gtk.Label(label=label)
+        lab.add_css_class("tool-label")
+        inner.append(lab)
+        b = Gtk.Button(child=inner, tooltip_text=label)
+        b.add_css_class("tool")
+        b.icon = ic
+        b.connect("clicked", lambda *_: cb())
+        return b
+
+    def set_tool(self, b, icon, on):
+        b.icon.set_name(icon)
+        (b.add_css_class if on else b.remove_css_class)("on")
+
+    def toggle_page(self, key):
+        """Lyrics, the visualizer or Up next from Now playing (‹ comes back)."""
+        if self.stack.get_visible_child_name() == key:
+            self.nav_back()
+        else:
+            self.show_tab(key)
+
+    def update_now_page(self, t):
+        if not t or not hasattr(self, "np2_title"):
+            return
+        a = self.app
+        self.np2_title.set_label(t["title"])
+        set_link_text(self.np2_artist, t["artist"])
+        self.np2_album.set_label(t.get("album") or "")
+        self.np2_album.set_visible(bool(t.get("album")))
+        self.wave.set_song(t["id"])
+        src = source_of(t)
+        frm = ("Radio" if getattr(a, "radio", False) else "") or \
+              ("My music" if src == "file" or self.lib.has(t["id"]) else SOURCES.get(src, ""))
+        self.np_from.set_label(frm)
+        self.np_from.set_visible(bool(frm))
+        child = self.np_badges.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.np_badges.remove(child)
+            child = nxt
+        saved = self.lib.items.get(t["id"]) if self.lib.has(t["id"]) else None
+        marks = []
+        if saved:
+            marks.append(("FLAC " + (saved.get("quality") or "")).strip() if saved.get("format") == "flac" else "✓ offline")
+        elif src != "file":
+            q = a.dl.stream_quality(t["id"])
+            marks.append(q.split()[0] if q else "Streaming")
+        else:
+            ext = Path(t.get("file") or "").suffix.lstrip(".").upper()
+            if ext:
+                marks.append(ext)
+        speed = a.speeds.get(t)[0]
+        if speed != 1.0:
+            marks.append(f"{speed:g}×")
+        try:
+            g = a.gains.get(t)
+            if g:
+                marks.append(f"{g:+.1f} dB")
+        except Exception:  # noqa: BLE001 -- the mark is a nicety
+            pass
+        for i, m in enumerate(marks):
+            lab = Gtk.Label(label=m)
+            lab.add_css_class("badge")
+            if i:
+                lab.add_css_class("quiet")
+            self.np_badges.append(lab)
+        self.load_big_art(t)
+
+    def load_big_art(self, t):
+        """The cover at full size for Now playing (rows use a small copy)."""
+        if not hasattr(self, "big_pic") or self.stack.get_visible_child_name() != "nowplaying":
+            return
+        vid = t["id"]
+        if getattr(self, "big_vid", None) == vid:
+            return
+        lib = self.lib.items.get(vid)
+        path = self.art.paths.get(vid) or (Path(lib["art"]) if lib and lib.get("art") else None)
+        self.big_pic.set_paintable(self.art.textures.get(vid))
+        if not path:
+            return
+        self.big_vid = vid
+
+        def done(tex, _err):
+            cur = self.app.current_track()
+            if tex is not None and cur and cur["id"] == vid:
+                self.big_pic.set_paintable(tex)
+        in_thread(load_texture, path, 900, done=done)
+
     def accounts_button(self):
+        """Settings (the accounts, Last.fm, folders, the look…): a page of their own, the whole window."""
         self.accounts_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.accounts_box.add_css_class("accounts")
-        self.accounts_box.set_size_request(350, -1)
-        self.accounts_pop = Gtk.Popover(child=self.accounts_box)
-        self.accounts_pop.connect("show", lambda *_: (self.app.updater.check_soon(), self.refresh_accounts()))
-        btn = Gtk.MenuButton(popover=self.accounts_pop, icon_name="open-menu-symbolic", valign=Gtk.Align.CENTER,
-                             tooltip_text="Accounts, Last.fm, tagging and lyrics")
-        btn.add_css_class("ctl")
+        self.accounts_pop = PagePop(self, "settings")
         self.tagger_label = None
-        return btn
+
+    def settings_page(self):
+        clamp = Adw.Clamp(maximum_size=640, child=self.accounts_box)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp, vexpand=True)
+        sw.add_css_class("settings-page")
+        return sw
+
+    # ---- the menu (☰): every list, and where you browse ----
+    DRAWER = (("Now playing", "play", "nowplaying", None), ("Search", "search", "search", None),
+              ("My music", "note", "music", "all"), ("Albums", "disc", "music", "albums"),
+              ("Artists", "person", "artists", None), ("Genres", "genre", "music", "genres"),
+              ("Playlists", "playlist", "music", "playlists"), ("Folders", "folder", "music", "folders"),
+              ("library", "cloud", "account", None), ("Up next & queues", "queue", "queue", None),
+              ("Recently played", "clock", "music", "recent"), ("Most played", "chart", "music", "top"),
+              ("Favorites", "star", "music", "favorites"), ("Not favorited", "star_line", "music", "unfavorited"),
+              ("Moods", "mood", "music", "moods"), ("Skips", "skip", "music", "skips"),
+              ("Duplicates", "copy", "music", "dupes"), ("DJ", "disc", "music", "dj"),
+              ("Lyrics", "lyrics", "lyrics", None), ("Visualizer", "vis", "visualizer", None))
+
+    def drawer(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("drawer-list")
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        card.add_css_class("source-card")
+        head = Gtk.Box(spacing=12)
+        self.drawer_src_icon = Icon("cloud", 20)
+        self.drawer_src_icon.add_css_class("accent")
+        self.drawer_src = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        self.drawer_src.add_css_class("drawer-src")
+        head.append(self.drawer_src_icon)
+        head.append(self.drawer_src)
+        card.append(head)
+        card.append(scroll_sideways(self.source_group))
+        box.append(card)
+        self.drawer_items = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.drawer_items.add_css_class("drawer-items")
+        self.drawer_items.connect("row-activated", lambda _l, row: getattr(row, "go", None) and row.go())
+        box.append(self.drawer_items)
+        sw = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=box, vexpand=True)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.add_css_class("drawer")
+        outer.append(sw)
+        self.refresh_drawer()
+        return outer
+
+    def refresh_drawer(self):
+        lst = getattr(self, "drawer_items", None)
+        if lst is None:
+            return
+        a = self.app
+        lst.remove_all()
+        key = self.stack.get_visible_child_name()
+        self.drawer_src.set_label("Your music" if a.browse_local else SOURCES.get(a.source, ""))
+        self.drawer_src_icon.set_name("note" if a.browse_local else "cloud")
+        for label, icon, tab, view in self.DRAWER:
+            if tab == "account":
+                if a.browse_local:
+                    continue
+                label = f"{SOURCES.get(a.source, 'Service')} library"
+            on = key == tab and (view is None or view == self.music_view)
+            lst.append(self.drawer_row(label, icon, on, lambda t=tab, v=view: self.drawer_go(t, v)))
+        if a.lastfm.connected or a.spotify_history.plays:
+            lst.append(self.drawer_row(f"Your {wrapped_year()} Wrapped", "sparkle", False,
+                                       lambda: (self.split.set_show_sidebar(False), a.open_wrapped())))
+        sep = Gtk.ListBoxRow(activatable=False, selectable=False, child=Gtk.Separator())
+        sep.add_css_class("drawer-sep")
+        lst.append(sep)
+        lst.append(self.drawer_row("Settings", "settings", key == "settings", lambda: self.drawer_go("settings", None), quiet=True))
+        lst.append(self.drawer_row("Equalizer", "eq", key == "eq", lambda: self.drawer_go("eq", None), quiet=True))
+
+    def drawer_row(self, label, icon, on, go, quiet=False):
+        box = Gtk.Box(spacing=16)
+        box.append(Icon(icon, 20))
+        box.append(Gtk.Label(label=label, xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END))
+        row = Gtk.ListBoxRow(child=box)
+        row.add_css_class("drawer-item")
+        if on:
+            row.add_css_class("on")
+        if quiet:
+            row.add_css_class("quiet")
+        row.go = go
+        return row
+
+    def drawer_go(self, tab, view):
+        self.split.set_show_sidebar(False)
+        if tab == "music":
+            self.open_view(view)
+        else:
+            self.show_tab(tab)
+
+    def toggle_drawer(self):
+        self.split.set_show_sidebar(not self.split.get_show_sidebar())
 
     def refresh_accounts(self):
-        """Rebuild the accounts menu (while it is open) from how things stand."""
+        """Rebuild Settings (while it is open) from how things stand."""
         if not self.accounts_pop.get_visible():
             return
         a, box = self.app, self.accounts_box
@@ -7532,15 +8720,22 @@ class MusicWindow(Adw.ApplicationWindow):
             fbox.append(name)
             fbox.append(pill("Remove", lambda folder=folder: a.remove_folder(folder), quiet=True))
             across(fbox)
+        into = Gtk.Switch(active=a.lyrics_to_files, valign=Gtk.Align.CENTER)
+        into.connect("notify::active", lambda sw, _p: sw.get_active() != a.lyrics_to_files and a.set_lyrics_to_files(sw.get_active()))
+        line("Lyrics into files", "The lyrics found for each song you play go into its file's tags (MP3, FLAC, M4A, "
+             "Ogg…), just the words, so they stay with it. Files that have lyrics are left as they are", a.lyrics_to_files, into)
+        multi = Gtk.Switch(active=a.multi_queue, valign=Gtk.Align.CENTER)
+        multi.connect("notify::active", lambda sw, _p: sw.get_active() != a.multi_queue and a.set_multi_queue(sw.get_active()))
+        line("Queues", "A separate queue for each folder, album, artist and playlist you play from, each kept where you "
+             "left it", a.multi_queue, multi)
         colours = Gtk.Switch(active=a.art_colors, valign=Gtk.Align.CENTER)
         colours.connect("notify::active", lambda sw, _p: a.set_art_colors(sw.get_active()))
         line("Colours", "The window takes the colour of the album art", a.art_colors, colours)
-        names = [("default", "Default"), ("dark", "Dark"), ("light", "Light")] + [
-            (k, f"Neon {label.lower()}") for k, (label, _c) in NEON.items()]
+        names = LOOK_NAMES
         looks = Gtk.DropDown.new_from_strings([label for _k, label in names])
         looks.set_valign(Gtk.Align.CENTER)
-        looks.set_tooltip_text("Default: your Omarchy theme (on Windows, the app's own colours). "
-                               "Neon: black, with one colour glowing")
+        looks.set_tooltip_text("Stellio, and colourful looks (Galaxy, Aurora, Sunset…). Default: your Omarchy theme "
+                               "(on Windows, the app's own colours). Neon: black, with one colour glowing")
         looks.set_selected(next((i for i, (k, _l) in enumerate(names) if k == a.look), 0))
         looks.connect("notify::selected", lambda dd, _p: names[dd.get_selected()][0] != a.look
                       and a.set_look(names[dd.get_selected()][0]))
@@ -7865,7 +9060,7 @@ class MusicWindow(Adw.ApplicationWindow):
             "\n".join(missed_name(m) for m in left))), status.set_label("Copied the list of what's still missing")))
         done.connect("clicked", lambda _b: dlg.close())
         if not sources:
-            status.set_label("Connect a service in the accounts menu to look for these.")
+            status.set_label("Connect a service in Settings to look for these.")
         counted()
         dlg.present(self)
 
@@ -7945,13 +9140,18 @@ class MusicWindow(Adw.ApplicationWindow):
         self.update_saved()
 
     def show_tab(self, key):
-        if self.selecting:
-            self.stop_selecting()
-        if not self.tab_buttons[key].get_active():
+        if key in self.tab_buttons and not self.tab_buttons[key].get_active():
             self.tab_buttons[key].set_active(True)
+        if self.stack.get_visible_child_name() == "eq" and key != "eq":
+            self.app.eq_settled()   # done adjusting: the filters rebuilt with the new gains
         self.stack.set_visible_child_name(key)
         self.run_stale(key)
         (self.visualizer.start if key == "visualizer" else self.visualizer.stop)()
+        if key == "settings":
+            self.app.updater.check_soon()
+            self.refresh_accounts()
+        elif key == "search":
+            GLib.idle_add(lambda: (self.entry.grab_focus(), False)[1])
         if key == "lyrics":
             self.lyrics.show_for(self.app.current_track())
         elif key == "music":
@@ -7981,13 +9181,8 @@ class MusicWindow(Adw.ApplicationWindow):
         if track["id"] == (self.app.current_track() or {}).get("id"):
             row.add_css_class("playing")
         lst.append(row)
-        if self.selecting and lst is self.select_list:   # rebuilt while you pick: keep what's still there
-            picked = self.selected.get(i)
-            if picked and picked["id"] != track["id"]:
-                del self.selected[i]
-                picked = None
-            row.show_check(True, bool(picked))
-            self.update_selectbar()
+        if self.selecting:   # every list shows its ticks while you pick, the songs picked anywhere ticked
+            row.check.visible, row.check.active = True, track["id"] in self.selected
         return row
 
     def section(self, lst, label):
@@ -8162,15 +9357,16 @@ class MusicWindow(Adw.ApplicationWindow):
         return box
 
     def set_music_view(self, view):
-        if self.selecting:
-            self.stop_selecting()
         if view == "added":   # it was a list of its own; now it's All, newest first
             view, self.app.music_sort = "all", "added"
-        self.music_view, self.open_mine = view, None
-        if self.chips.get_active_name() != view:
+        self.music_view, self.open_mine, self.open_group = view, None, None
+        if self.chips.get_active_name() is not None and self.chips.get_active_name() != view \
+                and any(view == n for n, _l, _t in self.MUSIC_VIEWS):
             self.chips.set_active_name(view)
         self.refresh_music()
         self.scroll_top(self.music_list)
+        if hasattr(self, "nav_title"):
+            self.page_changed()
 
     def show_mine(self, pid):
         """One of your playlists, open in the Music tab."""
@@ -8181,7 +9377,70 @@ class MusicWindow(Adw.ApplicationWindow):
         self.refresh_music()
         self.scroll_top(self.music_list)
 
+    # ---- Albums, Genres and Folders: your songs in groups, each opening to its songs ----
+    GROUP_VIEWS = {"albums": "Albums", "genres": "Genres", "folders": "Folders"}
+
+    def song_groups(self, view):
+        """{key: [title, sub, songs]} of your songs by album (and its artist), genre or folder."""
+        out = {}
+        for t in self.app.my_songs():
+            if view == "albums":
+                artist = (t.get("albumartist") or t["artist"]).split(",")[0].strip() or "Unknown artist"
+                album = t.get("album") or ""
+                key, title, sub = f"{norm(album)}|{norm(artist)}", album or "Unknown album", artist
+            elif view == "genres":
+                g = self.app.genre_of(t) or "Unknown genre"
+                key, title, sub = norm(g), g, ""
+            else:
+                folder = str(Path(t["file"]).parent) if t.get("file") else ""
+                key, title, sub = folder, Path(folder).name or folder or "Unknown folder", short_path(folder)
+            out.setdefault(key, [title, sub, []])[2].append(t)
+        return out
+
+    def refresh_groups(self, view):
+        lst, a = self.music_list, self.app
+        self._music_sig = None
+        groups = self.song_groups(view)
+        if self.open_group is not None and self.open_group in groups:
+            title, sub, tracks = groups[self.open_group]
+            if view == "albums":
+                tracks.sort(key=lambda t: (track_no(t), norm(t["title"])))
+            else:
+                tracks.sort(key=lambda t: (norm(t["artist"]), norm(t.get("album")), track_no(t), norm(t["title"])))
+            lst.remove_all()
+            lst.append(self.action_row(f"‹  {title}", "group-back"))
+            self.head_row(lst, title, " · ".join(x for x in (sub, f"{len(tracks)} song{'s' if len(tracks) != 1 else ''}",
+                                                            fmt_total(tracks)) if x), thumb_track=tracks[0],
+                          icon="folder-symbolic" if view == "folders" else "media-optical-symbolic")
+            buttons = [("Play", lambda _b: a.play_list(tracks), False),
+                       ("Shuffle", lambda _b: a.play_list(tracks, shuffled=True), False),
+                       ("Add to queue", lambda _b: a.enqueue(tracks), True)]
+            if view == "albums":
+                buttons.append(("Cover…", lambda _b: self.cover_dialog(tracks), True))
+            buttons += self.download_button(tracks)
+            self.actions_row(lst, buttons)
+            self.lazy(lst, len(tracks), lambda i: self.add_track(lst, tracks[i], i, tracks))
+            return
+        self.open_group = None
+        if not groups:
+            self.set_empty(lst, f"No {self.GROUP_VIEWS[view].lower()} yet",
+                           "Songs you download, and the music in your folders, show up here.")
+            return
+        lst.remove_all()
+        order = sorted(groups.items(), key=lambda kv: (kv[1][0].startswith("Unknown"), norm(kv[1][0]), norm(kv[1][1])))
+        self.section(lst, f"{len(order)} {self.GROUP_VIEWS[view].upper()}")
+
+        def add(i):
+            key, (title, sub, tracks) = order[i]
+            n = len(tracks)
+            line = " · ".join(x for x in (sub if view != "folders" else "", f"{n} song{'s' if n != 1 else ''}") if x)
+            cover = next((t for t in tracks if t.get("thumb") or source_of(t) == "file"), None)
+            lst.append(PlaylistRow(self, {"kind": "group", "id": key, "title": title, "thumb": "", "sub": line},
+                                   cover=cover, icon="folder-symbolic" if view == "folders" else "media-optical-symbolic"))
+        self.lazy(lst, len(order), add)
+
     count_label = None
+    open_group = None   # Albums, Genres or Folders: the one open (its key), or None for all of them
 
     def refresh_count(self):
         if not self.count_label:
@@ -8202,6 +9461,9 @@ class MusicWindow(Adw.ApplicationWindow):
     def _refresh_music(self):
         lst, view, a = self.music_list, self.music_view, self.app
         self.count_label = None
+        if view in self.GROUP_VIEWS:
+            self.refresh_groups(view)
+            return
         if view == "playlists":
             self.refresh_playlists()
             return
@@ -8484,7 +9746,7 @@ class MusicWindow(Adw.ApplicationWindow):
         dlg.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
         dlg.set_close_response("cancel")
         dlg.connect("response", lambda _d, r: r == "go" and (a.upgrade_songs(tracks, force=every.get_active()),
-                                                            self.selecting and self.stop_selecting()))
+                                                            self.selecting and self.after_option()))
         dlg.present(self)
 
     def confirm_upgrade_kept(self, kept):
@@ -8601,7 +9863,7 @@ class MusicWindow(Adw.ApplicationWindow):
                     row = self.add_track(lst, t, j, group, extra=DJ_KINDS.get((dj["sets"].get(str(t["dj"])) or {}).get("kind"), ""))
                     row.queue_index = i
         elif not a.dj_busy and not (a.lastfm.connected or a.plays.items):
-            hint = Gtk.Label(label="Play some songs first, or connect Last.fm in the accounts menu (☰): the DJ picks from what you listen to.",
+            hint = Gtk.Label(label="Play some songs first, or connect Last.fm in Settings (⚙): the DJ picks from what you listen to.",
                              xalign=0, wrap=True)
             hint.add_css_class("sub")
             hint.set_margin_start(8)
@@ -8858,7 +10120,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if r == "save" and changes:
                 a.edit_tags_soon(on_disk, changes)
             if r == "save" and self.selecting:
-                self.stop_selecting()
+                self.after_option()
         dlg.connect("response", answered)
         dlg.present(self)
 
@@ -8870,7 +10132,7 @@ class MusicWindow(Adw.ApplicationWindow):
             albums.setdefault(album_key(t), []).append(t)
         groups = list(albums.values())
         if self.selecting:
-            self.stop_selecting()
+            self.after_option()
         if groups:
             self.cover_album(groups, 0)
 
@@ -8883,13 +10145,26 @@ class MusicWindow(Adw.ApplicationWindow):
         def next_album():
             if i + 1 < len(groups):
                 GLib.idle_add(lambda: (self.cover_album(groups, i + 1), False)[1])
-        self.pick_picture("Cover", f"Cover of {name}" + (f" · {i + 1} of {len(groups)}" if len(groups) > 1 else ""),
-                          f"{t['artist']} · goes on every song of the album here" if album else t["artist"],
-                          lambda: a.pictures.cover_choices(t["artist"].split(",")[0].strip(), album or t["title"]),
-                          lambda src, done: a.set_cover_soon(songs, src, done=done),
-                          "Skip" if i + 1 < len(groups) else "Cancel", next_album)
+        # The whole album: every song of yours from it, not only the ones picked.
+        whole = [x for x in a.my_songs() if album and album_key(x) == album_key(t)] if album else []
+        every = Gtk.CheckButton(label=f"Apply the cover to all songs on this album ({len(whole)})", active=True,
+                                visible=len(whole) > len(songs))
+        lead = t["artist"].split(",")[0].strip()
 
-    def pick_picture(self, title, heading, sub, find, use, skip_label="Cancel", after=None):
+        def find(q=None):
+            if q:   # searched by hand: "Artist - Album", or any words
+                artist, _sep, rest = q.partition(" - ")
+                return a.pictures.cover_choices(artist.strip(), rest.strip()) if rest.strip() else \
+                    a.pictures.cover_choices("", q)
+            return a.pictures.cover_choices(lead, album or t["title"])
+        self.pick_picture("Cover", f"Cover of {name}" + (f" · {i + 1} of {len(groups)}" if len(groups) > 1 else ""),
+                          f"{t['artist']}" + (" · found automatically, or search below" if album else ""),
+                          find, lambda src, done: a.set_cover_soon(whole if every.get_active() and whole else songs,
+                                                                   src, done=done),
+                          "Skip" if i + 1 < len(groups) else "Cancel", next_album,
+                          query=f"{lead} - {album or t['title']}", extra=every)
+
+    def pick_picture(self, title, heading, sub, find, use, skip_label="Cancel", after=None, query=None, extra=None):
         """A dialog of pictures to pick one from: find() (blocking) gives [{"url", "thumb", "from"}];
         use(url or file, done) puts the one picked to use and calls done when it has. after() runs
         once the dialog is through (picked or skipped)."""
@@ -8940,10 +10215,16 @@ class MusicWindow(Adw.ApplicationWindow):
             b = Gtk.Button(label=label)
             b.connect("clicked", cb)
             buttons.append(b)
-        for w in (head, subl, status, scroll, buttons):
-            box.append(w)
+        search = None
+        if query is not None:   # search by hand: other words, when the ones found aren't right
+            search = Gtk.SearchEntry(text=query, placeholder_text="Artist - Album", hexpand=True)
+            search.add_css_class("search")
+        for w in (head, subl, search, status, scroll, extra, buttons):
+            if w is not None:
+                box.append(w)
         page.set_content(box)
         dlg.set_child(page)
+        seq = [0]
 
         def tile(c):
             pic = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, width_request=120, height_request=120)
@@ -8961,13 +10242,27 @@ class MusicWindow(Adw.ApplicationWindow):
                       done=lambda _r, err: pic.set_paintable(load_texture(dest, 240)) if not err else btn.set_visible(False))
             return btn
 
-        def found(choices, err):
+        def found(choices, err, n=0):
+            if n != seq[0]:
+                return
             choices = choices or []
             for c in choices[:12]:
                 flow.append(tile(c))
             status.set_label(f"Pick the right one ({len(choices[:12])} found), or choose a file." if choices else
-                             "Nothing found: unreleased songs often have none. Choose a file, or skip it.")
+                             "Nothing found: unreleased songs often have none. Search other words, choose a file, or skip it.")
         in_thread(find, done=found)
+        if search is not None:
+            def again(e):
+                q = e.get_text().strip()
+                if not q:
+                    return
+                seq[0] += 1
+                n = seq[0]
+                while (child := flow.get_first_child()):
+                    flow.remove(child)
+                status.set_label(f"Looking for “{q}”…")
+                in_thread(find, q, done=lambda c, err: found(c, err, n))
+            search.connect("activate", again)
         dlg.present(self)
 
     def speed_dialog(self, tracks):
@@ -9010,7 +10305,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if r in ("save", "normal"):
                 a.set_speed(tracks, 1.0 if r == "normal" else round(scale.get_value(), 2), sw.get_active())
                 if self.selecting:
-                    self.stop_selecting()
+                    self.after_option()
         dlg.connect("response", answered)
         dlg.present(self)
 
@@ -9050,7 +10345,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if r in ("save", "normal"):
                 a.set_gain(tracks, 0.0 if r == "normal" else round(scale.get_value(), 1))
                 if self.selecting:
-                    self.stop_selecting()
+                    self.after_option()
         dlg.connect("response", answered)
         dlg.present(self)
 
@@ -9106,7 +10401,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if r == "save":
                 a.set_moods(tracks, result())
                 if self.selecting:
-                    self.stop_selecting()
+                    self.after_option()
         dlg.connect("response", answered)
         dlg.present(self)
 
@@ -9141,7 +10436,7 @@ class MusicWindow(Adw.ApplicationWindow):
             if r == "delete":
                 a.delete_songs(on_disk)
                 if self.selecting:
-                    self.stop_selecting()
+                    self.after_option()
         dlg.connect("response", answered)
         dlg.present(self)
 
@@ -9170,6 +10465,11 @@ class MusicWindow(Adw.ApplicationWindow):
         """Right-click on a playlist: put it in a folder (or take it out); on a folder: rename or delete it."""
         a, pl = self.app, row.playlist
         if pl.get("kind") in ("artist", "album") or self.selecting:
+            return
+        if pl.get("kind") == "group":   # an album, genre or folder of yours: its songs' menu
+            songs = self.song_groups(self.music_view).get(pl["id"], (None, None, []))[2]
+            if songs:
+                self.playlist_menu(row, songs, x, y)
             return
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         pop = Gtk.Popover(child=box, has_arrow=False, position=Gtk.PositionType.BOTTOM)
@@ -9392,8 +10692,6 @@ class MusicWindow(Adw.ApplicationWindow):
     def open_artist(self, name, prefer=None):
         """The artist's page: their picture and bio, your songs of theirs by how often you played
         them, and their albums from a service."""
-        if self.selecting:
-            self.stop_selecting()
         if self.stack.get_visible_child_name() != "artist":
             self.artist_from, self.artist_pages = self.stack.get_visible_child_name(), []
         page = {"kind": "artist", "name": name, "info": None, "error": None, "mine": self.app.artist_songs(name),
@@ -9466,8 +10764,6 @@ class MusicWindow(Adw.ApplicationWindow):
         self.open_album(album)
 
     def open_album(self, album):
-        if self.selecting:
-            self.stop_selecting()
         artist = self.artist_pages[-1] if self.artist_pages else {}
         source = album.get("source") or (artist.get("info") or {}).get("source")
         page = {"kind": "album", "name": album["title"], "album": album, "artist": artist.get("name", ""),
@@ -9566,54 +10862,67 @@ class MusicWindow(Adw.ApplicationWindow):
         self.scroll_top(lst)
 
     # ---- picking several songs: queue them, add them to a playlist, take them out ----
+    SELECT_LISTS = ("search", "account", "music", "artist", "queue")
+
     def select_bar(self):
-        bar = Gtk.Box(spacing=4)
+        """While you pick songs: how many (from every list), Options (do things with them, one after
+        another), Select (all, none, in between, invert) and Done."""
+        bar = Gtk.Box(spacing=6)
         bar.add_css_class("selectbar")
         self.select_box = bar
         self.picked_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
         self.picked_label.add_css_class("picked")
         bar.append(self.picked_label)
-
-        def pill(label, tip, cb):
-            b = Gtk.Button(label=label, tooltip_text=tip, valign=Gtk.Align.CENTER)
-            b.add_css_class("pill")
-            b.connect("clicked", lambda *_: cb())
-            bar.append(b)
-            return b
-        self.sel_queue = pill("Queue", "Add to the queue, after the songs you queued before", lambda: self.selection_do("queue"))
-        self.sel_playlist = pill("+ Playlist", "Add to one of your playlists",
-                                 lambda: self.playlist_menu(self.sel_playlist, self.picked_tracks(), after=self.stop_selecting))
-        self.sel_remove = pill("Remove", "", lambda: self.selection_do("remove"))
-        self.sel_download = icon_button("folder-download-symbolic", "ctl", "Download in FLAC",
-                                        lambda: self.selection_do("download"))
-        bar.append(self.sel_download)
-        self.sel_tags = icon_button("document-edit-symbolic", "ctl", "Edit tags", lambda: self.edit_tags_dialog(self.picked_tracks()))
-        bar.append(self.sel_tags)
-        self.sel_upgrade = pill("Upgrade", "Swap these songs for Tidal's FLAC where it's better",
-                                lambda: self.confirm_upgrade([t for t in self.picked_tracks() if upgradable(t)]))
-        bar.append(icon_button("image-x-generic-symbolic", "ctl", "Cover", lambda: self.cover_dialog(self.picked_tracks())))
-        bar.append(icon_button("power-profile-performance-symbolic", "ctl", "Speed", lambda: self.speed_dialog(self.picked_tracks())))
-        bar.append(icon_button("audio-volume-high-symbolic", "ctl", "Volume", lambda: self.volume_dialog(self.picked_tracks())))
-        bar.append(icon_button("starred-symbolic", "ctl", "Favorite (again: unfavorite)",
-                               lambda: (self.app.set_favorite(self.picked_tracks()), self.stop_selecting())))
-        self.sel_delete = icon_button("user-trash-symbolic", "ctl", "Delete", lambda: self.delete_songs_dialog(self.picked_tracks()))
-        bar.append(self.sel_delete)
-        bar.append(icon_button("edit-select-all-symbolic", "ctl", "Select all (Ctrl+A)", self.select_all))
-        bar.append(icon_button("window-close-symbolic", "ctl", "Done (Esc)", self.stop_selecting))
+        self.sel_options = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="What to do with the songs picked")
+        inner = Gtk.Box(spacing=6)
+        inner.append(Icon("more", 16))
+        inner.append(Gtk.Label(label="Options"))
+        self.sel_options.set_child(inner)
+        self.sel_options.add_css_class("pill")
+        self.sel_options.connect("clicked", lambda *_: self.options_dialog())
+        bar.append(self.sel_options)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop = Gtk.Popover(child=box, has_arrow=False)
+        for label, cb in (("Select all from this list", lambda: self.select_here("all")),
+                          ("Deselect all from this list", lambda: self.select_here("none")),
+                          ("Select songs in between the first and last selected", lambda: self.select_here("between")),
+                          ("Invert the selection in this list", lambda: self.select_here("invert")),
+                          ("Clear the whole selection", self.clear_selection)):
+            b = Gtk.Button(label=label)
+            b.add_css_class("menu-item")
+            b.get_child().set_xalign(0)
+            b.connect("clicked", lambda _b, cb=cb: (pop.popdown(), cb()))
+            box.append(b)
+        adv = Gtk.MenuButton(popover=pop, valign=Gtk.Align.CENTER, direction=Gtk.ArrowType.UP,
+                             tooltip_text="Advanced select  (Ctrl+A: all from this list)")
+        inner = Gtk.Box(spacing=6)
+        inner.append(Icon("select", 16))
+        inner.append(Gtk.Label(label="Select"))
+        adv.set_child(inner)
+        adv.add_css_class("pill")
+        adv.add_css_class("quiet")
+        bar.append(adv)
+        bar.append(draw_button("close", "ctl", "Done (Esc)", self.stop_selecting, 16))
         self.selectbar = Gtk.Revealer(child=bar, reveal_child=False, transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
                                       transition_duration=150)
         return self.selectbar
 
+    def show_checks(self, on):
+        for key in self.SELECT_LISTS:
+            for r in self.rows(getattr(self, f"{key}_list", None)):
+                r.check.visible, r.check.active = on, on and r.track["id"] in self.selected
+                if r.cell:
+                    r.cell.show_check()
+
     def start_selecting(self, row, extend=False):
-        """Pick row's song (Shift: every song from the last one picked to it)."""
+        """Pick row's song (Shift: every song from the last one picked to it). Picks from other lists add up."""
         lst = row.get_parent()
-        if not self.selecting or lst is not self.select_list:
-            if self.selecting:
-                self.stop_selecting()
-            self.selecting, self.select_list, self.selected, self.anchor = True, lst, {}, None
-            for r in self.rows(lst):
-                r.show_check(True, False)
+        if not self.selecting:
+            self.selecting, self.selected, self.anchor = True, {}, None
+            self.show_checks(True)
             self.selectbar.set_reveal_child(True)
+        if lst is not self.select_list:
+            self.select_list, self.anchor = lst, None
         if extend and self.anchor is not None:
             lo, hi = sorted((self.anchor, row.index))
             for r in self.rows(lst):
@@ -9625,45 +10934,145 @@ class MusicWindow(Adw.ApplicationWindow):
         self.update_selectbar()
 
     def set_selected(self, row, on):
-        if not self.selecting or row.get_parent() is not self.select_list:
+        if not self.selecting:
             return
         if on:
-            self.selected[row.index] = row.track
+            self.selected[row.track["id"]] = row.track
+            self.select_list = row.get_parent() or self.select_list
         else:
-            self.selected.pop(row.index, None)
+            self.selected.pop(row.track["id"], None)
         self.update_selectbar()
 
     def stop_selecting(self):
-        lst = self.select_list
         self.selecting, self.select_list, self.selected = False, None, {}
-        for r in self.rows(lst):
-            r.show_check(False, False)
+        self.show_checks(False)
         self.selectbar.set_reveal_child(False)
 
+    def clear_selection(self):
+        self.selected = {}
+        self.show_checks(True)
+        self.update_selectbar()
+
+    def after_option(self):
+        """An option was done with the songs picked: the selection closes, or stays for the next option."""
+        if self.app.close_after:
+            self.stop_selecting()
+        else:
+            self.show_checks(True)
+            self.update_selectbar()
+
     def select_all(self):
-        self.lazy_all(self.select_list)
-        rows = list(self.rows(self.select_list))
-        on = not all(r.check.get_active() for r in rows)
-        for r in rows:
-            r.show_check(True, on)
+        self.select_here("invert" if False else "toggle")
+
+    def select_here(self, how):
+        """All, none, the songs between the first and last picked, or the others: in the list you're picking in."""
+        lst = self.select_list
+        if lst is None:
+            return
+        self.lazy_all(lst)
+        rows = list(self.rows(lst))
+        if how == "toggle":
+            how = "none" if rows and all(r.check.get_active() for r in rows) else "all"
+        if how == "between":
+            picked = [i for i, r in enumerate(rows) if r.check.get_active()]
+            if len(picked) < 2:
+                self.toast("Pick a first and a last song in this list")
+                return
+            for r in rows[picked[0]:picked[-1] + 1]:
+                r.show_check(True, True)
+        else:
+            for r in rows:
+                r.show_check(True, True if how == "all" else False if how == "none" else not r.check.get_active())
+        self.update_selectbar()
 
     def picked_tracks(self):
-        return [self.selected[i] for i in sorted(self.selected)]
+        return list(self.selected.values())
 
     def update_selectbar(self):
         n = len(self.selected)
-        self.picked_label.set_label(f"{n} selected" if n else "Pick songs")
-        lst = self.select_list
-        in_queue, in_mine = lst is self.queue_list, lst is self.music_list and bool(self.open_mine)
-        self.sel_remove.set_visible(in_queue or in_mine)
-        self.sel_remove.set_tooltip_text("Take out of the queue" if in_queue else "Take out of this playlist")
-        self.sel_queue.set_visible(not in_queue)
-        for w in (self.sel_queue, self.sel_playlist, self.sel_remove, self.sel_download):
-            w.set_sensitive(n > 0)
-        self.sel_download.set_visible(any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in self.selected.values()))
-        self.sel_tags.set_visible(any(song_file(self.lib, t) for t in self.selected.values()))
-        self.sel_delete.set_visible(self.sel_tags.get_visible())
-        self.sel_upgrade.set_visible(not self.app.upgrading and any(upgradable(t) for t in self.selected.values()))
+        lists = len({id(r.get_parent()) for key in self.SELECT_LISTS for r in self.rows(getattr(self, f"{key}_list", None))
+                     if r.check.active})
+        self.picked_label.set_label((f"{n} selected" + (f" · from {lists} lists" if lists > 1 else "")) if n
+                                    else "Pick songs (from any lists)")
+        self.sel_options.set_sensitive(n > 0)
+
+    def options_dialog(self):
+        """Everything to do with the songs picked. With Close selection after an option off, the
+        selection stays for another option (queue them, then add them to a playlist, then…)."""
+        a, tracks = self.app, self.picked_tracks()
+        if not tracks:
+            return
+        dlg = Adw.Dialog(title=f"{len(tracks)} song{'s' if len(tracks) != 1 else ''}", content_width=380, content_height=600)
+        page = Adw.ToolbarView()
+        page.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=10, margin_end=10, margin_bottom=12)
+        files = [t for t in tracks if song_file(self.lib, t)]
+        in_queue = self.select_list is self.queue_list
+        in_mine = self.select_list is self.music_list and bool(self.open_mine)
+        queue_ids = {t["id"] for t in tracks}
+
+        def do(cb, closes=True):
+            def go(*_):
+                dlg.close()
+                cb()
+                if closes:
+                    self.after_option()
+            return go
+        items = [("play", "Play", lambda: a.play_list(tracks)),
+                 ("shuffle", "Shuffle", lambda: a.play_list(tracks, shuffled=True)),
+                 ("next", "Play next", lambda: a.enqueue(tracks, "next")),
+                 ("queue", "Add to the queue", lambda: a.enqueue(tracks, "queue")),
+                 ("playlist", "Add to a playlist…", None),
+                 ("star", "Favorite (again: unfavorite)", lambda: a.set_favorite(tracks))]
+        if in_queue:
+            items.append(("close", "Take out of the queue", lambda: a.unqueue_many(
+                [r.index for r in self.rows(self.queue_list) if r.track["id"] in queue_ids])))
+        if in_mine:
+            items.append(("close", "Take out of this playlist", lambda: a.remove_from_playlist(self.open_mine, queue_ids)))
+        if any(source_of(t) != "file" and not self.lib.has(t["id"]) for t in tracks):
+            items.append(("down", "Download in FLAC", lambda: a.download(tracks)))
+        if files:
+            items.append(("lyrics", "Put the lyrics into the files", lambda: a.lyrics_into_files(files)))
+        items.append(("art", "Cover…", "cover"))
+        if files:
+            items.append(("edit", "Edit tags…", "tags"))
+        items += [("chart", "Speed…", "speed"), ("speaker", "Volume…", "volume"), ("mood", "Moods…", "moods")]
+        if not a.upgrading and any(upgradable(t) for t in tracks):
+            items.append(("reload", "Upgrade to Tidal's FLAC…", "upgrade"))
+        items.append(("copy", "Copy the names", lambda: self.copy_names(tracks)))
+        if files:
+            items.append(("trash", "Delete…", "delete"))
+        dialogs = {"cover": lambda: self.cover_dialog(tracks), "tags": lambda: self.edit_tags_dialog(files),
+                   "speed": lambda: self.speed_dialog(tracks), "volume": lambda: self.volume_dialog(tracks),
+                   "moods": lambda: self.moods_dialog(tracks),
+                   "upgrade": lambda: self.confirm_upgrade([t for t in tracks if upgradable(t)]),
+                   "delete": lambda: self.delete_songs_dialog(files)}
+        for icon, label, cb in items:
+            b = Gtk.Button()
+            inner = Gtk.Box(spacing=14)
+            inner.append(Icon(icon, 18))
+            inner.append(Gtk.Label(label=label, xalign=0, hexpand=True))
+            b.set_child(inner)
+            b.add_css_class("menu-item")
+            b.add_css_class("option")
+            if cb is None:   # a playlist: picked from a menu of them, by the Options button
+                b.connect("clicked", lambda *_: (dlg.close(), self.playlist_menu(self.sel_options, tracks, after=self.after_option)))
+            elif isinstance(cb, str):   # a dialog of its own: the selection waits for it
+                b.connect("clicked", lambda *_, k=cb: (dlg.close(), dialogs[k]()))
+            else:
+                b.connect("clicked", do(cb))
+            box.append(b)
+        close = Gtk.CheckButton(label="Close selection after an option", active=a.close_after, margin_top=8)
+        close.connect("toggled", lambda c: a.set_close_after(c.get_active()))
+        box.append(close)
+        page.set_content(Gtk.ScrolledWindow(child=box, hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True))
+        dlg.set_child(page)
+        dlg.present(self)
+
+    def copy_names(self, tracks):
+        text = "\n".join(f"{t['artist']} – {t['title']}" for t in tracks)
+        self.get_clipboard().set(text)
+        self.toast(f"Copied {len(tracks)} song name{'s' if len(tracks) != 1 else ''}")
 
     def selection_do(self, what):
         tracks = self.picked_tracks()
@@ -9673,12 +11082,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.app.enqueue(tracks, "queue")
         elif what == "download":
             self.app.download(tracks)
-        elif what == "remove":
-            if self.select_list is self.queue_list:
-                self.app.unqueue_many(sorted(self.selected))
-            elif self.open_mine:
-                self.app.remove_from_playlist(self.open_mine, {t["id"] for t in tracks})
-        self.stop_selecting()
+        self.after_option()
 
     # ---- your library on the service picked at the top ----
     playlists = None        # {service: your playlists there}, once loaded
@@ -9820,6 +11224,7 @@ class MusicWindow(Adw.ApplicationWindow):
             self.syncing_source = False
         # Local: your own songs, in the Music tab and the search; no Library tab (that's a service's).
         self.tab_buttons["account"].set_visible(not a.browse_local)
+        self.refresh_home()
         if self.search_in.get_selected() != list(SEARCH_IN).index(a.search_in):
             self.search_in.set_selected(list(SEARCH_IN).index(a.search_in))
         self.entry.set_placeholder_text(self.search_hint())
@@ -9834,14 +11239,137 @@ class MusicWindow(Adw.ApplicationWindow):
         (Songs already played aren't listed; Previous goes back through them.)"""
         self.when_shown("queue", self._refresh_queue)
 
+    def current_list_name(self):
+        """The list you're playing from, as its queue is called: an album, an artist, a playlist, My music…"""
+        key = self.stack.get_visible_child_name()
+        a = self.app
+        if key == "music":
+            if self.music_view in self.GROUP_VIEWS and self.open_group is not None:
+                g = self.song_groups(self.music_view).get(self.open_group)
+                return g[0] if g else self.GROUP_VIEWS[self.music_view]
+            if self.open_mine:
+                pl = a.lists.get(self.open_mine)
+                return pl["name"] if pl else "Playlist"
+            return self.page_title("music")
+        if key == "artist" and self.artist_pages:
+            return self.artist_pages[-1].get("name") or "Artist"
+        if key == "account" and getattr(self, "open_playlist", None):
+            return self.open_playlist[0].get("title") or "Playlist"
+        if key == "search":
+            q = self.entry.get_text().strip()
+            return f"Search: {q}" if q else "Search"
+        if key in ("queue", "nowplaying", "lyrics", "visualizer"):
+            return a.queue_name_s or "Songs"
+        return self.page_title(key)
+
+    def queue_head(self, lst):
+        """The top of Up next: the queue's name, and your other queues to go back to."""
+        a = self.app
+        box = Gtk.Box(spacing=10)
+        box.add_css_class("queue-head")
+        ic = Icon("queue", 20)
+        ic.add_css_class("accent")
+        box.append(ic)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        t = Gtk.Label(label=a.queue_name_s or "Songs", xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        t.add_css_class("title")
+        others = len([q for q in a.queues if q["id"] != a.queue_id])
+        sub = Gtk.Label(label=(f"{others} other queue{'s' if others != 1 else ''} · tap to switch" if others
+                               else "Your only queue") if a.multi_queue else "One queue for everything",
+                        xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        sub.add_css_class("sub")
+        text.append(t)
+        text.append(sub)
+        box.append(text)
+        b = Gtk.Button(label="Queues", valign=Gtk.Align.CENTER)
+        b.add_css_class("pill")
+        b.connect("clicked", lambda *_: self.queues_dialog())
+        box.append(b)
+        lst.append(Gtk.ListBoxRow(activatable=False, selectable=False, child=box))
+
+    def queues_dialog(self):
+        """Your queues: switch to one (it plays on from where you left it), rename or delete it,
+        or remove all the others."""
+        a = self.app
+        dlg = Adw.Dialog(title="Queues", content_width=420, content_height=520)
+        page = Adw.ToolbarView()
+        page.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=14, margin_end=14, margin_bottom=14)
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        rows.add_css_class("tracks")
+        rows.add_css_class("queues")
+        scroll = Gtk.ScrolledWindow(child=rows, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        multi = Gtk.Switch(active=a.multi_queue, valign=Gtk.Align.CENTER)
+        multi.connect("notify::active", lambda sw, _p: (a.set_multi_queue(sw.get_active()), fill()))
+        line = Gtk.Box(spacing=10)
+        note = Gtk.Label(label="A separate queue for each folder, album, artist and playlist you play from",
+                         xalign=0, wrap=True, hexpand=True)
+        note.add_css_class("sub")
+        line.append(note)
+        line.append(multi)
+        clear = Gtk.Button(label="Remove all other queues")
+        clear.add_css_class("pill")
+        clear.add_css_class("quiet")
+        clear.connect("clicked", lambda *_: (a.remove_other_queues(), fill()))
+        for w in (line, scroll, clear):
+            box.append(w)
+        page.set_content(box)
+        dlg.set_child(page)
+
+        def fill():
+            rows.remove_all()
+            for q in a.saved_queues():
+                playing = q["id"] == a.queue_id
+                row = Gtk.Box(spacing=8)
+                row.add_css_class("song")
+                if playing:
+                    row.add_css_class("playing")
+                text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+                name = Gtk.Label(label=q["name"], xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                name.add_css_class("title")
+                n, i = len(q["tracks"]), q.get("index", 0)
+                cur = q["tracks"][i]["title"] if 0 <= i < n else ""
+                sub = Gtk.Label(label=("Playing · " if playing else f"{i + 1} of {n} · ") + cur
+                                + ("" if playing or not q.get("position") else f" · {fmt_time(q['position'])}"),
+                                xalign=0, ellipsize=Pango.EllipsizeMode.END)
+                sub.add_css_class("sub")
+                text.append(name)
+                text.append(sub)
+                row.append(text)
+                ren = draw_button("edit", "row-action", "Rename", lambda q=q: self.ask_name(
+                    "Rename the queue", q["name"], lambda nm, q=q: (a.rename_queue(q["id"], nm), fill())), 16)
+                row.append(ren)
+                rm = draw_button("trash", "row-action", "Delete this queue", lambda q=q: (a.delete_queue(q["id"]), fill()), 16)
+                row.append(rm)
+                r = Gtk.ListBoxRow(child=row)
+                r.qid = q["id"]
+                rows.append(r)
+            if not rows.get_first_child():
+                lab = Gtk.Label(label="No queues yet: play something from a list", wrap=True)
+                lab.add_css_class("sub")
+                rows.append(Gtk.ListBoxRow(activatable=False, child=lab))
+            clear.set_sensitive(any(q["id"] != a.queue_id for q in a.queues))
+
+        def picked(_l, r):
+            qid = getattr(r, "qid", None)
+            if qid and qid != a.queue_id:
+                a.switch_queue(qid)
+                dlg.close()
+        rows.connect("row-activated", picked)
+        fill()
+        dlg.present(self)
+
     def _refresh_queue(self):
         q, i = self.app.queue, self.app.index
         lst = self.queue_list
         if not q[max(i, 0):]:
             self.set_empty(lst, "Queue is empty", "Pick a song and a radio of similar songs follows it.\n"
                            "Right-click a song (or press a) to queue it.")
+            if self.app.queues:
+                self.queue_head(lst)
             return
         lst.remove_all()
+        self.queue_head(lst)
         heads = {"now": "NOW PLAYING", "queued": "QUEUED BY YOU",
                  "next": "UP NEXT · DJ" if self.app.dj["on"] else "UP NEXT · RADIO" if self.app.radio_from else "UP NEXT"}
         last = [None]
@@ -9936,9 +11464,9 @@ class MusicWindow(Adw.ApplicationWindow):
             self._music_soon = GLib.timeout_add(1500, later)
 
     def on_row(self, key, row):
-        if self.selecting:   # a click picks the song (or unpicks it) instead of playing it
-            if isinstance(row, TrackRow) and row.get_parent() is self.select_list:
-                row.check.set_active(not row.check.get_active())
+        if self.selecting and isinstance(row, TrackRow):   # a click picks the song (or unpicks it) instead of playing it
+            self.select_list = row.get_parent()
+            row.check.set_active(not row.check.get_active())
             return
         action = getattr(row, "account_action", None)
         if action == "back":
@@ -9954,6 +11482,20 @@ class MusicWindow(Adw.ApplicationWindow):
         if action == "mine-back":
             self.open_mine = None
             self.refresh_music()
+            return
+        if action == "group-back":
+            self.open_group = None
+            self.refresh_music()
+            self.page_changed()
+            return
+        if isinstance(row, PlaylistRow) and row.playlist.get("kind") == "group":
+            def go(gid=row.playlist["id"]):   # after the click is done with the list: rebuilt during it, it drew blank
+                self.open_group = gid
+                self.refresh_music()
+                self.scroll_top(self.music_list)
+                self.page_changed()
+                return False
+            GLib.idle_add(go)
             return
         if action == "new-folder":
             self.ask_name("New folder", "", self.app.new_folder, ok="Make it")
@@ -10085,7 +11627,7 @@ class MusicWindow(Adw.ApplicationWindow):
             return
         if key in ("tidal", "spotify") and not src.signed_in:
             if not quiet:
-                self.toast(f"Connect {SOURCES[key]} in the accounts menu first")
+                self.toast(f"Connect {SOURCES[key]} in Settings first")
             return
         if not quiet or not (self.results or self.result_artists or self.result_albums):
             self.set_empty(self.search_list, "Searching…", q)   # as you type, what was found stays until the new results come
@@ -10160,7 +11702,9 @@ class MusicWindow(Adw.ApplicationWindow):
         self.np_art.clear()
         self.art.apply(self.np_art, t)
         self.update_tint(t)
-        self.play_btn.set_icon_name("media-playback-start-symbolic" if a.paused else "media-playback-pause-symbolic")
+        self.update_now_page(t)
+        self.update_nav_sub()
+        self.play_btn.icon.set_name("play" if a.paused else "pause")
         self.update_saved()
         self.update_like()
         self.update_favorite()
@@ -10199,6 +11743,8 @@ class MusicWindow(Adw.ApplicationWindow):
         """The window in the colour of what's playing's cover (once its picture is on disk)."""
         t = t or self.app.current_track()
         self.app.set_tint(self.art.paths.get(t["id"]) if t else None)
+        if t:
+            self.load_big_art(t)
 
     def update_favorite(self):
         t = self.app.current_track()
@@ -10206,6 +11752,7 @@ class MusicWindow(Adw.ApplicationWindow):
         self.fav_btn.get_child().set_label("★" if on else "☆")
         (self.fav_btn.add_css_class if on else self.fav_btn.remove_css_class)("liked")
         self.fav_btn.set_tooltip_text("In your favorites (f)" if on else "Favorite (f)")
+        self.set_tool(self.tool_fav, "star" if on else "star_line", on)
 
     def update_like(self):
         t = self.app.current_track()
@@ -10213,6 +11760,8 @@ class MusicWindow(Adw.ApplicationWindow):
         can = bool(t) and bool(src and src.signed_in)
         liked = can and t["id"] in self.app.liked
         self.like_btn.set_visible(can)
+        self.tool_like.set_visible(can)
+        self.set_tool(self.tool_like, "heart" if liked else "heart_line", liked)
         self.like_btn.get_child().set_label("󰋑" if liked else "󰋕")
         (self.like_btn.add_css_class if liked else self.like_btn.remove_css_class)("liked")
         if can:
@@ -10223,8 +11772,7 @@ class MusicWindow(Adw.ApplicationWindow):
 
     def update_repeat(self):
         mode = self.app.repeat
-        self.repeat_btn.set_icon_name("media-playlist-repeat-song-symbolic" if mode == "one"
-                                      else "media-playlist-repeat-symbolic")
+        self.repeat_btn.icon.set_name("repeat_one" if mode == "one" else "repeat")
         (self.repeat_btn.add_css_class if mode != "off" else self.repeat_btn.remove_css_class)("on")
         self.repeat_btn.set_tooltip_text({"off": "Repeat: off", "all": "Repeat: all",
                                           "one": "Repeat: this song"}[mode] + " (r)")
@@ -10240,6 +11788,11 @@ class MusicWindow(Adw.ApplicationWindow):
         self.scale.set_value(pos or 0)
         self.t_pos.set_label(fmt_time(pos))
         self.t_len.set_label(fmt_time(dur))
+        if self.stack.get_visible_child_name() == "nowplaying":
+            self.wave.set_position(pos, dur)
+            if self.wave.drag is None:
+                self.np_times[0].set_label(fmt_time(pos))
+            self.np_times[1].set_label(fmt_time(dur))
 
     def on_seek(self, _scale, _scroll, value):
         self.dragging_until = time.monotonic() + 0.4
@@ -10250,12 +11803,20 @@ class MusicWindow(Adw.ApplicationWindow):
     def on_key(self, _ctl, keyval, _code, state):
         ctrl = state & Gdk.ModifierType.CONTROL_MASK
         if keyval == Gdk.KEY_Escape:
-            if self.selecting:
+            if self.split.get_show_sidebar():
+                self.split.set_show_sidebar(False)
+            elif self.selecting:
                 self.stop_selecting()
-            elif self.stack.get_visible_child_name() == "artist":
-                self.artist_back()
+            elif self.stack.get_visible_child_name() != "nowplaying":
+                self.nav_back()
             else:
                 self.set_visible(False)
+            return True
+        if keyval == Gdk.KEY_F9 or (ctrl and keyval == Gdk.KEY_m):
+            self.toggle_drawer()
+            return True
+        if ctrl and keyval == Gdk.KEY_comma:
+            self.show_tab("settings")
             return True
         if ctrl and keyval == Gdk.KEY_a and self.selecting:
             self.select_all()
@@ -10323,12 +11884,12 @@ class MusicWindow(Adw.ApplicationWindow):
 
 # =============================================================================
 # Pictures and bios: artists' pictures and album covers from Google's image search
-# (with a key of yours: Settings in the accounts menu), else Genius, else Wikipedia;
+# (with a key of yours: Settings in Settings), else Genius, else Wikipedia;
 # artists' bios from Wikipedia, else Genius. Each is looked for once and kept.
 # =============================================================================
 
 PICTURES = CACHE / f"pictures{SUFFIX}.json"
-# The keys Settings (in the accounts menu) asks for: none is needed, each makes something better.
+# The keys Settings (in Settings) asks for: none is needed, each makes something better.
 API_KEYS = {
     "google_key": ("Google API key", "Custom Search JSON API key from console.cloud.google.com: pictures and covers from Google"),
     "google_cx": ("Google search engine ID", "A Programmable Search Engine (programmablesearchengine.google.com) set to search the whole web"),
@@ -10781,7 +12342,7 @@ def wrapped_data(app, period, progress):
     minute the first time (Last.fm hands out 200 scrobbles a request), then it's kept."""
     fm, spotify = app.lastfm, list(app.spotify_history.plays)
     if not fm.connected and not spotify:
-        raise RuntimeError("connect Last.fm, or import your Spotify history, in the accounts menu (☰)")
+        raise RuntimeError("connect Last.fm, or import your Spotify history, in Settings (⚙)")
     WRAPPED.mkdir(parents=True, exist_ok=True)
     if fm.connected:
         progress("Opening your Last.fm…")
@@ -11715,6 +13276,7 @@ def track_from_file(path):
     """A song on disk (anything mpv plays), named from its tags, else its file name."""
     path = Path(path).expanduser().resolve()
     title, artist, album, dur = path.stem, "", "", 0
+    genre = albumartist = number = ""
     try:
         import mutagen
         f = mutagen.File(path, easy=True)
@@ -11723,11 +13285,15 @@ def track_from_file(path):
             title = (tags.get("title") or [title])[0]
             artist = ", ".join(tags.get("artist") or [])
             album = (tags.get("album") or [""])[0]
+            genre = (tags.get("genre") or [""])[0]
+            albumartist = (tags.get("albumartist") or [""])[0]
+            number = (tags.get("tracknumber") or [""])[0]
             dur = round(getattr(f.info, "length", 0) or 0)
     except Exception:  # noqa: BLE001 -- untagged, or not audio mutagen knows: the file name, then
         pass
     return {"id": "f" + hashlib.sha1(str(path).encode()).hexdigest()[:16], "source": "file", "file": str(path),
-            "title": title, "artist": artist or "Unknown artist", "album": album, "duration": dur, "thumb": ""}
+            "title": title, "artist": artist or "Unknown artist", "album": album, "duration": dur, "thumb": "",
+            "genre": genre, "albumartist": albumartist, "track": number}
 
 
 # The tags you can edit by hand (Edit tags…): the name mutagen's easy tags use, and the label.
@@ -11777,6 +13343,40 @@ def write_tags(path, changes):
         else:
             f[k] = [v]
     f.save()
+
+
+def put_lyrics(path, text):
+    """The words as the file's own lyrics, if it has none yet: a FLAC's or Ogg's LYRICS, an MP3's
+    (or WAV's, AIFF's) ID3 lyrics frame, an M4A's lyrics. Only the words. Returns whether it wrote."""
+    import mutagen
+    from mutagen.id3 import ID3, USLT
+    from mutagen.mp4 import MP4
+    text = (text or "").strip()
+    if not text:
+        return False
+    f = mutagen.File(path)
+    if f is None:
+        return False
+    if isinstance(f, MP4):
+        if f.tags is None:
+            f.add_tags()
+        if f.tags.get("\xa9lyr"):
+            return False
+        f.tags["\xa9lyr"] = [text]
+    elif isinstance(f.tags, ID3) or (f.tags is None and Path(path).suffix.lower() in (".mp3", ".wav", ".aiff", ".aif")):
+        if f.tags is None:
+            f.add_tags()
+        if any(str(k).startswith(("USLT", "SYLT")) for k in f.tags.keys()):
+            return False
+        f.tags.add(USLT(encoding=3, lang="eng", desc="", text=text))
+    else:   # Vorbis comments: FLAC, Ogg, Opus
+        if f.tags is None:
+            f.add_tags()
+        if f.tags.get("LYRICS") or f.tags.get("UNSYNCEDLYRICS"):
+            return False
+        f.tags["LYRICS"] = [text]
+    f.save()
+    return True
 
 
 def cover_image(data):
@@ -11877,6 +13477,7 @@ class MusicApp(Adw.Application):
         self.queue, self.index = [], -1
         self.context = 0        # bumped when a new list starts, so a late radio doesn't land in it
         self.paused, self.position, self.duration = True, 0.0, 0.0
+        self.resume_at = 0.0
         self.position_at = 0.0     # when position was last heard from mpv (the visualizer goes on from there)
         self.loaded = (None, None)   # (the song's id, what mpv was given to play: a file or an address)
         self.radio_from = None  # the song the radio going is of
@@ -11957,6 +13558,12 @@ class MusicApp(Adw.Application):
         state = read_json(STATE, {})
         self.queue = [t for t in state.get("queue", []) if isinstance(t, dict) and t.get("id")]
         self.index = min(state.get("index", -1), len(self.queue) - 1)
+        self.queues = [q for q in state.get("queues") or [] if isinstance(q, dict) and q.get("id") and q.get("tracks")]
+        self.queue_id, self.queue_name_s = state.get("queue_id"), state.get("queue_name") or ""
+        self.multi_queue = state.get("multi_queue", True) is not False
+        self.list_name, self.resume_at = "", 0.0
+        self.close_after = state.get("close_after", True) is not False
+        self.lyrics_to_files = bool(state.get("lyrics_to_files", False))
         self.radio_from = state.get("radio_from")
         dj = state.get("dj")
         self.dj = dj if isinstance(dj, dict) and isinstance(dj.get("sets"), dict) else {"on": False, "sets": {}, "shown": None}
@@ -12062,11 +13669,15 @@ class MusicApp(Adw.Application):
 
     def save_state(self):
         write_private(STATE, json.dumps({"queue": self.queue, "index": self.index, "radio_from": self.radio_from,
+                                       "queues": [q for q in self.queues if q["id"] != self.queue_id],
+                                       "queue_id": self.queue_id, "queue_name": self.queue_name_s,
+                                       "multi_queue": self.multi_queue, "close_after": self.close_after,
+                                       "lyrics_to_files": self.lyrics_to_files,
                                        "dj": self.dj, "repeat": self.repeat, "volume": self.volume, "muted": self.muted,
                                        "eq": self.eq, "source": self.source, "sync_sources": self.sync_sources,
                                        "lyrics_mode": self.lyrics_mode, "folders": self.folders,
                                        "art_colors": self.art_colors, "keep_played": self.keep_played,
-                                       "discord": self.discord_on, "look": self.look,
+                                       "discord": self.discord_on, "look": self.look, "styled": True,
                                        "skip_order": self.skip_order, "vis_preset": self.vis_preset,
                                        "wrapped_style": self.wrapped_style, "download_dir": self.download_dir,
                                        "dupe_action": self.dupe_action,
@@ -12135,9 +13746,10 @@ class MusicApp(Adw.Application):
                      "added": "added", "top": "top", "most-played": "top",
                      "favorites": "favorites", "skips": "skips", "duplicates": "dupes"}
             tab = {"search": "search", "library": "account", "queue": "queue", "up-next": "queue",
-                   "lyrics": "lyrics", "visualizer": "visualizer"}.get(arg) or ("music" if arg in views else None)
+                   "lyrics": "lyrics", "visualizer": "visualizer", "home": "home", "now": "nowplaying",
+                   "now-playing": "nowplaying", "player": "nowplaying"}.get(arg) or ("music" if arg in views else None)
             if rest and not tab:
-                return fail("omarchy-music show [search|library|music|playlists|recent|added|top|favorites|skips|duplicates|queue|lyrics|visualizer]", 2)
+                return fail("omarchy-music show [home|now|search|library|music|playlists|recent|added|top|favorites|skips|duplicates|queue|lyrics|visualizer]", 2)
             self.show_window(tab)
             if arg in views:
                 self.win.set_music_view(views[arg])
@@ -12168,7 +13780,7 @@ class MusicApp(Adw.Application):
                               else int(arg) if arg else None)
             if not self.lastfm.connected and not self.spotify_history.plays:
                 return fail("Wrapped is made from your Last.fm scrobbles or your Spotify history: connect Last.fm first "
-                            "(the accounts menu, or omarchy-music --lastfm-login)")
+                            "(Settings, or omarchy-music --lastfm-login)")
         elif verb == "tag":
             n = len(self.tagger.untagged())
             if rest[:1] == ["all"]:
@@ -12317,8 +13929,10 @@ class MusicApp(Adw.Application):
     # ---- theme ----
     def reload_theme(self):
         if not hasattr(self, "look"):   # before the rest of the settings are read
-            saved = read_json(STATE, {}).get("look")
-            self.look = saved if saved in ("default", *LOOKS) else "default"
+            st = read_json(STATE, {})
+            saved = st.get("look")
+            # The Stellio look is the new default: a look picked before it came is kept only once picked again.
+            self.look = saved if st.get("styled") and saved in ("default", *LOOKS) else "stellio"
         theme = load_theme(self.look)
         provider = Gtk.CssProvider()
         provider.load_from_string(theme_css(theme))
@@ -12374,6 +13988,40 @@ class MusicApp(Adw.Application):
         self.look = look if look in ("default", *LOOKS) else "default"
         self.save_soon()
         self.reload_theme()
+
+    def lyrics_into_files(self, tracks, quiet=False):
+        """Each song's lyrics into its own file (found now if they weren't yet), so they stay with it."""
+        files = [(t, song_file(self.lib, t)) for t in tracks]
+        files = [(t, f) for t, f in files if f]
+
+        def work():
+            done = 0
+            for t, f in files:
+                try:
+                    got = self.lyrics.get(t)
+                    if got and put_lyrics(f, Lyrics.words(got)):
+                        done += 1
+                except Exception:  # noqa: BLE001 -- a file that can't be written (read-only, in use): the next one
+                    continue
+            return done
+
+        def finished(n, _err):
+            if not quiet:
+                self.toast(f"Lyrics put into {n} file{'s' if n != 1 else ''}" if n else
+                           "No lyrics to add: they're in the files already, or weren't found")
+        if files:
+            in_thread(work, done=finished)
+
+    def set_lyrics_to_files(self, on):
+        self.lyrics_to_files = bool(on)
+        self.save_soon()
+        if on:
+            self.toast("The lyrics of each song you play go into its file (MP3, FLAC, M4A, Ogg…)")
+
+    def set_close_after(self, on):
+        """Options on songs you picked: the selection closes after one, or stays for the next."""
+        self.close_after = bool(on)
+        self.save_soon()
 
     def set_art_colors(self, on):
         self.art_colors = on
@@ -12508,7 +14156,7 @@ class MusicApp(Adw.Application):
         self.lyrics_mode = mode
         self.save_soon()
         view = self.win.lyrics if self.win else None
-        if view and view.got and view.mode.get_active_name() != mode:   # changed in the accounts menu
+        if view and view.got and view.mode.get_active_name() != mode:   # changed in Settings
             view.render(view.got, None)
 
     # ---- Spotify: a developer app of yours, then Spotify's consent page ----
@@ -12560,6 +14208,13 @@ class MusicApp(Adw.Application):
                 seen.add(same(t["file"]))
                 out.append(dict(t))
         return out + [t for t in self.local.tracks() if same(t["file"]) not in seen]
+
+    def genre_of(self, t):
+        """A song's genre: from its tags (your own files), or the one the tagger found for a download."""
+        g = t.get("genre") or (self.lib.items.get(t.get("id")) or {}).get("genre") or ""
+        if isinstance(g, list):
+            g = g[0] if g else ""
+        return str(g).strip()
 
     def most_played(self):
         """The Music tab's Most played: every play added up (see Stats): Last.fm's, your Spotify
@@ -12626,7 +14281,7 @@ class MusicApp(Adw.Application):
         if src and src.get("kind") != "all":
             got = self.dj_source(src)
             if not got or not got[1]:
-                self.toast(f"No songs of yours in {got[0]}: add the folder under Folders in the accounts menu (☰) first"
+                self.toast(f"No songs of yours in {got[0]}: add the folder under Folders in Settings (⚙) first"
                            if src.get("kind") == "folder" and got else
                            f"There are no songs in {got[0] if got else 'that'} for the DJ to play")
                 return
@@ -13375,7 +15030,7 @@ class MusicApp(Adw.Application):
             self.toast("Those are downloaded already")
             return
         if not (self.dl.tidal and self.dl.tidal.connected):
-            self.toast("Connect Tidal in the accounts menu first: downloads come from there, in FLAC")
+            self.toast("Connect Tidal in Settings first: downloads come from there, in FLAC")
             return
         if not checked and self.dupe_action != "keep":
             mine = self.my_songs()
@@ -13419,7 +15074,7 @@ class MusicApp(Adw.Application):
         if self.upgrading:
             return
         if not (self.dl.tidal and self.dl.tidal.connected):
-            self.toast("Connect Tidal in the accounts menu first: the new copies come from there, in FLAC")
+            self.toast("Connect Tidal in Settings first: the new copies come from there, in FLAC")
             return
         tracks = [t for t in (tracks if tracks is not None else self.local.tracks())
                   if not is_phone_song(t) and Path(t["file"]).exists()]
@@ -13613,7 +15268,7 @@ class MusicApp(Adw.Application):
 
     # ---- Tidal and the FLAC sync of your whole library ----
     def connect_tidal(self):
-        """Open Tidal's sign-in page; the accounts menu then asks for the address it ends on."""
+        """Open Tidal's sign-in page; Settings then asks for the address it ends on."""
         tidal = self.dl.tidal
         if not tidal or tidal.connected:
             return
@@ -13765,7 +15420,7 @@ class MusicApp(Adw.Application):
     def lastfm_result(self, _res, err):
         if isinstance(err, LastFMError) and err.code == 9:   # the app's access was revoked on Last.fm
             self.lastfm.disconnect()
-            self.toast("Last.fm signed you out: connect it again in the accounts menu")
+            self.toast("Last.fm signed you out: connect it again in Settings")
             self.accounts_changed()
 
     def begin_listen(self, t):
@@ -13797,7 +15452,7 @@ class MusicApp(Adw.Application):
 
     # ---- Wrapped ----
     # ---- your Spotify history and the stats ----
-    spotify_importing = ""   # what the import is doing, for the accounts menu
+    spotify_importing = ""   # what the import is doing, for Settings
 
     def import_spotify_history(self, path):
         self.spotify_importing = "Reading your Spotify history…"
@@ -13889,9 +15544,92 @@ class MusicApp(Adw.Application):
     def current_track(self):
         return self.queue[self.index] if 0 <= self.index < len(self.queue) else None
 
+    # ---- queues: one for each list you play from (an album, an artist, a playlist…), each kept
+    # where you left it, to go back to ----
+    def queue_name(self):
+        return self.queue_name_s or ""
+
+    def snapshot_queue(self):
+        """The queue playing now, into the saved ones (the newest first)."""
+        if not self.queue:
+            return
+        if not self.queue_id:
+            self.queue_id = "q" + secrets.token_hex(6)
+        q = {"id": self.queue_id, "name": self.queue_name_s or "Songs", "tracks": [dict(t) for t in self.queue],
+             "index": self.index, "position": round(self.position or 0.0, 1), "time": time.time()}
+        self.queues = [q] + [x for x in self.queues if x["id"] != self.queue_id]
+        del self.queues[MAX_QUEUES:]
+
+    def start_queue(self, name):
+        """You play from the list name: a queue of its own (the one you had stays, to go back to).
+        Returns whether it's another queue than the one playing."""
+        name = name or "Songs"
+        if not self.multi_queue or name == self.queue_name_s:
+            self.queue_name_s = name
+            return False
+        self.snapshot_queue()
+        same = next((q for q in self.queues if q["name"] == name), None)
+        self.queue_id = same["id"] if same else "q" + secrets.token_hex(6)
+        self.queue_name_s = name
+        return bool(self.queue)
+
+    def switch_queue(self, qid):
+        q = next((x for x in self.queues if x["id"] == qid), None)
+        if not q or qid == self.queue_id:
+            return
+        self.snapshot_queue()
+        self.queue_id, self.queue_name_s = q["id"], q["name"]
+        self.queue = [dict(t) for t in q["tracks"]]
+        self.index = max(0, min(q.get("index", 0), len(self.queue) - 1))
+        self.radio_from, self.shuffled = None, False
+        self.resume_at = float(q.get("position") or 0.0)
+        self.context += 1
+        self.load_current()
+        self.toast(f"Queue: {q['name']}" + (f", from {fmt_time(self.resume_at)}" if self.resume_at > 1 else ""))
+        self.queues_changed()
+
+    def rename_queue(self, qid, name):
+        name = name.strip()
+        if not name:
+            return
+        if qid == self.queue_id:
+            self.queue_name_s = name
+        for q in self.queues:
+            if q["id"] == qid:
+                q["name"] = name
+        self.queues_changed()
+
+    def delete_queue(self, qid):
+        self.queues = [q for q in self.queues if q["id"] != qid]
+        if qid == self.queue_id:   # the one playing: it carries on, nameless, until you play from a list
+            self.queue_id, self.queue_name_s = None, ""
+        self.queues_changed()
+
+    def remove_other_queues(self):
+        self.queues = []
+        self.queues_changed()
+        self.toast("The other queues are gone; this one plays on")
+
+    def set_multi_queue(self, on):
+        self.multi_queue = bool(on)
+        self.queues_changed()
+
+    def saved_queues(self):
+        """Every queue: the one playing first (as it stands now), then the others, newest first."""
+        if self.queue:
+            self.snapshot_queue()
+        return list(self.queues)
+
+    def queues_changed(self):
+        self.save_soon()
+        if self.win:
+            self.win.update_nav_sub()
+            self.win.refresh_queue()
+
     def play_from(self, tracks, i, radio):
-        """Play tracks[i], then the rest of tracks; the songs you queued come first."""
-        queued = [t for t in self.queue[self.index + 1:] if t.get("queued")]
+        """Play tracks[i], then the rest of tracks; the songs you queued come first (in the same queue)."""
+        new = self.start_queue(self.win.current_list_name() if self.win else self.list_name)
+        queued = [] if new else [t for t in self.queue[self.index + 1:] if t.get("queued")]
         tracks = [dict(t) for t in tracks]
         self.queue = tracks[:i + 1] + queued + tracks[i + 1:]
         self.index = i
@@ -14087,6 +15825,14 @@ class MusicApp(Adw.Application):
         self.listen = None
         self.load_seq += 1
         seq = self.load_seq
+        start, self.resume_at = self.resume_at, 0.0   # a queue you went back to: where you left off
+        if self.lyrics_to_files:   # the song before (not playing now, so its file is free) gets its lyrics
+            prev = getattr(self, "lyrics_last", None)
+            if prev and prev["id"] != t["id"]:
+                self.lyrics_into_files([prev], quiet=True)
+            self.lyrics_last = t
+            if song_file(self.lib, t):
+                in_thread(self.lyrics.get, t, done=lambda *_: None)   # found now, kept for when it's written
         self.position, self.duration = 0.0, t.get("duration") or 0
         self.position_at = time.monotonic()
         on_disk = self.lib.has(t["id"]) or source_of(t) == "file"
@@ -14120,7 +15866,7 @@ class MusicApp(Adw.Application):
                 return
             if self.win:
                 self.win.set_status("")
-            self.player.load(path, paused=not autoplay, **self.speed_opts(t))
+            self.player.load(path, paused=not autoplay, start=start, **self.speed_opts(t))
             self.loaded = (t["id"], path)
             if self.win:
                 self.win.visualizer.song_loaded()
@@ -14245,10 +15991,19 @@ class MusicApp(Adw.Application):
             eq["headphones"] = saved["headphones"]
         if saved.get("preset") in EQ_PRESETS:
             eq["preset"] = saved["preset"]
+        if saved.get("count") in EQ_COUNTS:
+            eq["count"] = saved["count"]
         for key in ("bands", "custom"):
             vals = saved.get(key)
-            if isinstance(vals, list) and len(vals) == len(EQ_BANDS):
+            if isinstance(vals, list) and len(vals) == eq["count"]:
                 eq[key] = [max(-EQ_RANGE, min(EQ_RANGE, float(g))) for g in vals]
+            else:
+                eq[key] = [0.0] * eq["count"]
+        eq["per_output"] = saved.get("per_output", True) is not False
+        outs = saved.get("outputs")
+        if isinstance(outs, dict):
+            eq["outputs"] = {str(k): v for k, v in outs.items() if isinstance(v, dict) and v.get("count") in EQ_COUNTS
+                             and len(v.get("bands") or []) == v["count"]}
         for key in TONE:
             if isinstance(saved.get(key), (int, float)):
                 eq[key] = max(-EQ_RANGE, min(EQ_RANGE, float(saved[key])))
@@ -14275,15 +16030,72 @@ class MusicApp(Adw.Application):
     def watch_output(self):
         """Every so often: if the sound goes somewhere else now, use the correction you used there
         last time, or say AutoEq has one for it."""
-        if WINDOWS:
-            return   # Windows doesn't say which output is the default one: Detect picks from all of them
         def check():
-            names = output_devices()
-            GLib.idle_add(lambda: (self.output_changed(names), False)[1])
+            info = output_info()
+            names = [info[1]] if info and WINDOWS else output_devices()
+            GLib.idle_add(lambda: (self.output_changed(names, info), False)[1])
         threading.Thread(target=check, daemon=True).start()
-        GLib.timeout_add_seconds(20, lambda: (self.watch_output(), False)[1])
+        GLib.timeout_add_seconds(5 if WINDOWS else 10, lambda: (self.watch_output(), False)[1])
 
-    def output_changed(self, names):
+    # ---- an EQ for each output: the speakers, the headphone jack, each Bluetooth device, the car… ----
+    OUT_ICONS = {"speaker": "speaker", "wired": "headphones", "bluetooth": "bluetooth", "car": "car", "usb": "usb"}
+
+    def eq_profile(self):
+        return {k: json.loads(json.dumps(self.eq[k])) for k in EQ_OUTPUT_KEYS}
+
+    def switch_eq_output(self, old, new, label, kind):
+        """The sound went from old to new: old keeps its EQ as you left it, new gets its own back (a new
+        output starts from what you had)."""
+        eq = self.eq
+        outs = eq.setdefault("outputs", {})
+        if old:
+            outs[old] = dict(outs.get(old, {}), **self.eq_profile())
+        mine = outs.get(new)
+        if mine:
+            for k in EQ_OUTPUT_KEYS:
+                if k in mine:
+                    eq[k] = json.loads(json.dumps(mine[k]))
+            if eq["headphones"] not in self.headphones():
+                eq["headphones"] = "off"
+            self.apply_eq()
+            self.toast(f"{label}: its own equalizer" + ("" if eq["on"] else " (off)"))
+        outs[new] = dict(self.eq_profile(), label=label, kind=kind)
+        self.save_soon()
+
+    def forget_eq_output(self, key):
+        self.eq.get("outputs", {}).pop(key, None)
+        if key == getattr(self, "output_key", None):   # it starts afresh from the EQ as it is
+            self.eq["outputs"][key] = dict(self.eq_profile(), label=self.output_label, kind=self.output_kind)
+        self.save_soon()
+        if self.win:
+            self.win.update_eq()
+
+    def set_eq_per_output(self, on):
+        self.eq["per_output"] = bool(on)
+        self.save_soon()
+        if self.win:
+            self.win.update_eq()
+
+    def set_eq_count(self, n):
+        """3, 5, 10, 15 or 31 bands: the curve you had, read onto the new bands."""
+        eq = self.eq
+        if n not in EQ_COUNTS or n == eq["count"]:
+            return
+        frm = eq_bands_for(eq["count"])
+        eq["bands"] = eq_resample(eq["bands"], frm, n)
+        eq["custom"] = eq_resample(eq["custom"], frm, n) if len(eq["custom"]) == len(frm) else [0.0] * n
+        eq["count"] = n
+        self.eq_changed(rebuild=True)
+
+    def output_changed(self, names, info=None):
+        key, label, kind = info or ((f"out:{names[0]}", names[0], "speaker") if names else (None, None, None))
+        if key and key != getattr(self, "output_key", None):
+            old = getattr(self, "output_key", None)
+            self.output_key, self.output_label, self.output_kind = key, label, kind
+            if self.eq.get("per_output", True):
+                self.switch_eq_output(old, key, label, kind)
+            if self.win:
+                self.win.update_eq()
         dev = names[0] if names else ""
         if not dev or dev == getattr(self, "output", None):
             return
@@ -14306,7 +16118,8 @@ class MusicApp(Adw.Application):
         in_thread(lambda: match_device(names, autoeq_index()), done=found)
 
     def eq_preamp(self):
-        return eq_preamp([*self.eq_correction(), *(("pk", hz, g, EQ_Q) for hz, g in zip(EQ_BANDS, self.eq["bands"])),
+        n = len(self.eq["bands"])
+        return eq_preamp([*self.eq_correction(), *(("pk", hz, g, eq_q_for(n)) for hz, g in zip(eq_bands_for(n), self.eq["bands"])),
                           *((k, hz, self.eq[name], q) for name, (k, hz, q) in TONE.items())])
 
     def apply_eq(self):
@@ -14336,14 +16149,23 @@ class MusicApp(Adw.Application):
             self.apply_eq()
         else:
             self.retune_eq()
+        self.keep_output_eq()
         if self.win:
             self.win.update_eq()
         self.save_soon()
+
+    def keep_output_eq(self):
+        """The output playing now keeps the EQ as it is set."""
+        key = getattr(self, "output_key", None)
+        if key and self.eq.get("per_output", True):
+            outs = self.eq.setdefault("outputs", {})
+            outs[key] = dict(outs.get(key, {}), **self.eq_profile())
 
     def set_eq_on(self, on):
         if on != self.eq["on"]:
             self.eq["on"] = on
             self.apply_eq()
+            self.keep_output_eq()
             if self.win:
                 self.win.update_eq()
             self.save_soon()
@@ -14356,7 +16178,7 @@ class MusicApp(Adw.Application):
             self.eq_changed(rebuild=True)  # a different set of filters
 
     def set_eq_preset(self, key):
-        bands = EQ_PRESETS[key][1] or self.eq["custom"]
+        bands = eq_preset_bands(key, self.eq["count"]) or self.eq["custom"]
         self.eq["preset"], self.eq["bands"] = key, [float(g) for g in bands]
         self.eq_changed()
 

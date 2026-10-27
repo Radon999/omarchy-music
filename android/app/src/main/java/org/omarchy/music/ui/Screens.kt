@@ -115,7 +115,7 @@ fun runSearch(ui: Ui, quiet: Boolean = false) {
     }
     val src = Music.sources[key]
     if (src == null) { if (!quiet) Music.toast("Still connecting to ${SOURCES[key]}…"); return }
-    if (!src.signedIn && key in setOf("tidal", "spotify", "apple")) { if (!quiet) Music.toast("Connect ${SOURCES[key]} in the accounts menu first"); return }
+    if (!src.signedIn && key in setOf("tidal", "spotify", "apple")) { if (!quiet) Music.toast("Connect ${SOURCES[key]} in Settings first"); return }
     ui.searching = true
     ui.foundIn = key
     Music.bg({ if (link != null) Found(src.search(q)) else src.find(q) }) { res, err ->
@@ -148,8 +148,8 @@ fun LibraryTab(ui: Ui) {
             src == null -> item {
                 val err = Music.sourceErrors[key]
                 if (err != null) Empty("${SOURCES[key]} isn't available", err.take(140))
-                else Empty("Not signed in", "Open the accounts menu (☰) to sign in to ${SOURCES[key]}.")
-                ActionRow("Open the accounts menu  ›") { ui.sheet = "accounts" }
+                else Empty("Not signed in", "Open the Settings (⚙) to sign in to ${SOURCES[key]}.")
+                ActionRow("Open Settings  ›") { ui.sheet = "accounts" }
             }
             !src.signedIn -> item {
                 Empty("Not signed in", src.hint)
@@ -238,12 +238,7 @@ fun MusicTab(ui: Ui) {
     Music.musicVersion
     Music.savedVersion
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("all" to "All", "playlists" to "Playlists", "recent" to "Recent", "top" to "Most played", "moods" to "Moods", "dj" to "DJ").forEach { (k, l) ->
-                Chip(l, ui.musicView == k) { ui.musicView = k; ui.openMine = null; ui.stopSelecting() }
-            }
-        }
+        // Which of these is shown is picked from the library's list (Main.kt's categories).
         val state = rememberLazyListState()
         LazyColumn(Modifier.fillMaxSize(), state = state) {
             Music.musicVersion   // read here too: the list is built apart from the screen, and must follow a scan
@@ -258,16 +253,32 @@ fun MusicTab(ui: Ui) {
                 "playlists" -> myPlaylists(ui) { importer.launch(arrayOf("*/*")) }
                 "dj" -> djView(ui, ask) { ask = it }
                 "moods" -> moodsView(ui)
+                "dupes" -> dupesView(ui)
                 else -> {
+                    val skipRows = if (ui.musicView == "skips") Music.songStats.rows() else emptyList()
+                    val skipInfo = skipRows.associate { (t, k, f) -> org.omarchy.music.songKey(t) to (k to f) }
                     val tracks = when (ui.musicView) {
                         "all" -> sorted(Music.mySongs(), Music.musicSort)
                         "recent" -> Music.plays.recent()
+                        "favorites" -> Music.favorites.tracks()
+                        "unfavorited" -> Music.mySongs().filter { !Music.favorites.has(it) }.sortedBy { norm(it.title) }
+                        "skips" -> {
+                            val r = { a: Int, b: Int -> org.omarchy.music.SongStats.rate(a, b) }
+                            when (Music.skipOrder) {
+                                "least" -> skipRows.sortedWith(compareBy<Triple<Track, Int, Int>>({ r(it.second, it.third) }, { -it.third }, { it.second }))
+                                "heard" -> skipRows.sortedWith(compareBy<Triple<Track, Int, Int>>({ -it.third }, { it.second }))
+                                else -> skipRows.sortedWith(compareBy<Triple<Track, Int, Int>>({ -it.second }, { -r(it.second, it.third) }))
+                            }.map { it.first }
+                        }
                         else -> Music.mostPlayed()
                     }
                     if (tracks.isEmpty()) item {
                         val (t, b) = when (ui.musicView) {
                             "all" -> "No music yet" to "Songs you download, and the music in your folders\n(${Music.folders.joinToString()}), show up here."
                             "recent" -> "Nothing played yet" to "The songs you listen to show up here, the last one first."
+                            "favorites" -> "No favorites yet" to "Long-press a song (or select a few) and pick Favorite, or tap the ☆ by the song playing."
+                            "unfavorited" -> "Every song is a favorite" to "Your songs you haven't starred show up here."
+                            "skips" -> "No skips counted yet" to "Go on to the next song with more than ${org.omarchy.music.SongStats.SKIP_LEFT} seconds left and it counts as a skip; hear it to the end and it counts as heard out. Last.fm keeps no skips, so this starts now."
                             else -> "Nothing played yet" to "The songs you play most show up here."
                         }
                         Empty(t, b)
@@ -283,11 +294,77 @@ fun MusicTab(ui: Ui) {
                                         Chip(l, Music.musicSort == k) { Music.setMusicSort(k) }
                                     }
                                 }
-                            } else Section(if (ui.musicView == "recent") "RECENTLY PLAYED"
-                                           else if (Music.mostPlayedFromStats) "MOST PLAYED · STATS" else "MOST PLAYED")
+                            } else if (ui.musicView == "skips") {
+                                Section("${tracks.size} SONGS · SKIPPED OR HEARD OUT")
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf("most" to "Skipped most", "least" to "Skipped least", "heard" to "Heard out most").forEach { (k, l) ->
+                                        Chip(l, Music.skipOrder == k) { Music.chooseSkipOrder(k) }
+                                    }
+                                }
+                            } else Section(when (ui.musicView) {
+                                "recent" -> "RECENTLY PLAYED"
+                                "favorites" -> "${tracks.size} FAVORITES"
+                                "unfavorited" -> "${tracks.size} SONGS NOT FAVORITED"
+                                else -> if (Music.mostPlayedFromStats) "MOST PLAYED · STATS" else "MOST PLAYED"
+                            })
                         }
                         if (ui.musicView == "all" && Music.musicSort in setOf("artist", "album")) grouped(tracks, ui, Music.musicSort == "artist")
-                        else tracks(tracks, ui, ui.musicView) { t -> if (ui.musicView == "top") "${t.plays} play${if (t.plays != 1) "s" else ""}" else "" }
+                        else tracks(tracks, ui, ui.musicView) { t ->
+                            when (ui.musicView) {
+                                "top" -> "${t.plays} play${if (t.plays != 1) "s" else ""}"
+                                "skips" -> skipInfo[org.omarchy.music.songKey(t)]?.let { (k, f) ->
+                                    (if (k > 0) "$k skip${if (k != 1) "s" else ""}" else "never skipped") + if (f > 0) " · heard out ${f}×" else "" } ?: ""
+                                else -> ""
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Duplicates: songs you have more than once, each copy with what it is, to delete the ones you don't want. */
+private fun androidx.compose.foundation.lazy.LazyListScope.dupesView(ui: Ui) {
+    val groups = Music.dupes
+    when {
+        Music.dupesBusy -> item { Section("LOOKING FOR DUPLICATES…") }
+        groups == null -> item {
+            Empty("Duplicates", "Look through all your songs (downloads and your folders) for ones you have more than once. " +
+                "You'll see each copy's name, artist and file, and say which to delete.")
+            ActionRow("Look for duplicates  ›") { Music.findDupes() }
+        }
+        groups.isEmpty() -> item {
+            Empty("No duplicates", "Every song you have is there once.")
+            ActionRow("Look again  ›") { Music.findDupes() }
+        }
+        else -> {
+            item {
+                Section("${groups.size} SONG${if (groups.size != 1) "S" else ""} · ${groups.sumOf { it.size - 1 }} EXTRA COPIES · THE BEST COPY FIRST")
+                ActionRow("Look again  ›") { Music.findDupes() }
+            }
+            groups.forEach { g ->
+                item(key = "dupe-head-${g[0].id}") { Section(g[0].title.uppercase() + " · " + g[0].artist.uppercase()) }
+                g.forEachIndexed { i, t ->
+                    item(key = "dupe-${g[0].id}-${t.id}") {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("${t.title} · ${t.artist}" + if (t.album.isNotEmpty()) " · ${t.album}" else "", style = T.body, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis)
+                                Text((if (i == 0) "★ best · " else "") + listOf(Music.copyInfo(t), org.omarchy.music.fmtTime(t.duration))
+                                    .filter { it.isNotEmpty() }.joinToString(" · "), style = T.sub)
+                                Text(Music.whereIs(t), style = T.time, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Text("▶", style = T.title.copy(color = C.accent), modifier = Modifier.clickable { Music.playFrom(listOf(t), 0, false) }.padding(8.dp))
+                            Pill("Delete…", quiet = true) {
+                                ui.confirm = ("Delete this copy of “${t.title}”?\n\n• ${t.title} — ${t.artist}\n   ${Music.copyInfo(t)}\n   ${Music.whereIs(t)}" +
+                                    "\n\nIt's a duplicate of:\n" + g.filter { it.id != t.id }.joinToString("\n") { o ->
+                                        "• ${o.title} — ${o.artist}\n   ${Music.copyInfo(o)}\n   ${Music.whereIs(o)}" } +
+                                    "\n\nYour playlists get the copy you keep in its place." +
+                                    if (Music.lib.has(t.id)) "" else " Android asks you once more, and the file goes to its trash.") to { Music.deleteDupe(g, t) }
+                            }
+                        }
                     }
                 }
             }
@@ -518,6 +595,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.myPlaylists(ui: Ui, i
         ListActions(sorted, onDj = { ui.djFrom(Dj.From("playlist", id = open.id)) }, extra = listOf(
             "Rename" to { ui.askName = Triple("Rename playlist", open.name) { n -> Music.renamePlaylist(open.id, n) } },
             "Delete" to { ui.confirm = "Delete the playlist “${open.name}”? The songs stay where they are." to { Music.deletePlaylist(open.id); ui.openMine = null } },
+            "Export" to { ui.exportFor = open.name to sorted },
         ))
     }
     if (open.tracks.isEmpty()) item { Empty("No songs in it yet", "Long-press a song anywhere and pick Add to playlist.") }
@@ -529,6 +607,7 @@ fun QueueTab(ui: Ui) {
     val q = Music.shownQueue()
     val idx = Music.shownIndex()
     LazyColumn(Modifier.fillMaxSize()) {
+        if (!Remote.active) item { QueueHeader(ui) }
         if (q.isEmpty() || idx < 0) { item { Empty("Nothing queued", if (Remote.active) "Nothing is playing on the desktop. Play a song here and it plays there." else "Play a song, or long-press one and pick Add to the queue.") }; return@LazyColumn }
         item { Section("NOW PLAYING") }
         item { TrackRow(q[idx], RowPlace(q, idx, "queue", queueIndex = idx), ui) { } }
@@ -557,6 +636,7 @@ fun PageScreen(ui: Ui, page: Ui.Page) {
     when (page) {
         is Ui.Page.Artist -> ArtistPage(ui, page)
         is Ui.Page.AlbumPage -> AlbumPage(ui, page)
+        is Ui.Page.Songs -> SongsPage(ui, page)
     }
 }
 

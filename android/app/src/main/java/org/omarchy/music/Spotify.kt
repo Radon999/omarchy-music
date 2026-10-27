@@ -30,7 +30,7 @@ fun trackFromSpotify(t: JsonElement?, album: JsonElement? = null): Track? {
 class Spotify(ctx: Context) : Source {
     override val key = "spotify"
     override val name = "Spotify"
-    override val hint = "Connect Spotify in the accounts menu (☰).\nIt needs a Spotify developer app of yours."
+    override val hint = "Connect Spotify in Settings (⚙).\nIt needs a Spotify developer app of yours."
 
     @Serializable
     private data class Auth(val client_id: String = "", val user: String = "", val access_token: String = "",

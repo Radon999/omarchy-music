@@ -15,7 +15,7 @@ import kotlin.math.abs
 class Tidal(ctx: Context) : Source {
     override val key = "tidal"
     override val name = "Tidal"
-    override val hint = "Connect Tidal in the accounts menu\nto see your favourites and playlists."
+    override val hint = "Connect Tidal in Settings\nto see your favourites and playlists."
 
     @Serializable
     data class Session(val access: String, val refresh: String, val type: String = "Bearer", val expiry: Double = 0.0,
@@ -80,7 +80,7 @@ class Tidal(ctx: Context) : Source {
 
     private fun api(path: String, params: Map<String, Any?> = emptyMap(), method: String = "GET", body: okhttp3.RequestBody? = null,
                     base: String = V1): JsonElement {
-        val cur = s ?: error("connect Tidal in the accounts menu first")
+        val cur = s ?: error("connect Tidal in Settings first")
         if (now() > cur.expiry - 60) refresh()
         val q = (mapOf("countryCode" to s!!.country, "sessionId" to s!!.session) + params).filterValues { it != null }
             .entries.joinToString("&") { "${it.key}=${enc(it.value.toString())}" }
@@ -119,7 +119,17 @@ class Tidal(ctx: Context) : Source {
     /** The Tidal track (its JSON) that is this song, in lossless (in any quality: lossy), or
      *  null: Tidal's own song, else the recording with the song's ISRC, else a search. */
     fun resolve(t: Track, lossy: Boolean = false): JsonElement? {
-        t.tidal?.let { id -> runCatching { trackJson(id) }.getOrNull()?.takeIf { ok(it, lossy) }?.let { return it } }
+        t.tidal?.let { id -> runCatching { trackJson(id) }.getOrNull()?.takeIf { ok(it, lossy) }?.let { c ->
+            // The same recording in hi-res on another release (the album, say), where this one isn't.
+            if (!lossy && "HIRES_LOSSLESS" !in c.path("mediaMetadata", "tags").list.map { x -> x.str }) c["isrc"].str?.let { isrc ->
+                runCatching {
+                    api("tracks", mapOf("filter[isrc]" to isrc), base = OPENAPI).get("data").list
+                        .mapNotNull { d -> d["id"].long?.let { runCatching { trackJson(it) }.getOrNull() } }
+                        .firstOrNull { ok(it, false) && "HIRES_LOSSLESS" in it.path("mediaMetadata", "tags").list.map { x -> x.str } }
+                }.getOrNull()?.let { return it }
+            }
+            return c
+        } }
         t.isrc?.let { isrc ->
             val found = runCatching {
                 api("tracks", mapOf("filter[isrc]" to isrc), base = OPENAPI).get("data").list
@@ -181,7 +191,8 @@ class Tidal(ctx: Context) : Source {
         val credits = ours.sumOf { found(it) } / ours.size
         val closeness = if (dur > 0) 1 - abs(cdur - dur) / 6 else 0.5
         val sameAlbum = if (t.album.isNotEmpty() && similar(t.album.lowercase(), album.lowercase()) > 0.8) 0.05 else 0.0
-        return 0.55 * ts + 0.2 * lead + 0.1 * credits + 0.15 * closeness + sameAlbum
+        val hires = if ("HIRES_LOSSLESS" in c.path("mediaMetadata", "tags").list.map { it.str }) 0.04 else 0.0   // of two equal ones, the hi-res
+        return 0.55 * ts + 0.2 * lead + 0.1 * credits + 0.15 * closeness + sameAlbum + hires
     }
 
     data class Stream(val uri: String, val isDash: Boolean, val quality: String, val manifest: String = "")

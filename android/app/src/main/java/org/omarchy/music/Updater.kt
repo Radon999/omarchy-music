@@ -22,7 +22,7 @@ import java.io.File
  *  so one that came while you were away is kept, and asked when you come back (or Install). */
 @SuppressLint("StaticFieldLeak")
 object Updater {
-    private const val REPO = "Varixxl/omarchy-music"
+    private const val REPO = "Radon999/omarchy-music"   // updates come from this one's releases
     private lateinit var ctx: Context
     var latest by mutableStateOf<String?>(null)   // the newer release ("1.2.0"), once there is one
         private set
@@ -74,13 +74,13 @@ object Updater {
                 Music.scope.launch { delay(5 * 60_000L); check() }
                 return@bg
             }
-            if (latest != tag.removePrefix("v")) Music.toast("VarMusic ${tag.removePrefix("v")} is out: update it in the accounts menu (☰)")
+            if (latest != tag.removePrefix("v")) Music.toast("VarMusic ${tag.removePrefix("v")} is out: update it in Settings (⚙)")
             latest = tag.removePrefix("v"); apk = url
             Music.accountsVersion++
         }
     }
 
-    /** The accounts menu opened: look again if the last look is over ten minutes old. */
+    /** The Settings opened: look again if the last look is over ten minutes old. */
     fun checkSoon() { if (now() - checkedAt > 600) check() }
 
     /** The app is on screen again: ask Android's question that came while it wasn't. */

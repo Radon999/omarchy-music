@@ -53,6 +53,10 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -100,6 +104,13 @@ fun Sheets(ui: Ui) {
     ui.coverFor?.let { albums -> CoverDialog(ui, albums) }
     ui.artistPictureFor?.let { name -> ArtistPictureDialog(ui, name) }
     ui.speedFor?.let { tracks -> if (tracks.isNotEmpty()) SpeedDialog(ui, tracks) else ui.speedFor = null }
+    ui.volumeFor?.let { tracks -> if (tracks.isNotEmpty()) VolumeDialog(ui, tracks) else ui.volumeFor = null }
+    ui.moodsFor?.let { tracks -> if (tracks.isNotEmpty()) MoodsDialog(ui, tracks) else ui.moodsFor = null }
+    ui.upgradeFor?.let { tracks -> UpgradeDialog(ui, tracks) }
+    Music.upgradeKept?.let { kept -> UpgradeKeptDialog(kept) }
+    Music.dupePrompt?.let { (new, dupes) -> DupeDownloadDialog(new, dupes) }
+    Trasher()
+    Exporter(ui)
     ui.askName?.let { (title, start, done) -> NameDialog(title, start, { ui.askName = null }) { ui.askName = null; done(it) } }
     ui.confirm?.let { (text, act) ->
         AlertDialog(onDismissRequest = { ui.confirm = null }, containerColor = C.light,
@@ -113,8 +124,7 @@ fun Sheets(ui: Ui) {
 @Composable
 private fun AccountsSheet(ui: Ui) {
     Music.accountsVersion
-    ModalBottomSheet(onDismissRequest = { ui.sheet = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = C.light) {
+    FullScreen("Settings", { ui.sheet = null }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
             LaunchedEffect(Unit) { Updater.checkSoon() }
             val activity = LocalContext.current.let { c0 ->   // the sheet's context wraps the activity's
@@ -181,8 +191,66 @@ private fun AccountsSheet(ui: Ui) {
                     Pill("Remove", quiet = true) { Music.removeFolder(f) }
                 }
             }
-            Line("Colours", "The window takes the colour of the album art", Music.artColors) {
+            Line("Lyrics into files", if (!Music.lyricsToFiles) "Off: lyrics are kept in the app only"
+                else if (Music.canWriteOwnFiles()) "The lyrics found for a song go into its file's tags (FLAC, MP3) once it's done playing, so they stay with it"
+                else "Into the app's downloads. Your own files need All files access: tap Allow", Music.lyricsToFiles) {
+                if (Music.lyricsToFiles && !Music.canWriteOwnFiles()) {
+                    val c = LocalContext.current
+                    Pill("Allow", quiet = true) {
+                        runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            android.net.Uri.parse("package:" + c.packageName))) }
+                    }
+                    Spacer(Modifier.width(6.dp))
+                }
+                Switch(Music.lyricsToFiles, { Music.setLyricsToFiles(it) }, colors = swColors())
+            }
+            Line("Queues", "A separate queue for each folder, album, artist and playlist you play from, each kept where you left it",
+                Music.multiQueue) { Switch(Music.multiQueue, { Music.setMultiQueue(it) }, colors = swColors()) }
+            Line("Colours", "The window takes the colour of the album art (dark looks)", Music.artColors) {
                 Switch(Music.artColors, { Music.setArtColors(it) }, colors = swColors())
+            }
+            Line("Look", "The app's colours: Stellio, colourful ones (Galaxy, Aurora, Sunset…), neon ones", false) {
+                Box {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("${Looks.ALL.firstOrNull { it.first == Music.look }?.second ?: "Default"} ▾", quiet = true) { open = true }
+                    androidx.compose.material3.DropdownMenu(open, { open = false }, containerColor = C.light) {
+                        Looks.ALL.forEach { (k, name) ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(name, style = T.body) }, { open = false; Music.chooseLook(k) })
+                        }
+                    }
+                }
+            }
+            Line("Downloads", if (Music.downloadDir.isEmpty()) "To Music/Omarchy Music/. Change: to a folder of yours, by artist and album"
+                else "To ${Music.downloadDir}, as Artist/Albums, EPs or Singles/Album", Music.downloadDir.isNotEmpty()) {
+                Box {
+                    var open by remember { mutableStateOf(false) }
+                    Pill("Change", quiet = true) { open = true }
+                    androidx.compose.material3.DropdownMenu(open, { open = false }, containerColor = C.light) {
+                        androidx.compose.material3.DropdownMenuItem({ Text("Music/Omarchy Music/ (the app's own)", style = T.body) },
+                            { open = false; Music.chooseDownloadDir("") })
+                        Music.folders.forEach { f ->
+                            androidx.compose.material3.DropdownMenuItem({ Text(f, style = T.body) }, { open = false; Music.chooseDownloadDir(f) })
+                        }
+                        androidx.compose.material3.DropdownMenuItem({ Text("A new folder in Music/…", style = T.body) }, {
+                            open = false
+                            ui.askName = Triple("A folder in Music/ for downloads", "") { n ->
+                                Music.chooseDownloadDir("Music/" + org.omarchy.music.pathPart(n, "Downloads") + "/")
+                            }
+                        })
+                    }
+                }
+            }
+            Line("Copies", "Downloading a song you have already", false) {}
+            Row(Modifier.padding(start = 92.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("ask" to "Ask", "keep" to "Keep both", "replace" to "Replace").forEach { (k, l) ->
+                    Chip(l, Music.dupeAction == k) { Music.chooseDupeAction(k) }
+                }
+            }
+            if (Music.local.files.isNotEmpty() || Music.upgrading != null) Line("Upgrade", Music.upgrading
+                ?: "Swap your songs for Tidal's FLAC where it's better: MP3s and other lossy files, and 16-bit ones Tidal has in hi-res. The old files go to Android's trash",
+                Music.upgrading != null) {
+                if (Music.upgrading != null) Pill("Stop", quiet = true) { Music.upgradeStop = true }
+                else Pill("Upgrade…") { ui.upgradeFor = emptyList() }
             }
             Divider()
             LastFmLine(ui)
@@ -198,7 +266,7 @@ private fun PairDesktop() {
     var addr by remember { mutableStateOf(Remote.found.firstOrNull()?.second ?: "") }
     var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    Text("To control the desktop app from here, switch on Phone remote in its accounts menu, then enter the code it shows.",
+    Text("To control the desktop app from here, switch on Phone remote in its Settings, then enter the code it shows.",
         style = T.sub, modifier = Modifier.padding(bottom = 6.dp))
     Remote.found.forEach { (name, a) ->
         Text("◉ $name  ($a)", style = T.body.copy(color = if (a == addr) C.accent else C.fg),
@@ -355,46 +423,118 @@ fun Field(value: String, hint: String, password: Boolean = false, onChange: (Str
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** A screen over everything, with ‹ and a name: Settings, the Equalizer. */
+@Composable
+fun FullScreen(title: String, close: () -> Unit, actions: @Composable () -> Unit = {}, content: @Composable () -> Unit) {
+    androidx.activity.compose.BackHandler { close() }
+    Column(Modifier.fillMaxSize().background(C.bg).then(C.gradient?.let { Modifier.background(androidx.compose.ui.graphics.Brush.linearGradient(it)) } ?: Modifier)
+        .pointerInput(Unit) { detectTapGestures { } }.statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(Ico.BACK, onClick = close)
+            Text(title, style = T.head.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium), modifier = Modifier.weight(1f).padding(start = 4.dp))
+            actions()
+        }
+        content()
+    }
+}
+
+/** The equalizer: each output (the speaker, headphones, your car, earbuds, USB) has its own, used as soon
+ *  as the sound goes there; 3, 5, 10, 15 or 31 bands; a correction for your headphones; bass and treble. */
 @Composable
 private fun EqSheet(ui: Ui) {
     val eq = Music.eq
-    ModalBottomSheet(onDismissRequest = { ui.sheet = null }, containerColor = C.light) {
-        Column(Modifier.padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Equalizer", style = T.title.copy(fontSize = 16.sp), modifier = Modifier.weight(1f))
-                Switch(eq.on, { Music.setEqOn(it) }, colors = swColors())
-            }
-            Text("Headphones", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
-            ChipRow(Eq.headphones(eq).map { (k, v) -> k to v.first }, eq.headphones) { Music.setEqHeadphones(it) }
-            AutoEqFinder()
-            Text("Sound", style = T.section, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
-            ChipRow(Eq.PRESETS.map { (k, v) -> k to v.first }, eq.preset) { Music.setEqPreset(it) }
-            Row(Modifier.fillMaxWidth().height(190.dp).padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Eq.BANDS.forEachIndexed { i, hz ->
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(Eq.fmtDb(eq.bands[i]), style = T.time.copy(fontSize = 9.sp))
-                        Box(Modifier.weight(1f).width(36.dp), contentAlignment = Alignment.Center) {
-                            VerticalSlider(eq.bands[i].toFloat()) { Music.setEqBand(i, it.toDouble()) }
-                        }
-                        Text(if (hz >= 1000) "${hz / 1000}k" else "$hz", style = T.time.copy(fontSize = 9.sp))
+    var tones by remember { mutableStateOf(false) }
+    var outs by remember { mutableStateOf(false) }
+    FullScreen("Equalizer", { ui.sheet = null }, actions = { Switch(eq.on, { Music.setEqOn(it) }, colors = swColors()) }) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+            // The output these settings are for.
+            val key = eq.output.ifEmpty { Music.outputNow.key }
+            val label = eq.outputs[key]?.label?.ifEmpty { null } ?: if (key == Music.outputNow.key) Music.outputNow.label else key.substringAfter(':')
+            Box {
+                Row(Modifier.fillMaxWidth().clip(R.card).background(C.light).border(1.dp, C.line, R.card).clickable { outs = true }
+                    .padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(outIcon(org.omarchy.music.Outputs.kindOf(key)), C.accent, 22.dp)
+                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        Text(label, style = T.title.copy(color = C.accent), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (!eq.perOutput) "One equalizer for every output"
+                            else if (key == Music.outputNow.key) "Playing through it now" else "Not playing through it now", style = T.sub)
+                    }
+                    Icon(Ico.DOWN, C.muted, 16.dp)
+                }
+                androidx.compose.material3.DropdownMenu(outs, { outs = false }, containerColor = C.light) {
+                    val known = (eq.outputs.keys + Music.outputNow.key + "speaker").distinct()
+                    known.forEach { k ->
+                        val l = eq.outputs[k]?.label?.ifEmpty { null } ?: if (k == Music.outputNow.key) Music.outputNow.label
+                            else if (k == "speaker") "Built-in speaker" else k.substringAfter(':')
+                        androidx.compose.material3.DropdownMenuItem(
+                            leadingIcon = { Icon(outIcon(org.omarchy.music.Outputs.kindOf(k)), if (k == key) C.accent else C.muted, 20.dp) },
+                            text = { Text(l + if (k == Music.outputNow.key) "  · now" else "", style = T.body.copy(color = if (k == key) C.accent else C.fg)) },
+                            onClick = { outs = false; Music.editEqOutput(k) },
+                            trailingIcon = if (k != key && k != Music.outputNow.key && k != "speaker") ({
+                                IconButton(Ico.CLOSE, C.muted, 14.dp, 6.dp, desc = "Forget") { Music.forgetEqOutput(k) }
+                            }) else null)
                     }
                 }
             }
-            listOf("bass" to "Bass", "treble" to "Treble").forEach { (k, l) ->
+            Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("A separate equalizer for each output", style = T.sub, modifier = Modifier.weight(1f))
+                Switch(eq.perOutput, { Music.setEqPerOutput(it) }, colors = swColors())
+            }
+            // How many bands, and bass & treble.
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    var counts by remember { mutableStateOf(false) }
+                    Row(Modifier.clip(R.pill).border(1.dp, C.accent.copy(alpha = 0.5f), R.pill).clickable { counts = true }
+                        .padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Ico.EQ, C.accent, 18.dp)
+                        Text("  ${eq.count} bands", style = T.tab.copy(color = C.accent))
+                    }
+                    androidx.compose.material3.DropdownMenu(counts, { counts = false }, containerColor = C.light) {
+                        org.omarchy.music.Eq.COUNTS.forEach { n ->
+                            androidx.compose.material3.DropdownMenuItem({ Text("$n bands", style = T.body.copy(color = if (n == eq.count) C.accent else C.fg)) },
+                                { counts = false; Music.setEqCount(n) })
+                        }
+                    }
+                }
+                Chip("Bass and treble", tones) { tones = !tones }
+            }
+            if (tones) listOf("bass" to "Bass", "treble" to "Treble").forEach { (k, l) ->
                 val g = if (k == "bass") eq.bass else eq.treble
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                     Text(l, style = T.sub, modifier = Modifier.width(60.dp))
                     Slider(g.toFloat(), { Music.setEqTone(k, it.toDouble()) }, valueRange = -12f..12f,
                         colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)),
                         modifier = Modifier.weight(1f))
-                    Text(Eq.fmtDb(g), style = T.time, modifier = Modifier.width(40.dp).clickable { Music.setEqTone(k, 0.0) })
+                    Text(Eq.fmtDb(g), style = T.time, modifier = Modifier.width(44.dp).clickable { Music.setEqTone(k, 0.0) })
                 }
             }
+            Text("Sound", style = T.section, modifier = Modifier.padding(top = 12.dp, bottom = 4.dp))
+            ChipRow(Eq.PRESETS.map { (k, v) -> k to v.first }, eq.preset) { Music.setEqPreset(it) }
+            // The bands: one line each (31 fit this way), the frequency, the slider, the gain.
+            val freqs = Eq.bandsFor(eq.count)
+            Column(Modifier.padding(top = 10.dp).clip(R.card).background(C.light.copy(alpha = if (C.isLight) 1f else 0.6f)).padding(vertical = 6.dp)) {
+                freqs.forEachIndexed { i, hz ->
+                    val g = eq.bands.getOrElse(i) { 0.0 }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 10.dp).height(if (eq.count > 15) 34.dp else 42.dp)) {
+                        Text(Eq.label(hz), style = T.time, modifier = Modifier.width(44.dp))
+                        Slider(g.toFloat(), { Music.setEqBand(i, it.toDouble()) }, valueRange = -12f..12f,
+                            colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)),
+                            modifier = Modifier.weight(1f))
+                        Text(Eq.fmtDb(g), style = T.time, modifier = Modifier.width(44.dp).clickable { Music.setEqBand(i, 0.0) })
+                    }
+                }
+            }
+            Text("Headphones correction", style = T.section, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
+            ChipRow(Eq.headphones(eq).map { (k, v) -> k to v.first }, eq.headphones) { Music.setEqHeadphones(it) }
+            AutoEqFinder()
             Text(if (eq.on) "Pre-gain ${Eq.fmtDb(Eq.preamp(Eq.filters(eq)))} dB keeps the boosts from clipping." else "Off: the music plays untouched.",
-                style = T.sub, modifier = Modifier.padding(top = 6.dp))
+                style = T.sub, modifier = Modifier.padding(top = 8.dp))
         }
     }
+}
+
+private fun outIcon(kind: String) = when (kind) {
+    "speaker" -> Ico.VIS; "wired" -> Ico.HEADPHONES; "usb" -> Ico.DOWNLOAD; "car" -> Ico.CAR; else -> Ico.BLUETOOTH
 }
 
 @Composable
@@ -524,11 +664,17 @@ private fun CoverDialog(ui: Ui, albums: List<List<org.omarchy.music.Track>>) {
     val t = songs[0]
     var choices by remember(songs) { mutableStateOf<List<org.omarchy.music.Pictures.Choice>?>(null) }
     var busy by remember(songs) { mutableStateOf(false) }
+    var wholeAlbum by remember(songs) { mutableStateOf(true) }
+    val start = "${t.artist.split(",")[0].trim()} - ${t.album.ifEmpty { t.title }}"
+    var query by remember(songs) { mutableStateOf(start) }
+    var asked by remember(songs) { mutableStateOf(start) }
     val next = { ui.coverFor = albums.drop(1).ifEmpty { null } }
-    val use = { src: String -> busy = true; Music.setCover(songs, src) { next() } }
+    val use = { src: String -> busy = true; Music.setCover(songs, src, wholeAlbum) { next() } }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) use(uri.toString()) }
-    LaunchedEffect(songs) {
-        Music.bg({ org.omarchy.music.Pictures.coverChoices(t.artist.split(",")[0].trim(), t.album.ifEmpty { t.title }) }) { c, _ -> choices = c ?: emptyList() }
+    LaunchedEffect(songs, asked) {
+        choices = null
+        val (a, al) = if (" - " in asked) asked.substringBefore(" - ").trim() to asked.substringAfter(" - ").trim() else "" to asked.trim()
+        Music.bg({ org.omarchy.music.Pictures.coverChoices(a, al) }) { c, _ -> choices = c ?: emptyList() }
     }
     AlertDialog(onDismissRequest = { ui.coverFor = null }, containerColor = C.light,
         title = { Text("Cover of “${t.album.ifEmpty { t.title }}”" + if (albums.size > 1) " · ${albums.size} left" else "", style = T.title,
@@ -536,6 +682,17 @@ private fun CoverDialog(ui: Ui, albums: List<List<org.omarchy.music.Track>>) {
         text = {
             val c = choices
             Column {
+                // Search by hand: "Artist - Album", or anything.
+                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(R.pill).background(C.bg), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Ico.SEARCH, C.muted, 18.dp, Modifier.padding(start = 12.dp))
+                    androidx.compose.foundation.text.BasicTextField(query, { query = it }, singleLine = true, textStyle = T.body,
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(C.accent),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { asked = query }),
+                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 11.dp))
+                    if (query.isNotEmpty()) IconButton(Ico.CLOSE, C.muted, 14.dp, 8.dp) { query = "" }
+                    IconButton(Ico.SEARCH, C.accent, 18.dp, 8.dp) { asked = query }
+                }
                 Text(when {
                     busy -> "Putting it on the songs…"
                     c == null -> "Looking on Google, Genius and Wikipedia…"
@@ -554,8 +711,19 @@ private fun CoverDialog(ui: Ui, albums: List<List<org.omarchy.music.Track>>) {
                 }
             }
         },
-        confirmButton = { TextButton({ pick.launch(arrayOf("image/*")) }, enabled = !busy) { Text("Pick a picture…", color = C.accent) } },
-        dismissButton = { TextButton(next, enabled = !busy) { Text(if (albums.size > 1) "Skip" else "Cancel", color = C.muted) } })
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                if (t.album.isNotEmpty()) Row(Modifier.clickable { wholeAlbum = !wholeAlbum }, verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(wholeAlbum, { wholeAlbum = it },
+                        colors = androidx.compose.material3.CheckboxDefaults.colors(checkedColor = C.accent))
+                    Text("Apply the cover to all the songs on this album", style = T.sub)
+                }
+                Row {
+                    TextButton(next, enabled = !busy) { Text(if (albums.size > 1) "Skip" else "Cancel", color = C.muted) }
+                    TextButton({ pick.launch(arrayOf("image/*")) }, enabled = !busy) { Text("From gallery…", color = C.accent) }
+                }
+            }
+        })
 }
 
 /** Change picture…: pictures of the artist to pick from (Google's, Genius's, Wikipedia's), or one of yours. */
@@ -599,7 +767,7 @@ private fun SpeedDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
     var speed by remember(tracks) { mutableStateOf(start.speed.toFloat()) }
     var pitch by remember(tracks) { mutableStateOf(start.pitch) }
     val close = { ui.speedFor = null }
-    val done = { s: Double -> close(); Music.setSpeed(tracks, s, pitch); ui.stopSelecting() }
+    val done = { s: Double -> close(); Music.setSpeed(tracks, s, pitch); ui.afterOption() }
     AlertDialog(onDismissRequest = close, containerColor = C.light,
         title = { Text(if (tracks.size == 1) "Speed of “${tracks[0].title}”" else "Speed of ${tracks.size} songs", style = T.title,
             maxLines = 2, overflow = TextOverflow.Ellipsis) },
@@ -621,6 +789,188 @@ private fun SpeedDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
                 TextButton(close) { Text("Cancel", color = C.muted) }
             }
         })
+}
+
+/** Volume…: a song's own boost (quiet unreleased songs), from -12 to +12 dB, kept for it. */
+@Composable
+private fun VolumeDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    var db by remember(tracks) { mutableStateOf(Music.gains.get(tracks[0]).toFloat()) }
+    val close = { ui.volumeFor = null }
+    val done = { v: Double -> close(); Music.setGain(tracks, v); ui.afterOption() }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Volume of “${tracks[0].title}”" else "Volume of ${tracks.size} songs", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                Text("%+.1f dB".format(db), style = T.title.copy(color = C.accent))
+                Slider(db, { db = Math.round(it * 2) / 2f }, valueRange = -12f..12f, steps = 47,
+                    colors = SliderDefaults.colors(thumbColor = C.accent, activeTrackColor = C.accent, inactiveTrackColor = C.fg.copy(alpha = 0.1f)))
+                Text("Plays this much louder (or quieter) from now on. +6 dB is about twice as loud; very loud songs may distort above 0.",
+                    style = T.sub)
+            }
+        },
+        confirmButton = { TextButton({ done(Math.round(db * 2) / 2.0) }) { Text("Save", color = C.accent) } },
+        dismissButton = {
+            Row {
+                TextButton({ done(0.0) }) { Text("Normal", color = C.fg) }
+                TextButton(close) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Moods…: pick a song's moods by hand (a scan leaves them alone), or let the scan find them again. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MoodsDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val picked = remember(tracks) { androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(org.omarchy.music.Moods.of(tracks[0])) } }
+    val close = { ui.moodsFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (tracks.size == 1) "Moods of “${tracks[0].title}”" else "Moods of ${tracks.size} songs", style = T.title,
+            maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column {
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    org.omarchy.music.Moods.MOODS.keys.forEach { m ->
+                        Chip(m.replaceFirstChar { it.uppercase() }, m in picked) { if (m in picked) picked.remove(m) else picked.add(m) }
+                    }
+                }
+                Text(if (org.omarchy.music.Moods.isManual(tracks[0])) "Set by hand: scans leave them as they are."
+                     else "Found by the scan. Pick some and they're set by hand from now on.", style = T.sub, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.setMoods(tracks, picked.toList()); ui.afterOption() }) { Text("Save", color = C.accent) } },
+        dismissButton = {
+            Row {
+                TextButton({ close(); Music.setMoods(tracks, null); ui.afterOption() }) { Text("Find them", color = C.fg) }
+                TextButton(close) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Upgrade…: these songs (none: every song of yours) for Tidal's FLAC where it's better. */
+@Composable
+private fun UpgradeDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
+    val all = tracks.isEmpty()
+    val n = if (all) Music.local.files.size else tracks.size
+    var every by remember { mutableStateOf(false) }
+    val close = { ui.upgradeFor = null }
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text(if (!all && n == 1) "Upgrade “${tracks[0].title}”?" else if (all) "Upgrade your $n songs?" else "Upgrade these $n songs?",
+            style = T.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text((if (n == 1) "The song is" else "Each song is") + " looked up on Tidal. Where Tidal has it better, the FLAC is downloaded and " +
+                    "takes the old file's place: in your playlists and the queue.\n\n" +
+                    "• MP3, AAC and other lossy files: replaced with FLAC\n" +
+                    "• 16-bit FLAC/WAV: replaced only when Tidal has it in 24-bit\n" +
+                    "• 24-bit files, and songs Tidal doesn't have: left as they are (you're asked about the ones kept as good already, at the end)\n\n" +
+                    "The old files go to Android's trash (it asks you first), so you can get them back. The new ones go to " +
+                    Music.downloadDir.ifEmpty { "Music/Omarchy Music/" } + ". It takes a while: you can keep listening, and Stop it in Settings.",
+                    style = T.body)
+                Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Replace every song Tidal has, even ones yours is as good as or better than", style = T.sub, modifier = Modifier.weight(1f))
+                    Switch(every, { every = it }, colors = swColors())
+                }
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.upgradeSongs(if (all) null else tracks, every); ui.afterOption() }) { Text("Upgrade", color = C.accent) } },
+        dismissButton = { TextButton(close) { Text("Cancel", color = C.muted) } })
+}
+
+/** After Upgrade: the songs it left because yours are as good or better. Replace them anyway? */
+@Composable
+private fun UpgradeKeptDialog(kept: List<Pair<org.omarchy.music.Track, String>>) {
+    val close = { Music.upgradeKept = null }
+    val n = kept.size
+    AlertDialog(onDismissRequest = close, containerColor = C.light,
+        title = { Text("$n song${if (n != 1) "s" else ""} kept as ${if (n != 1) "they are" else "it is"}", style = T.title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(if (n != 1) "Yours are as good as Tidal's or better, so they weren't replaced:" else "Yours is as good as Tidal's or better, so it wasn't replaced:",
+                    style = T.body)
+                kept.take(8).forEach { (t, why) -> Text("• ${t.title} — ${t.artist}\n   $why", style = T.sub, modifier = Modifier.padding(top = 4.dp)) }
+                if (n > 8) Text("…and ${n - 8} more", style = T.sub)
+                Text("Replace them with Tidal's anyway? The new copies may be lower quality than yours (yours go to Android's trash).",
+                    style = T.body, modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = { TextButton({ close(); Music.upgradeSongs(kept.map { it.first }, force = true) }) { Text("Replace anyway", color = C.red) } },
+        dismissButton = { TextButton(close) { Text("Keep mine", color = C.muted) } })
+}
+
+/** Before downloading songs you may have: which ones, and what you have of them. */
+@Composable
+private fun DupeDownloadDialog(new: List<org.omarchy.music.Track>, dupes: List<Pair<org.omarchy.music.Track, List<org.omarchy.music.Track>>>) {
+    val n = dupes.size
+    AlertDialog(onDismissRequest = { Music.answerDupes("cancel") }, containerColor = C.light,
+        title = { Text(if (n == 1) "You may have this song already" else "You may have $n of these songs already", style = T.title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                dupes.take(6).forEach { (t, copies) ->
+                    Text("“${t.title}” — ${t.artist}", style = T.body, modifier = Modifier.padding(top = 6.dp))
+                    Text("you have:", style = T.sub)
+                    copies.take(3).forEach { c ->
+                        Text("• ${c.title} — ${c.artist}" + (if (c.album.isNotEmpty()) " (${c.album})" else "") +
+                            "\n   " + listOf(Music.copyInfo(c), org.omarchy.music.fmtTime(c.duration), Music.whereIs(c)).filter { it.isNotEmpty() }.joinToString(" · "),
+                            style = T.sub)
+                    }
+                }
+                if (n > 6) Text("…and ${n - 6} more", style = T.sub)
+                Text("These look like the same song (the name, artist or album match closely). Download anyway?", style = T.body,
+                    modifier = Modifier.padding(top = 8.dp))
+            }
+        },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton({ Music.answerDupes("replace") }) { Text("Download and replace", color = C.accent) }
+                TextButton({ Music.answerDupes("keep") }) { Text("Download, keep both", color = C.fg) }
+                if (new.size > n) TextButton({ Music.answerDupes("skip") }) { Text("Only the new ones", color = C.fg) }
+                TextButton({ Music.answerDupes("cancel") }) { Text("Cancel", color = C.muted) }
+            }
+        })
+}
+
+/** Your files Android is asked to put in its trash (Upgrade, Replace, Duplicates): it asks you, then they go. */
+@Composable
+private fun Trasher() {
+    val ctx = LocalContext.current
+    var asked by remember { mutableStateOf<Music.TrashJob?>(null) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        val job = asked
+        asked = null
+        if (job != null) Music.trashed(job, r.resultCode == android.app.Activity.RESULT_OK)
+    }
+    val job = Music.trashJob
+    LaunchedEffect(job) {
+        if (job == null || asked != null) return@LaunchedEffect
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val uris = job.tracks.mapNotNull { Music.phoneFile(it) }.map { android.net.Uri.parse(it) }
+            if (uris.isEmpty()) Music.trashed(job, false)
+            else {
+                asked = job
+                val req = android.provider.MediaStore.createTrashRequest(ctx.contentResolver, uris, true)
+                ask.launch(androidx.activity.result.IntentSenderRequest.Builder(req.intentSender).build())
+            }
+        } else Music.trashed(job, false)
+    }
+}
+
+/** Export: a playlist as an .m3u8 file, where you pick. */
+@Composable
+private fun Exporter(ui: Ui) {
+    var pending by remember { mutableStateOf<List<org.omarchy.music.Track>?>(null) }
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
+        val t = pending
+        pending = null
+        if (uri != null && t != null) Music.exportM3u8(uri, t)
+    }
+    val job = ui.exportFor
+    LaunchedEffect(job) {
+        if (job == null) return@LaunchedEffect
+        ui.exportFor = null
+        pending = job.second
+        save.launch(org.omarchy.music.pathPart(job.first, "Playlist") + ".m3u8")
+    }
 }
 
 /** Delete: are you sure? Downloads go at once; the phone's own songs (other apps' files) only once
@@ -652,7 +1002,7 @@ private fun DeleteDialog(ui: Ui) {
         },
         confirmButton = {
             TextButton({
-                close(); ui.stopSelecting()
+                close(); ui.afterOption()
                 Music.deleteDownloads(downloads)
                 val playing = Music.current()?.id
                 val todo = files.filter { it.id != playing }
@@ -696,7 +1046,7 @@ private fun TagsDialog(ui: Ui, tracks: List<org.omarchy.music.Track>) {
             }
         },
         confirmButton = {
-            TextButton({ close(); Music.editTags(songs, typed.toMap()); ui.stopSelecting() }, enabled = have != null) {
+            TextButton({ close(); Music.editTags(songs, typed.toMap()); ui.afterOption() }, enabled = have != null) {
                 Text("Save", color = C.accent)
             }
         },

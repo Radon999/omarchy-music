@@ -12,7 +12,7 @@ AppName=VarMusic
 AppVersion={#AppVersion}
 AppVerName=VarMusic {#AppVersion}
 AppPublisher=Xavier Reid
-AppPublisherURL=https://github.com/Varixxl/omarchy-music
+AppPublisherURL=https://github.com/Radon999/omarchy-music
 ; Still where 1.1.x put it, so updates go to the same place.
 DefaultDirName={localappdata}\Programs\Omarchy Music
 DefaultGroupName=VarMusic

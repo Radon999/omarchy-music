@@ -283,7 +283,7 @@ object Wrapped {
         val dir = File(ctx.filesDir, "wrapped").apply { mkdirs() }
         val fm = LastFm.connected
         val spotify = SpotifyHistory.plays
-        if (!fm && spotify.isEmpty()) error("Connect Last.fm, or import your Spotify history, in the accounts menu (☰).")
+        if (!fm && spotify.isEmpty()) error("Connect Last.fm, or import your Spotify history, in Settings (⚙).")
         val me = if (fm) { progress("Opening your Last.fm…"); LastFm.info() } else null
         val thisYear = LocalDate.now().year
         var firstYear = me?.registered?.takeIf { it > 0 }?.let { local(it).year } ?: thisYear

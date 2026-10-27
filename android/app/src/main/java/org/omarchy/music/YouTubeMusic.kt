@@ -19,7 +19,7 @@ import java.util.TimeZone
 class YouTubeMusic(private val cookie: String?) : Source {
     override val key = "ytm"
     override val name = "YouTube Music"
-    override val hint = "Sign in to YouTube Music in the accounts menu (☰)\nto see your playlists and liked songs."
+    override val hint = "Sign in to YouTube Music in Settings (⚙)\nto see your playlists and liked songs."
     private val sapisid = cookie?.let { Regex("(?:^|;\\s*)__Secure-3PAPISID=([^;]+)").find(it)?.groupValues?.get(1) }
     override val signedIn get() = sapisid != null
 

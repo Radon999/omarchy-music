@@ -40,7 +40,7 @@ object SpotifyHistory {
         runCatching { JSON.decodeFromString(Saved.serializer(), it) }.getOrNull() } ?: Saved()).also { saved = it; count = it.plays.size }
 
     val plays: List<Play> get() = stored().plays
-    var count by mutableStateOf(0)           // for the accounts menu
+    var count by mutableStateOf(0)           // for Settings
         private set
     var busy by mutableStateOf<String?>(null)
         private set

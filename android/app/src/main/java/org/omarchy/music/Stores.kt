@@ -144,6 +144,16 @@ class Plays(ctx: Context) {
     }
 
     fun recent(n: Int = 200) = items.values.sortedByDescending { it.last }.take(n).map { it.track }
+
+    /** Songs gone (replaced by keep): their plays go to it. */
+    @Synchronized
+    fun merge(gone: Set<String>, keep: Track) {
+        val moved = gone.mapNotNull { items.remove(it) }
+        if (moved.isEmpty()) return
+        val e = items[keep.id]
+        items[keep.id] = PlayEntry((e?.plays ?: 0) + moved.sumOf { it.plays }, (listOfNotNull(e?.last) + moved.map { it.last }).max(), keep)
+        writeAtomic(file, JSON.encodeToString(ser, items))
+    }
     fun top(n: Int = 200) = items.values.sortedWith(compareByDescending<PlayEntry> { it.plays }.thenByDescending { it.last })
         .take(n).map { it.track.copy(plays = it.plays) }
 }
@@ -273,6 +283,9 @@ class Playlists(ctx: Context) {
 
     @Synchronized
     fun remove(id: String, ids: Set<String>) = edit(id) { p -> p.copy(tracks = p.tracks.filter { it.id !in ids }, updated = now()) }
+
+    @Synchronized
+    fun replaceTracks(id: String, tracks: List<Track>) = edit(id) { p -> p.copy(tracks = tracks, updated = now()) }
 
     /** Songs ids, renamed by f in every playlist they're in (their tags were edited). */
     @Synchronized

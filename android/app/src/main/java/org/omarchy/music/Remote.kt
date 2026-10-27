@@ -18,7 +18,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /** Playing on the desktop app instead of the phone: the phone becomes its remote. The
- *  desktop's "Phone remote" (accounts menu) serves a small HTTP API on your network;
+ *  desktop's "Phone remote" (Settings) serves a small HTTP API on your network;
  *  the phone pairs once with the code it shows, then reads what's playing and sends
  *  what you tap. While on, the now-playing bar, Up next and every play or queue go there. */
 object Remote {
@@ -87,7 +87,7 @@ object Remote {
     /** The phone's songs are served only while it is the desktop's remote. */
     private fun share() = Music.bg({ if (active) PhoneShare.start() else PhoneShare.stop() })
 
-    /** Pair with the desktop at addr ("192.168.1.20:8897") using the code its accounts menu shows. */
+    /** Pair with the desktop at addr ("192.168.1.20:8897") using the code its Settings shows. */
     fun pair(addr: String, code: String, done: (Throwable?) -> Unit) {
         val h = addr.trim().removePrefix("http://").trimEnd('/').let { if (':' in it) it else "$it:$PORT" }
         Music.bg({

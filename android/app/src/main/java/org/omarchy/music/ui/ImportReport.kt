@@ -42,7 +42,7 @@ fun ImportReportDialog(r: Music.ImportReport) {
     val added = remember { mutableStateMapOf<Int, Track>() }                          // its line -> what went in
     val hits = remember { mutableStateMapOf<Int, Pair<Track?, List<Track>>>() }       // its line -> what a search found
     val notes = remember { mutableStateMapOf<Int, String>() }
-    var status by remember { mutableStateOf(if (sources.isEmpty()) "Connect a service in the accounts menu to look for these." else "") }
+    var status by remember { mutableStateOf(if (sources.isEmpty()) "Connect a service in Settings to look for these." else "") }
     var busy by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val canDownload = Music.tidal.connected

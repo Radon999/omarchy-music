@@ -23,6 +23,12 @@ class LocalFiles(private val ctx: Context) {
     @Volatile var files: List<Track> = emptyList()
     @Volatile var paths: Map<String, String> = emptyMap()   // a song's address: its folder, as "Music/Album/"
         private set
+    /** Every song's genre on the phone, by its media library number (Android 11 and up know them). */
+    @Volatile var genres: Map<String, String> = emptyMap()
+        private set
+    /** Every song's folder on the phone (downloads too), by its media library number. */
+    @Volatile var allPaths: Map<String, String> = emptyMap()
+        private set
     @Volatile var scanning = false
     var scanned = 0.0
 
@@ -43,8 +49,14 @@ class LocalFiles(private val ctx: Context) {
         val keep = HashMap<String, Seen>()
         val out = ArrayList<Track>()
         val where = HashMap<String, String>()
+        val genre = HashMap<String, String>()
+        val everyPath = HashMap<String, String>()
+        val gCol = if (android.os.Build.VERSION.SDK_INT >= 30) "genre" else null
         query { c, uri, path, modified ->
-            if (if (path.startsWith(DOWNLOADS)) mediaId(uri) in saved else folders.none { path.startsWith(it) }) return@query
+            if (gCol != null) c.getColumnIndex(gCol).takeIf { it >= 0 }?.let { i -> c.getString(i)?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { g -> mediaId(uri)?.let { id -> genre[id] = g } } }
+            everyPath[mediaId(uri) ?: uri] = path.trimEnd('/') + "/"
+            if (mediaId(uri) in saved || (!path.startsWith(DOWNLOADS) && folders.none { path.startsWith(it) })) return@query
             where[uri] = path.trimEnd('/') + "/"
             val old = seen[uri]
             val added = old?.added ?: if (first) modified.toDouble() else now()
@@ -54,6 +66,8 @@ class LocalFiles(private val ctx: Context) {
         val changed = out.map { it.file } != files.map { it.file }
         files = out
         paths = where
+        genres = genre
+        allPaths = everyPath
         if (keep.keys != seen.keys) writeAtomic(index, JSON.encodeToString(ser, keep))
         scanned = now()
         return changed
@@ -84,7 +98,8 @@ class LocalFiles(private val ctx: Context) {
     private fun query(each: (android.database.Cursor, String, String, Long) -> Unit) {
         val cols = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.RELATIVE_PATH,
-            MediaStore.Audio.Media.DATE_MODIFIED, MediaStore.Audio.Media.DISPLAY_NAME)
+            MediaStore.Audio.Media.DATE_MODIFIED, MediaStore.Audio.Media.DISPLAY_NAME) +
+            (if (android.os.Build.VERSION.SDK_INT >= 30) arrayOf("genre") else emptyArray())
         ctx.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cols,
             "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE")?.use { c ->
             val idCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
@@ -101,5 +116,6 @@ class LocalFiles(private val ctx: Context) {
         /** The media library's number for a song: the same whichever volume name its address uses. */
         fun mediaId(uri: String) = uri.takeIf { it.startsWith("content://media/") }?.substringAfterLast('/')
         const val DOWNLOADS = "Music/Omarchy Music/"   // where this app saves songs
+        fun idOf(uri: String?) = uri?.let { mediaId(it) }
     }
 }

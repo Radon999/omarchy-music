@@ -228,6 +228,15 @@ object Lyrics {
         return got.takeIf { it.has }
     }
 
+    /** Look for track's lyrics under another artist and title (a search by hand); found ones are kept for it, offline too. */
+    fun search(ctx: Context, t: Track, artist: String, title: String): Got? {
+        val m = songMeta(ctx, Music.lib, t).copy(artist = artist.trim(), title = title.trim(), tidal = null)
+        val (got, _) = fetch(m)
+        if (got.has) writeAtomic(File(File(ctx.cacheDir, "lyrics").apply { mkdirs() }, "${safeName(t.id)}.json"),
+            JSON.encodeToString(Got.serializer(), got.copy(time = now())))
+        return got.takeIf { it.has }
+    }
+
     private fun fetch(m: SongMeta): Pair<Got, Boolean> {
         var got = Got()
         var reached = false

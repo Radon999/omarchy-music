@@ -42,6 +42,40 @@ object Eq {
     )
     val BANDS = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
     const val Q = 1.41        // an octave wide, so neighbouring bands blend smoothly
+    /** How many bands the EQ can have, and where they sit: 3, 5, 10, 15 (2/3 octave) or 31 (1/3 octave). */
+    val COUNTS = listOf(3, 5, 10, 15, 31)
+    fun bandsFor(n: Int): List<Int> = when (n) {
+        3 -> listOf(100, 1000, 10000)
+        5 -> listOf(60, 230, 910, 3600, 14000)
+        15 -> listOf(25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000)
+        31 -> listOf(20, 25, 31, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600,
+            2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000)
+        else -> BANDS
+    }
+    /** Each band's width: narrower the more bands there are, so they still blend. */
+    fun qFor(n: Int) = when (n) { 3 -> 0.45; 5 -> 0.75; 15 -> 2.15; 31 -> 4.32; else -> Q }
+    fun label(hz: Int) = if (hz >= 1000) (if (hz % 1000 == 0) "${hz / 1000}k" else "%.1fk".format(hz / 1000.0)) else "$hz"
+
+    /** gains (at the frequencies from) moved onto n bands: read off the curve, in log frequency. */
+    fun resample(gains: List<Double>, from: List<Int>, n: Int): List<Double> {
+        if (gains.size == n && from == bandsFor(n)) return gains
+        val xs = from.map { kotlin.math.ln(it.toDouble()) }
+        return bandsFor(n).map { hz ->
+            val x = kotlin.math.ln(hz.toDouble())
+            when {
+                x <= xs.first() -> gains.first()
+                x >= xs.last() -> gains.last()
+                else -> {
+                    val i = xs.indexOfLast { it <= x }.coerceAtMost(xs.size - 2)
+                    val t = (x - xs[i]) / (xs[i + 1] - xs[i])
+                    clamp(gains[i] + (gains[i + 1] - gains[i]) * t)
+                }
+            }
+        }
+    }
+
+    /** A preset's gains on n bands (the presets are written for 10). */
+    fun preset(key: String, n: Int): List<Double>? = PRESETS[key]?.second?.let { resample(it, BANDS, n) }
     const val RANGE = 12.0    // dB, either way
     val PRESETS: LinkedHashMap<String, Pair<String, List<Double>?>> = linkedMapOf(
         "flat" to ("Flat" to List(10) { 0.0 }),
@@ -62,7 +96,7 @@ object Eq {
     /** Every filter the settings make, in order. */
     fun filters(s: EqSettings): List<Filter> =
         (headphones(s)[s.headphones]?.second ?: emptyList()) +
-            BANDS.zip(s.bands).map { (hz, g) -> Filter("pk", hz.toDouble(), g, Q) } +
+            bandsFor(s.count).zip(s.bands).map { (hz, g) -> Filter("pk", hz.toDouble(), g, qFor(s.count)) } +
             listOf(Filter("ls", 100.0, s.bass, 0.71), Filter("hs", 8000.0, s.treble, 0.71))
 
     /** RBJ cookbook coefficients (b0, b1, b2, a0, a1, a2), as libavfilter builds them. */
@@ -111,7 +145,57 @@ data class EqSettings(
     val bass: Double = 0.0, val treble: Double = 0.0,
     val profiles: Map<String, AutoEq.Profile> = emptyMap(),   // AutoEq corrections you added
     val devices: Map<String, String> = emptyMap(),            // an output's name: the correction you used on it
-)
+    val count: Int = 10,                                      // how many bands: 3, 5, 10, 15 or 31
+    val perOutput: Boolean = true,                            // a separate EQ for each output (speaker, headphones, car…)
+    val outputs: Map<String, OutputEq> = emptyMap(),          // each output's own EQ, by its key (see [Outputs])
+    val output: String = "",                                  // the output these settings are for now
+) {
+    /** These settings as one output keeps them. */
+    fun toOutput(label: String) = OutputEq(label, on, headphones, preset, bands, custom, bass, treble, count)
+    /** These settings with an output's own EQ put in. */
+    fun withOutput(key: String, o: OutputEq?) = if (o == null) copy(output = key, on = false, headphones = "off", preset = "flat",
+        bands = List(count) { 0.0 }, custom = List(count) { 0.0 }, bass = 0.0, treble = 0.0)
+        else copy(output = key, on = o.on, headphones = o.headphones, preset = o.preset, bands = o.bands, custom = o.custom,
+            bass = o.bass, treble = o.treble, count = o.count)
+}
+
+/** One output's own EQ. */
+@Serializable
+data class OutputEq(val label: String = "", val on: Boolean = false, val headphones: String = "off", val preset: String = "flat",
+                    val bands: List<Double> = List(10) { 0.0 }, val custom: List<Double> = List(10) { 0.0 },
+                    val bass: Double = 0.0, val treble: Double = 0.0, val count: Int = 10)
+
+/** Where the sound goes: the phone's speaker, wired headphones, each Bluetooth device by its name (your car,
+ *  your earbuds), USB. Each is a key ("speaker", "wired", "bt:Name", "usb:Name") with a label and a kind. */
+object Outputs {
+    data class Out(val key: String, val label: String, val kind: String)
+
+    fun now(ctx: android.content.Context): Out {
+        val am = ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+        fun name(d: android.media.AudioDeviceInfo) = d.productName?.toString()?.takeIf { it.isNotBlank() && it != android.os.Build.MODEL }
+        outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+            it.type == android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER }?.let { d ->
+            val n = name(d) ?: "Bluetooth"
+            val car = Regex("(?i)car|auto|sync|uconnect|vw|toyota|ford|honda|bmw|audi|mazda|kia|hyundai|chevy|nissan|tesla|subaru|jeep|dodge|mercedes|lexus").containsMatchIn(n)
+            return Out("bt:$n", n, if (car) "car" else "bluetooth")
+        }
+        outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET || it.type == android.media.AudioDeviceInfo.TYPE_USB_DEVICE }?.let { d ->
+            val n = name(d) ?: "USB"
+            return Out("usb:$n", "$n (USB)", "usb")
+        }
+        outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET }?.let { return Out("headset", "Headset (jack, with mic)", "wired") }
+        outs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES }?.let { return Out("wired", "Headphones (jack)", "wired") }
+        return Out("speaker", "Built-in speaker", "speaker")
+    }
+
+    fun kindOf(key: String) = when {
+        key == "speaker" -> "speaker"
+        key == "wired" || key == "headset" -> "wired"
+        key.startsWith("usb:") -> "usb"
+        else -> "bluetooth"
+    }
+}
 
 /** The EQ in the player: a cascade of biquads per channel, in double precision. New
  *  settings swap the coefficients in without resetting the filters, so there's no gap. */
@@ -121,6 +205,7 @@ class EqProcessor : BaseAudioProcessor() {
     @Volatile private var settings = EqSettings()
     @Volatile private var stages: List<Stage> = emptyList()
     @Volatile private var gain = 1.0
+    @Volatile var songGain = 1.0   // the playing song's own volume (Volume…), on top
     private var rate = 48000.0
     private var channels = 2
 
@@ -158,10 +243,10 @@ class EqProcessor : BaseAudioProcessor() {
         val st = stages
         val float = inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
         input.order(ByteOrder.nativeOrder())
-        if (st.isEmpty()) {
+        if (st.isEmpty() && songGain == 1.0) {
             out.put(input)
         } else {
-            val g = gain
+            val g = (if (st.isEmpty()) 1.0 else gain) * songGain
             var ch = 0
             while (input.hasRemaining()) {
                 var x = (if (float) input.float.toDouble() else input.short / 32768.0) * g

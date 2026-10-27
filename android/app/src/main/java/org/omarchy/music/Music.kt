@@ -35,6 +35,9 @@ object Music {
     lateinit var lists: Playlists
     lateinit var playlistFolders: PlaylistFolders   // Library folders of playlists
     lateinit var speeds: SongSpeeds
+    lateinit var favorites: Favorites   // the songs you starred
+    lateinit var songStats: SongStats   // skips, and songs heard to the end
+    lateinit var gains: SongGains       // songs' own volume boosts
     lateinit var local: LocalFiles
     lateinit var tidal: Tidal
     lateinit var dl: Downloader
@@ -50,6 +53,18 @@ object Music {
 
     // ---- what the screens show ----
     var queue by mutableStateOf(listOf<Track>())
+    // Multiple queues: playing from another list (a folder, an album, an artist, a playlist…) starts a queue
+    // of its own; the one you were in is kept, where you were in it, to go back to.
+    var queues by mutableStateOf(listOf<SavedQueue>())   // the other queues, the last one used first
+    var queueName by mutableStateOf("")
+    var queueId = ""
+    var multiQueue by mutableStateOf(true)
+    var listName = ""   // where songs are picked from now (the screen's name): a new queue is called that
+    private var resumeAt = 0.0
+    // Lyrics into the files: what's found for a song goes into its own tags once it's done playing.
+    var lyricsToFiles by mutableStateOf(true)
+    private var lastLoaded: Track? = null
+    private var lyricsWarned = false
     var index by mutableStateOf(-1)
     var paused by mutableStateOf(true)
     var position by mutableStateOf(0.0)
@@ -73,6 +88,25 @@ object Music {
     var shuffled = false   // the queue was shuffled: repeat-all shuffles it again
     var playlistSort by mutableStateOf("order")   // how a playlist's songs are listed (PLAYLIST_SORTS)
     var browseLocal by mutableStateOf(false)   // Local picked in the source bar: your own songs, no Library tab
+    var look by mutableStateOf("stellio")      // the app's colours: Stellio (the default), a colourful one, dark, light, or a neon one
+    var visPreset by mutableStateOf("bars")    // the Visualizer tab's look
+    var wrappedStyle by mutableStateOf("classic")   // Wrapped's look
+    var skipOrder by mutableStateOf("most")    // how Skips is sorted: most, least, heard
+    var downloadDir by mutableStateOf("")      // a folder of yours downloads go to ("Music/Mine/"); "": the app's own
+    var dupeAction by mutableStateOf("ask")    // a download you have already: ask, keep (both) or replace
+    var dupePrompt by mutableStateOf<Pair<List<Track>, List<Pair<Track, List<Track>>>>?>(null)   // asking about copies
+    var trashJob by mutableStateOf<TrashJob?>(null)   // your files Android is asked to put in its trash
+    var dupes by mutableStateOf<List<List<Track>>?>(null)   // the Duplicates view's last look: copies, best first
+    var dupesBusy by mutableStateOf(false)
+    var upgrading by mutableStateOf<String?>(null)   // Upgrade running: how far
+    var upgradeKept by mutableStateOf<List<Pair<Track, String>>?>(null)   // kept as good already: replace anyway?
+    @Volatile var upgradeStop = false
+    private val replaceAfter = HashMap<String, List<Track>>()   // a download's id -> your copies to put away once it's in
+    private var finishing = false    // the song playing ran out on its own (not a skip)
+    private var goingBack = false    // Previous: going back isn't skipping
+
+    /** Your files to put in Android's trash (it asks you), and the songs that take their places. */
+    data class TrashJob(val tracks: List<Track>, val replacements: Map<String, Track> = emptyMap(), val what: String = "")
     private var searchBeforeLocal = "tidal"     // where the search looked before
     var importing by mutableStateOf<String?>(null)   // an .m3u8 being read: how far
     var importReport by mutableStateOf<ImportReport?>(null)   // what the last one didn't find, to look for
@@ -112,9 +146,14 @@ object Music {
         lists = Playlists(ctx)
         playlistFolders = PlaylistFolders(File(ctx.filesDir, "playlist-folders.json"))
         speeds = SongSpeeds(File(ctx.filesDir, "song-speeds.json"))
+        favorites = Favorites(File(ctx.filesDir, "favorites.json"))
+        songStats = SongStats(File(ctx.filesDir, "skips.json"))
+        gains = SongGains(File(ctx.filesDir, "song-volume.json"))
         local = LocalFiles(ctx)
         tidal = Tidal(ctx)
         dl = Downloader(ctx, lib, tidal)
+        dl.folder = { downloadDir }
+        dl.onSaved = { id -> scope.launch { afterSaved(id) } }
         loadState()
         if (tidal.connected) sources["tidal"] = tidal
         bg({ lib.prune() }) { _, _ -> savedVersion++ }
@@ -160,6 +199,10 @@ object Music {
         val music_sort: String = "title", val search_in: String = "tidal", val dj: Dj.State = Dj.State(),
         val api_keys: Map<String, String> = emptyMap(), val shuffled: Boolean = false, val playlist_sort: String = "order",
         val browse_local: Boolean = false, val search_before_local: String = "tidal",
+        val look: String = "default", val vis_preset: String = "bars", val wrapped_style: String = "classic",
+        val skip_order: String = "most", val download_dir: String = "", val dupe_action: String = "ask",
+        val queues: List<SavedQueue> = emptyList(), val queue_name: String = "", val queue_id: String = "",
+        val multi_queue: Boolean = true, val styled: Boolean = false, val lyrics_to_files: Boolean = true,
     )
 
     private val stateFile get() = File(ctx.filesDir, "state.json")
@@ -185,8 +228,20 @@ object Music {
         playlistSort = st.playlist_sort.takeIf { it in PLAYLIST_SORTS } ?: "order"
         browseLocal = st.browse_local
         searchBeforeLocal = st.search_before_local.takeIf { it in SEARCH_IN && it != "local" } ?: "tidal"
+        look = if (st.styled) st.look else "stellio"   // the Stellio look comes in once; you can pick any other after
+        org.omarchy.music.ui.Looks.apply(look)
+        visPreset = st.vis_preset
+        wrappedStyle = st.wrapped_style
+        skipOrder = st.skip_order.takeIf { it in setOf("most", "least", "heard") } ?: "most"
+        downloadDir = st.download_dir
+        dupeAction = st.dupe_action.takeIf { it in setOf("ask", "keep", "replace") } ?: "ask"
         eq = st.eq
         eqProcessor.update(eq)
+        queues = st.queues
+        queueName = st.queue_name
+        queueId = st.queue_id
+        multiQueue = st.multi_queue
+        lyricsToFiles = st.lyrics_to_files
         val t = current()
         if (t != null && (lib.has(t.id) || t.isFile)) loadCurrent(autoplay = false)
         else if (t != null) restorePending = true   // it has to come from Tidal: wait for the player and the login
@@ -194,7 +249,8 @@ object Music {
 
     fun saveState() {
         val st = State(queue, index, radioFrom, repeat, eq, source, syncSources.toMap(), lyricsMode, folders, artColors, keepPlayed, musicSort, searchIn, dj, apiKeys, shuffled, playlistSort,
-            browseLocal, searchBeforeLocal)
+            browseLocal, searchBeforeLocal, look, visPreset, wrappedStyle, skipOrder, downloadDir, dupeAction,
+            queues, queueName, queueId, multiQueue, true, lyricsToFiles)
         bg({ writeAtomic(stateFile, JSON.encodeToString(State.serializer(), st)) })
     }
 
@@ -218,6 +274,29 @@ object Music {
         val saved = lib.items.values.sortedByDescending { it.added }.filter { seen.add(it.file) }.map { it.track() }
         return saved + local.files.filter { it.file !in seen }
     }
+
+    /** Your songs by album, the albums in name order (each with its songs in their order). */
+    fun albums(): List<Pair<Album, List<Track>>> = mySongs().groupBy { Covers.albumKey(it) }.values.map { songs ->
+        val t = songs.first()
+        val artist = songs.groupingBy { it.artist.split(",")[0].trim() }.eachCount().maxByOrNull { it.value }?.key ?: t.artist
+        Album("album:" + Covers.albumKey(t), t.album.ifEmpty { "Unknown album" }, artist, count = songs.size.toString()) to songs
+    }.sortedBy { norm(it.first.title) }
+
+    /** A song's genre, as its file says (songs without one: Unknown genre). */
+    fun genreOf(t: Track): String = LocalFiles.idOf(t.file ?: lib.items[t.id]?.file)?.let { local.genres[it] } ?: "Unknown genre"
+
+    /** Your songs by genre, the most songs first. */
+    fun genres(): List<Pair<String, List<Track>>> = mySongs().groupBy { genreOf(it) }.toList()
+        .sortedWith(compareBy<Pair<String, List<Track>>>({ it.first == "Unknown genre" }, { -it.second.size }))
+
+    /** A song's folder on the phone ("Music/Album/"). */
+    fun folderOf(t: Track): String {
+        val f = t.file ?: lib.items[t.id]?.file
+        return local.paths[f] ?: LocalFiles.idOf(f)?.let { local.allPaths[it] } ?: LocalFiles.DOWNLOADS
+    }
+
+    /** Your songs by folder, in folder order. */
+    fun folderSongs(): List<Pair<String, List<Track>>> = mySongs().groupBy { folderOf(it) }.toList().sortedBy { it.first.lowercase() }
 
     /** Your songs by the artist called name: saved, in your folders or playlists, or played. */
     fun songsBy(name: String): List<Track> {
@@ -655,11 +734,18 @@ object Music {
     }
 
     // ---- downloads ----
-    fun download(tracks: List<Track>) {
+    fun download(tracks: List<Track>, checked: Boolean = false) {
         val waiting = downloads.map { it.id }.toSet()
         val new = tracks.filter { !it.isFile && !lib.has(it.id) && it.id !in waiting }
         if (new.isEmpty()) { toast("Those are downloaded already"); return }
-        if (!tidal.connected) { toast("Connect Tidal in the accounts menu first: downloads come from there, in FLAC"); return }
+        if (!tidal.connected) { toast("Connect Tidal in Settings first: downloads come from there, in FLAC"); return }
+        if (!checked && dupeAction != "keep") {
+            val dupes = new.mapNotNull { t -> copiesOf(t).takeIf { it.isNotEmpty() }?.let { t to it } }
+            if (dupes.isNotEmpty()) {
+                if (dupeAction == "replace") dupes.forEach { (t, c) -> replaceAfter[t.id] = c }
+                else { dupePrompt = new to dupes; return }
+            }
+        }
         downloads = downloads + new
         toast("Downloading ${new.size} song${if (new.size != 1) "s" else ""} in FLAC" + if (Remote.active) " to this phone" else "")
         savedVersion++
@@ -680,9 +766,235 @@ object Music {
 
     fun saveCurrent() { current()?.let { download(listOf(it)) } }
 
+    // ---- copies of a song ----
+    private var copyIndex: Pair<Triple<Int, Int, Double>, Map<String, List<Track>>>? = null
+
+    /** Your songs on the phone by the first letters of their title (squashed): kept until your songs change. */
+    private fun copyPool(t: Track): List<Track> {
+        val sig = Triple(lib.items.size, local.files.size, local.scanned)
+        val idx = copyIndex?.takeIf { it.first == sig }?.second ?: mySongs().groupBy { squashKey(cleanTitle(it.title)).take(4) }
+            .also { copyIndex = sig to it }
+        return idx[squashKey(cleanTitle(t.title)).take(4)] ?: emptyList()
+    }
+
+    /** Your songs on the phone that are likely t (close is enough: it's asked about), t itself left out. */
+    fun copiesOf(t: Track): List<Track> = copyPool(t).filter { it.id != t.id && maybeSame(t, it) && (it.isFile || lib.has(it.id)) }
+
+    /** Whether a song may be saved without asking (Keep, or a service's sync): yes unless you have it
+     *  already and Copies says Ask (then it streams; Download asks). With Replace, your copy goes once it's in. */
+    fun autoSaveOk(t: Track): Boolean {
+        if (dupeAction == "keep" || lib.has(t.id)) return true
+        val copies = copiesOf(t)
+        if (copies.isEmpty()) return true
+        if (dupeAction == "replace") { synchronized(replaceAfter) { replaceAfter[t.id] = copies }; return true }
+        return false
+    }
+
+    /** A download is in: your copies of it go, if you said to replace them. */
+    private fun afterSaved(id: String) {
+        val old = synchronized(replaceAfter) { replaceAfter.remove(id) } ?: return
+        val e = lib.items[id] ?: return
+        replaceCopies(old, e.track(), "copies of “${e.title}”")
+    }
+
+    /** Put old (copies of new) away: downloads at once, your files in Android's trash once you say yes. */
+    fun replaceCopies(old: List<Track>, new: Track, what: String) {
+        val playing = current()?.id
+        val mine = old.filter { it.id != playing }
+        val downloads = mine.filter { lib.has(it.id) && lib.items[it.id]?.file != lib.items[new.id]?.file }
+        downloads.forEach { lib.remove(it.id); retarget(listOf(it.id), new) }
+        val files = mine.filter { it.isFile && Music.phoneFile(it) != null }
+        if (files.isNotEmpty()) queueTrash(TrashJob(files, files.associate { it.id to new }, what))
+        else if (downloads.isNotEmpty()) toast("Replaced ${downloads.size} ${if (downloads.size == 1) "copy" else "copies"} of “${new.title}”")
+        musicVersion++; savedVersion++
+    }
+
+    private val trashQueue = ArrayDeque<TrashJob>()
+
+    /** Ask Android to put files in its trash (one ask at a time; Android 10 can't: they stay). */
+    fun queueTrash(job: TrashJob) {
+        if (android.os.Build.VERSION.SDK_INT < 30) { toast("Android 10 can't put other apps' files in the trash: your old files stay"); return }
+        if (trashJob == null) trashJob = job else trashQueue.addLast(job)
+    }
+
+    /** Android said yes (ok) or no to the trash job. */
+    fun trashed(job: TrashJob, ok: Boolean) {
+        trashJob = trashQueue.removeFirstOrNull()
+        if (!ok) { toast("Your old files stay where they are"); return }
+        val ids = job.tracks.map { it.id }.toSet()
+        local.files = local.files.filter { it.id !in ids }
+        for (t in job.tracks) {
+            val new = job.replacements[t.id]
+            if (new != null) retarget(listOf(t.id), new)
+            else lists.all().filter { p -> p.tracks.any { it.id == t.id } }.forEach { lists.remove(it.id, setOf(t.id)) }
+        }
+        unqueueMany(queue.indices.filter { queue[it].id in ids && job.replacements[queue[it].id] == null })
+        dupes = dupes?.map { g -> g.filter { it.id !in ids } }?.filter { it.size > 1 }
+        toast(if (job.replacements.isNotEmpty()) "Replaced ${job.tracks.size} file${if (job.tracks.size != 1) "s" else ""} (in Android's trash)"
+              else "${job.tracks.size} file${if (job.tracks.size != 1) "s" else ""} in Android's trash")
+        musicVersion++; savedVersion++
+    }
+
+    /** Songs going away for new: your playlists and the queue get new in their place, their plays go with it. */
+    fun retarget(oldIds: List<String>, new: Track) {
+        val gone = oldIds.toSet() - new.id
+        if (gone.isEmpty()) return
+        val keep = new.slim()
+        for (p in lists.all()) if (p.tracks.any { it.id in gone }) {
+            val have = HashSet<String>()
+            val out = p.tracks.map { if (it.id in gone) keep else it }.filter { have.add(it.id) }
+            lists.replaceTracks(p.id, out)
+        }
+        queue = queue.mapIndexed { i, t -> if (t.id in gone && i != index) keep.copy(queued = t.queued) else t }
+        plays.merge(gone, keep)
+        saveState()
+    }
+
+    /** Download the songs you were asked about: r is "keep", "replace" or "skip" (only the new ones). */
+    fun answerDupes(r: String) {
+        val (new, dupes) = dupePrompt ?: return
+        dupePrompt = null
+        if (r == "cancel") return
+        val have = dupes.map { it.first.id }.toSet()
+        if (r == "replace") dupes.forEach { (t, c) -> synchronized(replaceAfter) { replaceAfter[t.id] = c } }
+        download(new.filter { r != "skip" || it.id !in have }, checked = true)
+    }
+
+    // ---- Duplicates ----
+    fun findDupes() {
+        if (dupesBusy) return
+        dupesBusy = true
+        bg({
+            mySongs().filter { it.isFile || lib.has(it.id) }.groupBy { looseKey(it) }.filter { (k, v) -> v.size > 1 && k.first.isNotEmpty() }
+                .values.map { g -> g.distinctBy { lib.items[it.id]?.file ?: it.file }.sortedByDescending { copyRank(it) } }
+                .filter { it.size > 1 }.sortedBy { norm(it[0].artist) + "|" + norm(it[0].title) }
+        }) { res, err ->
+            dupesBusy = false
+            dupes = res ?: emptyList()
+            if (err != null) toast("Couldn't look for duplicates: ${err.message?.take(80)}")
+        }
+    }
+
+    /** Which copy is best to keep: a FLAC first, a download (24-bit) over a file, then the longer one. */
+    fun copyRank(t: Track): Double {
+        val e = lib.items[t.id]
+        val q = e?.quality ?: ""
+        val name = (e?.file ?: t.file ?: "").lowercase()
+        val flac = e?.format == "flac" || name.endsWith(".flac") || copyInfo(t).startsWith("FLAC")
+        return (if (flac) 1000.0 else 0.0) + (if (q.startsWith("24")) 100.0 else 0.0) + t.duration / 1000
+    }
+
+    /** What a copy is: its format and quality, as far as the phone says. */
+    fun copyInfo(t: Track): String {
+        lib.items[t.id]?.let { e -> return listOf(e.format.uppercase().ifEmpty { "?" }, e.quality).filter { it.isNotEmpty() }.joinToString(" · ") }
+        val f = t.file ?: return ""
+        return runCatching {
+            ctx.contentResolver.query(android.net.Uri.parse(f), arrayOf(android.provider.MediaStore.Audio.Media.MIME_TYPE,
+                android.provider.MediaStore.Audio.Media.SIZE), null, null, null)?.use { c ->
+                if (!c.moveToFirst()) "" else {
+                    val mime = c.getString(0) ?: ""
+                    val mb = c.getLong(1) / 1e6
+                    listOf(mime.substringAfter('/').uppercase().replace("X-", "").replace("MPEG", "MP3"), "%.1f MB".format(mb)).joinToString(" · ")
+                }
+            } ?: ""
+        }.getOrDefault("")
+    }
+
+    /** Where a song is, for the Duplicates list. */
+    fun whereIs(t: Track): String = lib.items[t.id]?.let { "Downloaded here" } ?: local.paths[t.file ?: ""]?.trimEnd('/') ?: ""
+
+    /** Delete one copy of a song in Duplicates: the copy kept takes its place in playlists. */
+    fun deleteDupe(group: List<Track>, t: Track) {
+        val keep = group.firstOrNull { it.id != t.id } ?: return
+        if (current()?.id == t.id) { toast("That copy is playing: skip it first"); return }
+        if (lib.has(t.id)) {
+            lib.remove(t.id); retarget(listOf(t.id), keep)
+            dupes = dupes?.map { g -> g.filter { it.id != t.id } }?.filter { it.size > 1 }
+            toast("Deleted the downloaded copy of “${t.title}”"); savedVersion++; musicVersion++
+        } else queueTrash(TrashJob(listOf(t), mapOf(t.id to keep), "a copy of “${t.title}”"))
+    }
+
+    // ---- Upgrade: your files for Tidal's FLAC where it's better ----
+    fun upgradeSongs(tracks: List<Track>? = null, force: Boolean = false) {
+        if (upgrading != null) return
+        if (!tidal.connected) { toast("Connect Tidal in Settings first: the new copies come from there, in FLAC"); return }
+        val todo = (tracks ?: local.files).filter { upgradable(it) }
+        if (todo.isEmpty()) { toast("No songs of yours to upgrade"); return }
+        upgradeStop = false
+        upgrading = "Upgrading · 0 of ${todo.size}"
+        bg({ dl.upgrade(todo, force, { upgradeStop }) { n -> scope.launch { upgrading = "Upgrading · $n of ${todo.size}" } } }) { out, err ->
+            upgrading = null
+            if (out == null) { toast("Couldn't upgrade: ${err?.message?.take(90)}"); return@bg }
+            val playing = current()?.id
+            val done = out.done.filter { (old, id) -> lib.has(id) && old.id != playing }
+            if (done.isNotEmpty()) queueTrash(TrashJob(done.map { it.first }, done.associate { (old, id) -> old.id to lib.items[id]!!.track() }, "upgraded songs"))
+            toast("Upgraded ${done.size} song${if (done.size != 1) "s" else ""} to FLAC" +
+                (if (out.missing.isNotEmpty()) " · ${out.missing.size} not on Tidal" else "") +
+                (if (out.kept.isNotEmpty()) " · ${out.kept.size} as good already" else "") +
+                (if (out.failed.isNotEmpty()) " · ${out.failed.size} couldn't" else ""))
+            if (out.kept.isNotEmpty() && !force) upgradeKept = out.kept
+            savedVersion++; musicVersion++
+        }
+    }
+
+    // ---- favorites, a song's volume, moods by hand, looks ----
+    fun setFavorite(tracks: List<Track>, on: Boolean? = null) {
+        if (tracks.isEmpty()) return
+        val star = on ?: !favorites.has(tracks[0])
+        favorites.set(tracks, star)
+        val what = if (tracks.size == 1) "“${tracks[0].title}”" else "${tracks.size} songs"
+        toast(if (star) "$what in your favorites" else "$what out of your favorites")
+        musicVersion++
+    }
+
+    fun setGain(tracks: List<Track>, db: Double) {
+        if (tracks.isEmpty()) return
+        gains.set(tracks, db)
+        current()?.let { cur -> if (tracks.any { SongSpeeds.key(it) == SongSpeeds.key(cur) }) eqProcessor.songGain = gainOf(cur) }
+        val v = gains.get(tracks[0])
+        val what = if (tracks.size == 1) "“${tracks[0].title}”" else "${tracks.size} songs"
+        toast(if (v == 0.0) "$what back to normal volume" else "$what at ${"%+.1f".format(v)} dB")
+        musicVersion++
+    }
+
+    private fun gainOf(t: Track) = Math.pow(10.0, gains.get(t) / 20)
+
+    fun setMoods(tracks: List<Track>, moods: List<String>?) {
+        Moods.setManual(tracks, moods)
+        toast(if (moods == null) "Moods found again by the scan" else "Moods set for ${if (tracks.size == 1) "“${tracks[0].title}”" else "${tracks.size} songs"}")
+        if (moods == null) Moods.scanSoon()
+        musicVersion++
+    }
+
+    fun chooseLook(l: String) { look = l; org.omarchy.music.ui.Looks.apply(l); saveState() }
+    fun chooseVisPreset(p: String) { visPreset = p; saveState() }
+    fun chooseWrappedStyle(s: String) { wrappedStyle = s; saveState() }
+    fun chooseSkipOrder(s: String) { skipOrder = s; saveState() }
+    fun chooseDownloadDir(d: String) {
+        downloadDir = d; saveState()
+        toast(if (d.isEmpty()) "Downloads go to Music/Omarchy Music/" else "Downloads go to $d, by artist and album")
+    }
+    fun chooseDupeAction(a: String) { dupeAction = a; saveState() }
+
+    /** Write tracks as an .m3u8 playlist to uri (a file you picked). */
+    fun exportM3u8(uri: android.net.Uri, tracks: List<Track>) {
+        bg({
+            val text = m3u8Text(tracks) { t ->
+                val f = lib.items[t.id]?.file ?: t.file
+                f?.let { a -> local.paths[a]?.let { p -> "/storage/emulated/0/$p" + (displayName(a) ?: "") } ?: if (a.startsWith("/")) a else null }
+            }
+            ctx.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray()) }
+        }) { _, err -> toast(if (err != null) "Couldn't save the playlist: ${err.message?.take(80)}" else "Playlist saved: ${tracks.size} songs") }
+    }
+
+    private fun displayName(uri: String): String? = runCatching {
+        ctx.contentResolver.query(android.net.Uri.parse(uri), arrayOf(android.provider.MediaStore.Audio.Media.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()
+
     /** Make source (a picture's web address, or a content:// one you picked) the cover of tracks' album:
      *  into its downloaded FLACs (all but the playing one's), and shown for all of its songs. */
-    fun setCover(tracks: List<Track>, source: String, done: () -> Unit = {}) {
+    fun setCover(tracks: List<Track>, source: String, wholeAlbum: Boolean = true, done: () -> Unit = {}) {
         val t = tracks.firstOrNull() ?: return
         val playing = current()?.id
         bg({
@@ -691,7 +1003,8 @@ object Music {
             val jpeg = Covers.jpeg(raw)
             val key = Covers.albumKey(t)
             val saved = File(File(ctx.filesDir, "covers").apply { mkdirs() }, "${randomHex(8)}.jpg").apply { writeBytes(jpeg) }
-            val album = lib.items.values.filter { Covers.albumKey(it.track()) == key || it.id in tracks.map { x -> x.id } }
+            val ids = tracks.map { x -> x.id }.toSet()
+            val album = lib.items.values.filter { (wholeAlbum && Covers.albumKey(it.track()) == key) || it.id in ids }
             var written = 0
             val failed = ArrayList<String>()
             for (e in album.distinctBy { it.file }) {
@@ -877,7 +1190,7 @@ object Music {
                 for (t in found) if (seen.add(t.id)) tracks += t
                 scope.launch { syncTracks = tracks.toList() }
             }
-            dl.sync(tracks) { scope.launch { savedVersion++ } }
+            dl.sync(tracks.filter { autoSaveOk(it) }) { scope.launch { savedVersion++ } }   // songs you have: not unless Copies says so
         }) { _, err ->
             syncing = false
             if (err != null) toast("FLAC sync stopped: ${err.message?.take(80)}")
@@ -927,7 +1240,9 @@ object Music {
     /** Play tracks[i], then the rest of tracks; the songs you queued come first. */
     fun playFrom(tracks: List<Track>, i: Int, radio: Boolean) {
         if (Remote.active) { Remote.playFrom(tracks, i, radio); return }
-        val queued = queue.drop(index + 1).filter { it.queued }
+        val newQueue = multiQueue && listName.isNotEmpty() && listName != queueName
+        if (multiQueue) startQueue(listName)
+        val queued = if (newQueue) emptyList() else queue.drop(index + 1).filter { it.queued }
         queue = tracks.take(i + 1) + queued + tracks.drop(i + 1)
         index = i
         radioFrom = null
@@ -937,6 +1252,75 @@ object Music {
         loadCurrent()
         if (radio) extendRadio(queue[i], keepUntil = i)
     }
+
+    /** Songs are played from the list called name: if it isn't the queue you're in, that one is kept to come back to. */
+    private fun startQueue(name0: String) {
+        val name = name0.ifEmpty { queueName.ifEmpty { "Queue" } }
+        if (name == queueName && queueId.isNotEmpty()) return
+        if (queue.isNotEmpty() && index >= 0 && queueName.isNotEmpty()) {
+            val keep = SavedQueue(queueId.ifEmpty { randomHex(6) }, queueName, queue.map { it.copy(queued = false) }, index, livePosition(), now())
+            queues = (listOf(keep) + queues.filter { it.id != keep.id && it.name != keep.name }).take(MAX_QUEUES)
+        }
+        queueId = queues.firstOrNull { it.name == name }?.id ?: randomHex(6)
+        queues = queues.filter { it.name != name }
+        queueName = name
+    }
+
+    /** Go back to one of your other queues, where you left it. */
+    fun switchQueue(id: String) {
+        val q = queues.firstOrNull { it.id == id } ?: return
+        if (Remote.active) { Remote.playFrom(q.tracks, q.index.coerceIn(0, maxOf(0, q.tracks.size - 1)), false); return }
+        if (queue.isNotEmpty() && index >= 0) {
+            val keep = SavedQueue(queueId.ifEmpty { randomHex(6) }, queueName.ifEmpty { "Queue" }, queue.map { it.copy(queued = false) }, index, livePosition(), now())
+            queues = listOf(keep) + queues.filter { it.id != id && it.id != keep.id }
+        } else queues = queues.filter { it.id != id }
+        queue = q.tracks
+        index = q.index.coerceIn(0, maxOf(0, q.tracks.size - 1))
+        queueName = q.name
+        queueId = q.id
+        radioFrom = null
+        shuffled = false
+        if (dj.on) dj = dj.copy(on = false)
+        context++
+        resumeAt = q.position
+        loadCurrent()
+        toast("Back to “${q.name}”")
+    }
+
+    fun renameQueue(id: String, name: String) {
+        val n = name.trim().ifEmpty { return }
+        if (id == queueId || id.isEmpty()) queueName = n else queues = queues.map { if (it.id == id) it.copy(name = n) else it }
+        saveState()
+    }
+
+    @JvmName("chooseLyricsToFiles")
+    fun setLyricsToFiles(on: Boolean) { lyricsToFiles = on; saveState() }
+
+    /** Whether the app may write into your own files too (Android 11 and up: All files access). */
+    fun canWriteOwnFiles() = android.os.Build.VERSION.SDK_INT < 30 || android.os.Environment.isExternalStorageManager()
+
+    /** Write the lyrics found for t into its file's tags (if it has none). Your own files need All files access. */
+    fun lyricsIntoFile(t: Track) {
+        if (!lyricsToFiles || Remote.active) return
+        val uri = (lib.items[t.id]?.file ?: t.file)?.takeIf { it.startsWith("content://") } ?: return
+        val own = lib.items[t.id] == null
+        if (own && !canWriteOwnFiles()) return
+        bg({
+            val words = Lyrics.get(ctx, t)?.let { LyricsTags.words(it) } ?: return@bg false
+            LyricsTags.write(ctx, uri, words)
+        }) { wrote, err ->
+            if (err is SecurityException && !lyricsWarned) {
+                lyricsWarned = true
+                toast("Couldn't put the lyrics into “${t.title}”: allow All files access in Settings › Lyrics into files")
+            }
+            if (wrote == true) savedVersion++
+        }
+    }
+
+    fun deleteQueue(id: String) { queues = queues.filter { it.id != id }; saveState() }
+    fun removeOtherQueues() { queues = emptyList(); saveState(); toast("Only this queue is left") }
+    @JvmName("chooseMultiQueue")
+    fun setMultiQueue(on: Boolean) { multiQueue = on; saveState() }
 
     /** "next" plays the songs right after this one, "queue" after the songs you queued before. */
     fun enqueue(tracks: List<Track>, how: String = "queue") {
@@ -1017,11 +1401,25 @@ object Music {
             player?.seekTo(0)
             val t = current()
             if (t != null && listen?.let { it.sent || it.counted } == true) beginListen(t)   // listening again counts again
-        } else { index--; loadCurrent() }
+        } else { index--; goingBack = true; loadCurrent() }
+    }
+
+    /** The song playing is about to change: count it as skipped, unless it ran out on its own or you went back. */
+    private fun noteLeaving() {
+        val ls = listen
+        val fin = finishing; val back = goingBack
+        finishing = false; goingBack = false
+        if (ls == null || fin || back) return
+        val dur = duration.takeIf { it > 0 } ?: ls.track.duration
+        if (ls.played >= 1 && dur > SongStats.SKIP_LEFT * 2 && position < dur - SongStats.SKIP_LEFT) {
+            bg({ songStats.skipped(ls.track) }) { _, _ -> musicVersion++ }
+        }
     }
 
     fun trackEnded() {
         if (streaming && duration > 0 && position < duration - 5) { streamBroke(); return }   // the network went away mid-song
+        current()?.let { t -> bg({ songStats.heardOut(t) }) }
+        finishing = true
         if (repeat == "one") loadCurrent() else next()
     }
 
@@ -1079,14 +1477,22 @@ object Music {
         val t0 = current() ?: return
         val t = t0.copy(queued = false)   // playing now, not waiting in your queue
         if (t0.queued) queue = queue.toMutableList().also { it[index] = t }
+        if (autoplay) noteLeaving()
+        finishing = false; goingBack = false
         restorePending = false
         ended = false
         listen = null
+        // The song before this one is done: its lyrics can go into its file now (never into the one playing).
+        lastLoaded?.let { prev -> if (prev.id != t.id) lyricsIntoFile(prev) }
+        lastLoaded = t
+        if (lyricsToFiles && !Remote.active) bg({ Lyrics.get(ctx, t) })   // found while it plays, kept for later
         val seq = ++loadSeq
-        position = 0.0
+        val at = resumeAt
+        resumeAt = 0.0
+        position = at
         duration = t.duration
         val onDisk = lib.has(t.id) || t.isFile
-        streaming = !(onDisk || keepPlayed)
+        streaming = !(onDisk || (keepPlayed && autoSaveOk(t)))
         status = if (onDisk) "" else if (keepPlayed) "Downloading FLAC…" else "Loading the stream…"
         val work: () -> Downloader.Ready = if (streaming || onDisk) ({ dl.stream(t) })
             else ({ try { dl.download(t) } catch (_: Exception) {}; dl.stream(t) })   // no FLAC to keep (or saving failed): stream what there is
@@ -1099,7 +1505,7 @@ object Music {
                 return@bg
             }
             if (!ready.onDisk) streaming = true   // Keep found no FLAC to save: it streams
-            val start = { play(t, ready, autoplay) }
+            val start = { play(t, ready, autoplay, at) }
             if (player == null) pendingLoad = start else start()
             if (autoplay) beginListen(t)
             savedVersion++
@@ -1125,6 +1531,7 @@ object Music {
             .build()
         p.setMediaItem(item, (startAt * 1000).toLong())
         p.playbackParameters = playbackOf(t)
+        eqProcessor.songGain = gainOf(t)
         p.prepare()
         p.playWhenReady = autoplay
     }
@@ -1132,7 +1539,7 @@ object Music {
     private fun prefetch() {
         val nxt = queue.getOrNull(index + 1) ?: return
         if (lib.has(nxt.id) || nxt.isFile) return
-        if (keepPlayed) bg({ dl.download(nxt) }) { _, _ -> savedVersion++ } else bg({ dl.stream(nxt) })
+        if (keepPlayed && autoSaveOk(nxt)) bg({ dl.download(nxt) }) { _, _ -> savedVersion++ } else bg({ dl.stream(nxt) })
     }
 
     /** Tidal's stream stopped short: look it up again and carry on from the same place, once per song. */
@@ -1182,6 +1589,7 @@ object Music {
 
     /** The sound goes somewhere else: use the correction you used there last time, or say AutoEq has one. */
     fun outputChanged() {
+        switchEqOutput()
         val dev = AutoEq.output(ctx)
         if (dev == output) return
         output = dev
@@ -1195,10 +1603,50 @@ object Music {
             if (m != null) toast("AutoEq has a correction for ${m.name}: Equalizer › Auto EQ")
         }
     }
-    fun setEqPreset(key: String) = setEq { it.copy(preset = key, bands = Eq.PRESETS[key]?.second ?: it.custom, on = true) }
+    fun setEqPreset(key: String) = setEq { it.copy(preset = key, bands = Eq.preset(key, it.count) ?: it.custom.takeIf { c -> c.size == it.count }
+        ?: List(it.count) { 0.0 }, on = true) }
     fun setEqBand(i: Int, gain: Double) = setEq {
+        if (i !in it.bands.indices) return@setEq it
         val b = it.bands.toMutableList().also { l -> l[i] = Eq.clamp(gain) }
         it.copy(bands = b, custom = b, preset = "custom", on = true)
+    }
+    /** 3, 5, 10, 15 or 31 bands: the curve you had, read onto the new ones. */
+    fun setEqCount(n: Int) = setEq {
+        if (n == it.count || n !in Eq.COUNTS) return@setEq it
+        val from = Eq.bandsFor(it.count)
+        it.copy(count = n, bands = Eq.resample(it.bands, from, n), custom = Eq.resample(it.custom.takeIf { c -> c.size == it.count } ?: it.bands, from, n))
+    }
+    /** A separate EQ for each output, or one for all. */
+    fun setEqPerOutput(on: Boolean) = setEq { it.copy(perOutput = on) }
+    /** Edit (and, if it's the one playing, hear) another output's EQ. */
+    fun editEqOutput(key: String) {
+        if (key == eq.output) return
+        setEq { e ->
+            val saved = e.outputs + (e.output.ifEmpty { "speaker" } to e.toOutput(e.outputs[e.output]?.label ?: outLabel(e.output)))
+            e.copy(outputs = saved).withOutput(key, saved[key])
+        }
+    }
+    fun forgetEqOutput(key: String) = setEq { it.copy(outputs = it.outputs - key) }
+    private fun outLabel(key: String) = when (key) { "speaker", "" -> "Built-in speaker"; "wired" -> "Headphones (jack)"
+        "headset" -> "Headset (jack, with mic)"; else -> key.substringAfter(':') }
+    var outputNow by mutableStateOf(Outputs.Out("speaker", "Built-in speaker", "speaker"))
+        private set
+
+    /** The sound went somewhere else: that output's own EQ comes in (a separate EQ for each output). */
+    private fun switchEqOutput() {
+        val o = Outputs.now(ctx)
+        outputNow = o
+        if (!eq.perOutput || o.key == eq.output) {
+            if (eq.output.isEmpty()) setEq { it.copy(output = o.key, outputs = it.outputs + (o.key to it.toOutput(o.label))) }
+            return
+        }
+        val was = eq.output
+        setEq { e ->
+            val saved = (if (was.isNotEmpty()) e.outputs + (was to e.toOutput(e.outputs[was]?.label ?: outLabel(was))) else e.outputs)
+            val mine = saved[o.key] ?: OutputEq(o.label, count = e.count, bands = List(e.count) { 0.0 }, custom = List(e.count) { 0.0 })
+            e.copy(outputs = saved + (o.key to mine.copy(label = o.label))).withOutput(o.key, mine)
+        }
+        if (was.isNotEmpty()) toast("${o.label}: its own equalizer" + if (eq.on) "" else " (off)")
     }
     fun setEqTone(name: String, gain: Double) = setEq {
         if (name == "bass") it.copy(bass = Eq.clamp(gain), on = true) else it.copy(treble = Eq.clamp(gain), on = true)

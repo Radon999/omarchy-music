@@ -89,7 +89,7 @@ object LastFm {
     fun result(err: Throwable?) {
         if (err is LastFmError && err.code == 9) Music.scope.launch {
             disconnect()
-            Music.toast("Last.fm signed you out: connect it again in the accounts menu")
+            Music.toast("Last.fm signed you out: connect it again in Settings")
         }
     }
 

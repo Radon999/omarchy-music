@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -66,10 +67,18 @@ fun LyricsTab(ui: Ui) {
             state = err?.message?.take(140) ?: if (g == null) "none" else ""
         }
     }
+    // Search by hand: another artist and title, for songs whose names don't match (found ones are kept, offline too).
+    val searched: (Lyrics.Got?) -> Unit = { g -> got = g; state = if (g == null) "none" else ""; ui.lyricsSearch = false }
     when {
         t == null -> { Empty("Nothing playing", "The lyrics of the song that's playing show up here."); return }
         state == "loading" -> { Empty("Finding the lyrics…", "${t.title} · ${t.artist}"); return }
-        state == "none" -> { Empty("No lyrics found", "Genius, Tidal and LRCLIB don't have this song."); return }
+        state == "none" -> {
+            Column(Modifier.fillMaxWidth()) {
+                Empty("No lyrics found", "Genius, Tidal and LRCLIB don't have this song. Search by another artist or title:")
+                LyricsSearch(t, searched)
+            }
+            return
+        }
         state.isNotEmpty() || got == null -> {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Empty("Couldn't get the lyrics", state)
@@ -94,11 +103,13 @@ fun LyricsTab(ui: Ui) {
             Text(if (mode == "synced") "TIMED · ${(g.synced_from ?: "").uppercase()}" else "LYRICS · ${(g.plain_from ?: "").uppercase()}" +
                 if (notes.isNotEmpty()) " · ${notes.size} NOTE${if (notes.size != 1) "S" else ""}: TAP A MARKED LINE" else "",
                 style = T.section, maxLines = 1, modifier = Modifier.weight(1f))
+            IconButton(Ico.SEARCH, C.muted, 16.dp, 6.dp, desc = "Search the lyrics") { ui.lyricsSearch = !ui.lyricsSearch }
             if (synced && plain) {
                 Chip("Genius", mode == "genius") { Music.setLyricsMode("genius") }
                 Chip("Synced", mode == "synced") { Music.setLyricsMode("synced") }
             }
         }
+        if (ui.lyricsSearch && t != null) LyricsSearch(t, searched)
         if (mode == "synced") Synced(lines) else Plain(g.plain!!, notes, g.url)
     }
 }
@@ -184,5 +195,38 @@ private fun Synced(lines: List<Pair<Double, String>>) {
                     color = when { i == cur -> C.accent; i < cur -> C.muted.copy(alpha = 0.7f); else -> C.fg.copy(alpha = 0.85f) }),
                 modifier = Modifier.fillMaxWidth().clickable { Music.seek(at) }.padding(vertical = 7.dp))
         }
+    }
+}
+
+
+/** The lyrics' search box: artist and title, as you'd write them. */
+@Composable
+private fun LyricsSearch(t: org.omarchy.music.Track, found: (Lyrics.Got?) -> Unit) {
+    var artist by remember(t.id) { mutableStateOf(t.artist.split(",")[0].trim()) }
+    var title by remember(t.id) { mutableStateOf(t.title) }
+    var busy by remember(t.id) { mutableStateOf(false) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val go = {
+        busy = true
+        Music.bg({ Lyrics.search(ctx, t, artist, title) }) { g, _ ->
+            busy = false
+            if (g == null) Music.toast("No lyrics for “$title” by $artist") else Music.toast("Found: kept for offline")
+            found(g)
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        listOf("Artist" to artist, "Title" to title).forEachIndexed { i, (hint, v) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(R.pill).background(C.bg), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (i == 0) Ico.PERSON else Ico.NOTE, C.muted, 16.dp, Modifier.padding(start = 12.dp))
+                Box(Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 10.dp)) {
+                    if (v.isEmpty()) androidx.compose.material3.Text(hint, style = T.body.copy(color = C.muted))
+                    androidx.compose.foundation.text.BasicTextField(v, { if (i == 0) artist = it else title = it }, singleLine = true,
+                        textStyle = T.body, cursorBrush = androidx.compose.ui.graphics.SolidColor(C.accent),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { go() }), modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+        Box(Modifier.align(Alignment.End).padding(top = 4.dp)) { Pill(if (busy) "Searching…" else "Search lyrics") { if (!busy) go() } }
     }
 }
